@@ -5,8 +5,13 @@ from django.db import transaction
 from core.models import KYCDocument, User
 
 
-# Minimum doc type required before user can be marked verified.
-REQUIRED_KYC_TYPES = frozenset({KYCDocument.DocumentType.CITIZENSHIP})
+# At least one approved doc of these types is enough for verified (gov ID).
+PRIMARY_KYC_TYPES = frozenset(
+    {
+        KYCDocument.DocumentType.CITIZENSHIP,
+        KYCDocument.DocumentType.PASSPORT,
+    }
+)
 
 
 @transaction.atomic
@@ -14,10 +19,14 @@ def sync_user_kyc_status(user: User) -> None:
     """
     Derive User.kyc_status from KYCDocument rows.
     - Any rejected doc -> rejected
-    - Else if every required type has at least one approved doc, and no pending/review -> verified
+    - Else if at least one primary ID type is approved, and no pending/review -> verified
     - Else if any pending/review -> review
     - Else -> pending
+
+    No-op when the user has no KYC rows (keeps manual admin / legacy verified without uploads).
     """
+    if not KYCDocument.objects.filter(user=user).exists():
+        return
     docs = list(
         KYCDocument.objects.filter(user=user).values_list("document_type", "status")
     )
@@ -31,10 +40,10 @@ def sync_user_kyc_status(user: User) -> None:
             s in (KYCDocument.Status.PENDING, KYCDocument.Status.REVIEW)
             for _, s in docs
         )
-        required_ok = REQUIRED_KYC_TYPES.issubset(types_with_approval)
-        if required_ok and not pending_like:
+        identity_ok = bool(types_with_approval & PRIMARY_KYC_TYPES)
+        if identity_ok and not pending_like:
             new_status = User.KYCStatus.VERIFIED
-        elif pending_like or not required_ok:
+        elif pending_like or not identity_ok:
             new_status = User.KYCStatus.REVIEW
         else:
             new_status = User.KYCStatus.PENDING

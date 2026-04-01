@@ -152,6 +152,22 @@ class KycWithdrawFlowTests(TestCase):
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.kyc_status, User.KYCStatus.VERIFIED)
 
+    def test_admin_approve_passport_syncs_user_verified(self):
+        doc = KYCDocument.objects.create(
+            user=self.customer,
+            document_type=KYCDocument.DocumentType.PASSPORT,
+            status=KYCDocument.Status.PENDING,
+        )
+        self._login(self.admin)
+        r = self.client.patch(
+            f"/api/admin/kyc-submissions/{doc.pk}/",
+            {"status": "approved"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.kyc_status, User.KYCStatus.VERIFIED)
+
     def test_admin_reject_requires_reason(self):
         doc = KYCDocument.objects.create(
             user=self.customer,

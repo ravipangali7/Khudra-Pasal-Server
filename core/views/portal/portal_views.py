@@ -569,8 +569,12 @@ def child_portal_login(request):
 @permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_me(request):
     u = request.user
-    w = _wallet_for_user(u)
+    from core.services.kyc_service import sync_user_kyc_status
     from core.services.kyc_withdraw import latest_kyc_rejection_reason
+
+    sync_user_kyc_status(u)
+    u.refresh_from_db()
+    w = _wallet_for_user(u)
 
     return Response(
         {
@@ -2160,8 +2164,11 @@ def portal_child_wallet_topup(request):
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated, IsPortalChild])
 def portal_child_wallet_withdraw(request):
+    from core.services.kyc_service import sync_user_kyc_status
     from core.services.kyc_withdraw import kyc_withdraw_block_payload
 
+    sync_user_kyc_status(request.user)
+    request.user.refresh_from_db()
     block = kyc_withdraw_block_payload(request.user)
     if block:
         return Response(block, status=403)
@@ -2675,8 +2682,11 @@ def portal_wallet_transfer(request):
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated, IsPortalCustomer])
 def portal_wallet_withdraw(request):
+    from core.services.kyc_service import sync_user_kyc_status
     from core.services.kyc_withdraw import kyc_withdraw_block_payload
 
+    sync_user_kyc_status(request.user)
+    request.user.refresh_from_db()
     block = kyc_withdraw_block_payload(request.user)
     if block:
         return Response(block, status=403)

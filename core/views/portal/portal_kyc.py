@@ -117,6 +117,8 @@ def _kyc_status_payload(request, user: User) -> dict:
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated, IsPortalSelf])
 def portal_kyc_status(request):
+    sync_user_kyc_status(request.user)
+    request.user.refresh_from_db()
     return Response(_kyc_status_payload(request, request.user))
 
 
