@@ -110,6 +110,17 @@ def _apply_product_list_filters(queryset, request):
     bestseller = request.query_params.get("bestseller")
     has_discount = (request.query_params.get("has_discount") or "").strip().lower()
     trending = (request.query_params.get("trending") or "").strip().lower()
+    brand_raw = (request.query_params.get("brand") or "").strip()
+
+    if brand_raw:
+        try:
+            brand_id = int(brand_raw)
+            if brand_id > 0:
+                queryset = queryset.filter(brand_id=brand_id)
+            else:
+                queryset = queryset.none()
+        except ValueError:
+            queryset = queryset.none()
 
     if category:
         subtree_ids = _active_subtree_ids_for_slug(category)
@@ -239,6 +250,7 @@ def products_list(request):
     """
     Storefront product list filters:
     - category=<slug>
+    - brand=<integer_pk> (active brand)
     - search=<term>
     - featured=true
     - bestseller=true
