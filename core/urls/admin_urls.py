@@ -1,6 +1,6 @@
 from django.urls import path
 
-from core.views.admin import dashboard_views, kyc_submissions_views, resource_views, user_views
+from core.views.admin import dashboard_views, kyc_submissions_views, resource_views, system_cleanup_views, user_views
 from core.views import navigation_views
 
 urlpatterns = [
@@ -218,6 +218,16 @@ urlpatterns = [
         name="admin-payment-gateway-write",
     ),
     path("payment-gateways/", resource_views.admin_payment_gateways_list, name="admin-payment-gateways"),
+    path(
+        "system/cleanup-modules/",
+        system_cleanup_views.admin_cleanup_modules_list,
+        name="admin-cleanup-modules",
+    ),
+    path(
+        "system/cleanup/",
+        system_cleanup_views.admin_cleanup_execute,
+        name="admin-cleanup-execute",
+    ),
     path("system/db-stats/", resource_views.admin_db_table_stats, name="admin-db-table-stats"),
 ]
 

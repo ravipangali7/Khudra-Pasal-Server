@@ -60,6 +60,11 @@ def user_can_access_audit_logs(user: User) -> bool:
     return getattr(user, "role", None) == User.Role.SUPER_ADMIN
 
 
+def user_can_access_super_admin_database_cleanup(user: User) -> bool:
+    """Same privilege gate as audit logs: Django superuser or app super_admin role."""
+    return user_can_access_audit_logs(user)
+
+
 def enforce_audit_log_access(request):
     """
     Admin portal + super-admin only. Use for audit log list/detail instead of enforce_admin_api_access.
@@ -111,6 +116,8 @@ def admin_module_key_from_path(path: str) -> str | None:
         ("ledger-transactions/", "settings"),
         ("site-settings/", "settings"),
         ("payment-gateways/", "settings"),
+        ("system/cleanup-modules/", "settings"),
+        ("system/cleanup/", "settings"),
         ("system/db-stats/", "settings"),
         ("withdrawals/", "settings"),
         ("wallets/summary/", "wallet-master"),
