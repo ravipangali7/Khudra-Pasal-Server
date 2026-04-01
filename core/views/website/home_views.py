@@ -691,18 +691,18 @@ def reel_interaction_delete(request, pk, interaction_type):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 def reel_view_record(request, pk):
     reel = _reel_for_user_interaction(request, pk)
     if not reel:
         return Response({"detail": "Reel not found."}, status=404)
-    created, views = reel_service.record_unique_view(reel, request.user)
+    created, views = reel_service.record_unique_view(reel, request.user, request)
     return Response({"created": created, "views": views})
 
 
 @api_view(["GET", "POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 def reel_comments(request, pk):
     reel = _reel_for_user_interaction(request, pk)
@@ -712,6 +712,8 @@ def reel_comments(request, pk):
         qs = ReelComment.objects.filter(reel=reel).select_related("user", "parent").order_by("-created_at")
         data = ReelCommentSerializer(qs, many=True).data
         return Response({"results": data})
+    if not request.user.is_authenticated:
+        return Response({"detail": "Authentication credentials were not provided."}, status=401)
     body = (request.data.get("body") or "").strip()
     if not body:
         return Response({"detail": "Comment body is required."}, status=400)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.core.cache import cache
 from django.db import transaction
 from django.db.models import F
 
@@ -45,9 +46,25 @@ def remove_interaction_counter(reel: Reel, interaction_type: str) -> None:
 
 
 @transaction.atomic
-def record_unique_view(reel: Reel, user) -> tuple[bool, int]:
-    _, created = ReelView.objects.get_or_create(reel=reel, user=user)
-    if created:
-        Reel.objects.filter(pk=reel.pk).update(views=F("views") + 1)
-    latest_views = Reel.objects.filter(pk=reel.pk).values_list("views", flat=True).first() or 0
-    return created, int(latest_views)
+def record_unique_view(reel: Reel, user, request=None) -> tuple[bool, int]:
+    """Authenticated users: one counted view per user per reel. Anonymous: one per client IP per 24h (cache)."""
+    if getattr(user, "is_authenticated", False):
+        _, created = ReelView.objects.get_or_create(reel=reel, user=user)
+        if created:
+            Reel.objects.filter(pk=reel.pk).update(views=F("views") + 1)
+        latest_views = Reel.objects.filter(pk=reel.pk).values_list("views", flat=True).first() or 0
+        return created, int(latest_views)
+
+    latest_views = int(Reel.objects.filter(pk=reel.pk).values_list("views", flat=True).first() or 0)
+    if request is None:
+        return False, latest_views
+
+    forwarded = (request.META.get("HTTP_X_FORWARDED_FOR") or "").split(",")[0].strip()
+    ip = forwarded or request.META.get("REMOTE_ADDR") or "unknown"
+    cache_key = f"reel_view_anon:{reel.pk}:{ip}"
+    if cache.get(cache_key):
+        return False, latest_views
+    cache.set(cache_key, 1, timeout=86400)
+    Reel.objects.filter(pk=reel.pk).update(views=F("views") + 1)
+    latest_views = int(Reel.objects.filter(pk=reel.pk).values_list("views", flat=True).first() or 0)
+    return True, latest_views
