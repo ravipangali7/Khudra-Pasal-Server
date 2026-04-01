@@ -54,9 +54,10 @@ class ProductPagination(PageNumberPagination):
     max_page_size = 200
 
 
-def _product_image_prefetch():
+def _product_image_prefetch(lookup: str = "images"):
+    """Prefetch ProductImage rows. Use `lookup="product__images"` from ProductWishlist querysets."""
     return Prefetch(
-        "images",
+        lookup,
         queryset=ProductImage.objects.order_by("sort_order", "id"),
     )
 
@@ -799,7 +800,7 @@ def wishlist_list(request):
             "product__brand",
             "product__unit",
         )
-        .prefetch_related(_product_image_prefetch())
+        .prefetch_related(_product_image_prefetch("product__images"))
         .order_by("-created_at")
     )
     return Response(ProductWishlistSerializer(rows, many=True, context={"request": request}).data)
