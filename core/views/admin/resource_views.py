@@ -2711,7 +2711,7 @@ def admin_product_create(request):
         discount_price=_to_decimal(request.data.get("discount_price"), "0")
         if request.data.get("discount_price")
         else None,
-        tax_percent=_to_decimal(request.data.get("tax_percent"), "13"),
+        tax_percent=_to_decimal(request.data.get("tax_percent"), "0"),
         category=category,
         brand=Brand.objects.filter(pk=request.data.get("brand_id")).first()
         if request.data.get("brand_id")
@@ -2815,7 +2815,7 @@ def admin_product_detail_write(request, pk):
     if "discount_price" in request.data:
         row.discount_price = _to_decimal(request.data.get("discount_price"), "0") if request.data.get("discount_price") else None
     if "tax_percent" in request.data:
-        row.tax_percent = _to_decimal(request.data.get("tax_percent"), "13")
+        row.tax_percent = _to_decimal(request.data.get("tax_percent"), "0")
     if "stock" in request.data:
         row.stock = int(request.data.get("stock") or 0)
     if "category_id" in request.data:
@@ -3316,11 +3316,8 @@ def admin_purchase_order_create(request):
     discount = _to_decimal(request.data.get("discount"), "0")
     if discount > subtotal:
         discount = subtotal
-    taxable = subtotal - discount
-    if taxable < 0:
-        taxable = Decimal("0")
-    tax = taxable * Decimal("0.13")
-    total = subtotal - discount + tax + delivery_fee
+    tax = Decimal("0")
+    total = subtotal - discount + delivery_fee
 
     with transaction.atomic():
         row = PurchaseOrder.objects.create(
