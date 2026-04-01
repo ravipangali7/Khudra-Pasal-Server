@@ -21,6 +21,7 @@ urlpatterns = [
     path("products/", home_views.products_list, name="website-products"),
     path("products/<str:identifier>/", home_views.product_detail, name="website-product-detail"),
     path("products/<str:identifier>/reviews/", home_views.product_reviews_list, name="website-product-reviews"),
+    path("cms-pages/", home_views.cms_pages_public_list, name="website-cms-pages-list"),
     path("cms-pages/<slug:slug>/", home_views.cms_page_public, name="website-cms-page"),
     path("blog-posts/", home_views.blog_posts_list, name="website-blog-posts"),
     path("blog-posts/<slug:slug>/", home_views.blog_post_public, name="website-blog-post-detail"),

@@ -373,6 +373,13 @@ def product_reviews_list(request, identifier):
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
+def cms_pages_public_list(request):
+    qs = CMSPage.objects.filter(status=CMSPage.Status.PUBLISHED).order_by("title")
+    return Response([{"title": p.title, "slug": p.slug} for p in qs])
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
 def cms_page_public(request, slug):
     row = CMSPage.objects.filter(slug=slug, status=CMSPage.Status.PUBLISHED).first()
     if not row:
