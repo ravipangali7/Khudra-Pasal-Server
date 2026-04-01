@@ -30,6 +30,8 @@ def root_redirect(request):
 urlpatterns = [
     # path("", root_redirect, name="root"),
     path("api/", include("core.urls")),
+    path("api/dj-auth/", include("dj_rest_auth.urls")),
+    path("api/dj-auth/registration/", include("dj_rest_auth.registration.urls")),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

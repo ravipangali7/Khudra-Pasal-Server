@@ -39,9 +39,17 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.sites',
     'core',
     'rest_framework',
     'rest_framework.authtoken',
+    'rest_framework_simplejwt.token_blacklist',
+    'allauth',
+    'allauth.account',
+    'allauth.socialaccount',
+    'allauth.socialaccount.providers.google',
+    'dj_rest_auth',
+    'dj_rest_auth.registration',
     'corsheaders',
 ]
 
@@ -51,6 +59,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'allauth.account.middleware.AccountMiddleware',
     'core.middleware.admin_audit_middleware.AdminApiAuditMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
@@ -59,6 +68,7 @@ MIDDLEWARE = [
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
         'rest_framework.authentication.TokenAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
@@ -70,6 +80,12 @@ REST_FRAMEWORK = {
     },
 }
 CORS_ALLOW_ALL_ORIGINS = True
+SITE_ID = 1
+
+AUTHENTICATION_BACKENDS = (
+    'django.contrib.auth.backends.ModelBackend',
+    'allauth.account.auth_backends.AuthenticationBackend',
+)
 
 # SPA URL after OAuth (no trailing slash). OAuth callbacks redirect here with ?token=…
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:8080")
@@ -78,6 +94,7 @@ OAUTH_REDIRECT_BASE = os.environ.get("OAUTH_REDIRECT_BASE", "").rstrip("/") or N
 
 GOOGLE_OAUTH_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
 GOOGLE_OAUTH_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
+GOOGLE_ID_TOKEN_AUDIENCE = os.environ.get("GOOGLE_ID_TOKEN_AUDIENCE", GOOGLE_OAUTH_CLIENT_ID)
 FACEBOOK_APP_ID = os.environ.get("FACEBOOK_APP_ID", "")
 FACEBOOK_APP_SECRET = os.environ.get("FACEBOOK_APP_SECRET", "")
 
@@ -170,6 +187,29 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 # Custom user model
 AUTH_USER_MODEL = 'core.User'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+REST_AUTH = {
+    'USE_JWT': True,
+}
+
+from datetime import timedelta
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+}
+
+ACCOUNT_EMAIL_VERIFICATION = "none"
+ACCOUNT_LOGIN_METHODS = {"email"}
+ACCOUNT_SIGNUP_FIELDS = ["email*", "username*", "password1*", "password2*"]
+
+SOCIALACCOUNT_PROVIDERS = {
+    "google": {
+        "SCOPE": ["profile", "email"],
+        "AUTH_PARAMS": {"access_type": "online"},
+    }
+}
 
 # Jazzmin admin theme (aligned with KhudraPasal web UI: teal/green accents)
 JAZZMIN_SETTINGS = {
