@@ -110,6 +110,7 @@ PORTAL_MAIN_NAV: list[tuple] = [
     ("portal_main", "child-accounts", "Child Accounts", "Users", "", 20, "", "parent"),
     ("portal_main", "family-wallet", "Family Wallet", "UsersRound", "", 30, "", "parent"),
     ("portal_main", "products", "Products", "Package", "", 35, "", ""),
+    ("portal_main", "wishlist", "Wishlist", "Heart", "", 37, "", ""),
     ("portal_main", "orders", "Orders", "ShoppingBag", "", 40, "", ""),
     ("portal_main", "transactions", "Transactions", "Receipt", "", 50, "", ""),
     ("portal_main", "switch-portal", "Switch Portal", "RefreshCcw", "", 60, "", ""),

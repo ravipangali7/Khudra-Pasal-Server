@@ -18,6 +18,8 @@ from core.models import (
     CMSPage,
     FamilyInvite,
     FlashDeal,
+    Order,
+    OrderItem,
     Product,
     ProductImage,
     ProductReview,
@@ -285,6 +287,15 @@ def products_all_vendors_list(request):
     return paginator.get_paginated_response(serializer.data)
 
 
+def _user_has_delivered_paid_purchase(user, product: Product) -> bool:
+    return OrderItem.objects.filter(
+        product=product,
+        order__customer=user,
+        order__status=Order.Status.DELIVERED,
+        order__payment_status=Order.PaymentStatus.PAID,
+    ).exists()
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def product_detail(request, identifier):
@@ -295,7 +306,14 @@ def product_detail(request, identifier):
         return Response({"detail": "Product not found."}, status=404)
 
     serializer = ProductSerializer(product, context={"request": request})
-    return Response(serializer.data)
+    data = dict(serializer.data)
+    if request.user.is_authenticated:
+        has_purchase = _user_has_delivered_paid_purchase(request.user, product)
+        has_review = ProductReview.objects.filter(
+            product=product, customer=request.user
+        ).exists()
+        data["can_submit_review"] = has_purchase and not has_review
+    return Response(data)
 
 
 @api_view(["GET", "POST"])
@@ -328,6 +346,13 @@ def product_reviews_list(request, identifier):
         return Response({"detail": "Authentication required."}, status=401)
     if ProductReview.objects.filter(product=product, customer=request.user).exists():
         return Response({"detail": "You have already submitted a review for this product."}, status=400)
+    if not _user_has_delivered_paid_purchase(request.user, product):
+        return Response(
+            {
+                "detail": "You can only review products from a delivered order with paid payment.",
+            },
+            status=400,
+        )
     try:
         rating = int(request.data.get("rating"))
     except (TypeError, ValueError):
