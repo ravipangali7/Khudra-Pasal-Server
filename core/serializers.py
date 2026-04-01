@@ -179,23 +179,10 @@ class ProductSerializer(serializers.ModelSerializer):
         return obj.unit.short_name if obj.unit_id else ""
 
     def get_image_url(self, obj):
+        from core.views.admin.admin_write_utils import product_primary_image_url
+
         request = self.context.get("request")
-        if obj.image:
-            if request:
-                return request.build_absolute_uri(obj.image.url)
-            return obj.image.url
-        # Fallback: first gallery image
-        first = None
-        if hasattr(obj, "_prefetched_objects_cache") and "images" in obj._prefetched_objects_cache:
-            imgs = list(obj.images.all())
-            first = imgs[0] if imgs else None
-        else:
-            first = obj.images.order_by("sort_order", "id").first()
-        if first and first.image:
-            if request:
-                return request.build_absolute_uri(first.image.url)
-            return first.image.url
-        return ""
+        return product_primary_image_url(request, obj)
 
     def get_images(self, obj):
         if hasattr(obj, "_prefetched_objects_cache") and "images" in obj._prefetched_objects_cache:

@@ -20,6 +20,35 @@ def absolute_media_url(request, file_field) -> str:
     return request.build_absolute_uri(url)
 
 
+def product_primary_image_url(request, product) -> str:
+    """
+    URL for Product primary image, or the first gallery image if primary is missing.
+    Matches storefront ProductSerializer.get_image_url (admin detail should stay in sync).
+    """
+    if getattr(product, "image", None):
+        if request is not None:
+            return absolute_media_url(request, product.image)
+        try:
+            return product.image.url
+        except ValueError:
+            return ""
+    first = None
+    cache = getattr(product, "_prefetched_objects_cache", None)
+    if cache is not None and "images" in cache:
+        imgs = sorted(product.images.all(), key=lambda x: (x.sort_order, x.id))
+        first = imgs[0] if imgs else None
+    else:
+        first = product.images.order_by("sort_order", "id").first()
+    if first is not None and first.image:
+        if request is not None:
+            return absolute_media_url(request, first.image)
+        try:
+            return first.image.url
+        except ValueError:
+            return ""
+    return ""
+
+
 def validation_error(message: str, field: str | None = None, status: int = 400):
     if field:
         return Response({field: [message], "detail": message}, status=status)

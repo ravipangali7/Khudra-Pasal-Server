@@ -183,6 +183,9 @@ STATICFILES_DIRS = [
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+# Production: reverse proxy must serve MEDIA_URL (or equivalent storage CDN) so product images load.
+# Raise proxy client_max_body_size (and Django DATA_UPLOAD_MAX_MEMORY_SIZE / FILE_UPLOAD_MAX_MEMORY_SIZE)
+# if large image uploads fail with 413 or empty multipart bodies.
 
 # Custom user model
 AUTH_USER_MODEL = 'core.User'

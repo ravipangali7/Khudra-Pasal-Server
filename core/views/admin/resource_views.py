@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Count, FloatField, Prefetch, Q, Sum
+from django.db.models import Count, FloatField, Max, Prefetch, Q, Sum
 from django.db.models.functions import Cast
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
@@ -47,6 +47,7 @@ from core.models import (
     PaymentGatewaySettings,
     PaymentTransaction,
     Product,
+    ProductImage,
     ProductApproval,
     ProductReview,
     PurchaseOrder,
@@ -84,6 +85,7 @@ from core.views.admin.admin_write_utils import (
     absolute_media_url,
     client_ip_from_request,
     parse_int_pk,
+    product_primary_image_url,
     resolve_user_by_pk_or_phone,
     scalar_request_value,
     validation_error,
@@ -2678,9 +2680,13 @@ def admin_brand_detail_write(request, pk):
     return Response({"id": str(row.pk), "name": row.name, "status": row.status})
 
 
+MAX_ADMIN_PRODUCT_GALLERY = 15
+
+
 @api_view(["POST"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, MultiPartParser, FormParser])
 def admin_product_create(request):
     if err := _forbidden(request):
         return err
@@ -2728,10 +2734,22 @@ def admin_product_create(request):
         enable_reels=str(request.data.get("enable_reels", "")).lower() == "true",
         enable_pos=str(request.data.get("enable_pos", "")).lower() == "true",
     )
+    gallery_files = request.FILES.getlist("gallery_images")[:MAX_ADMIN_PRODUCT_GALLERY]
+    for idx, f in enumerate(gallery_files):
+        ProductImage.objects.create(product=row, image=f, sort_order=idx)
     return Response({"id": str(row.pk), "name": row.name, "slug": row.slug}, status=201)
 
 
 def _admin_product_detail_payload(request, row: Product) -> dict:
+    imgs = sorted(row.images.all(), key=lambda x: (x.sort_order, x.id))
+    images_payload = [
+        {
+            "id": str(im.pk),
+            "image_url": absolute_media_url(request, im.image) if im.image else "",
+            "sort_order": im.sort_order,
+        }
+        for im in imgs
+    ]
     return {
         "id": str(row.pk),
         "name": row.name,
@@ -2760,18 +2778,23 @@ def _admin_product_detail_payload(request, row: Product) -> dict:
         "seo_title": row.seo_title or "",
         "seo_description": row.seo_description or "",
         "seo_keywords": row.seo_keywords or "",
-        "image_url": absolute_media_url(request, row.image),
+        "image_url": product_primary_image_url(request, row),
+        "images": images_payload,
     }
 
 
 @api_view(["GET", "PATCH", "DELETE"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, MultiPartParser, FormParser])
 def admin_product_detail_write(request, pk):
     if err := _forbidden(request):
         return err
     row = (
         Product.objects.select_related("category", "brand", "unit", "seller")
+        .prefetch_related(
+            Prefetch("images", queryset=ProductImage.objects.order_by("sort_order", "id"))
+        )
         .filter(pk=pk)
         .first()
     )
@@ -2814,6 +2837,20 @@ def admin_product_detail_write(request, pk):
     for bfield in ("is_featured", "has_variations", "enable_reels", "enable_pos"):
         if bfield in request.data:
             setattr(row, bfield, str(request.data.get(bfield)).lower() == "true")
+    for raw_id in request.data.getlist("delete_gallery_image_ids"):
+        try:
+            gid = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        ProductImage.objects.filter(pk=gid, product_id=row.pk).delete()
+    gallery_new = request.FILES.getlist("gallery_images")
+    if gallery_new:
+        current_count = ProductImage.objects.filter(product=row).count()
+        remaining = max(0, MAX_ADMIN_PRODUCT_GALLERY - current_count)
+        agg = ProductImage.objects.filter(product=row).aggregate(m=Max("sort_order"))
+        start_order = (agg["m"] if agg["m"] is not None else -1) + 1
+        for idx, f in enumerate(gallery_new[:remaining]):
+            ProductImage.objects.create(product=row, image=f, sort_order=start_order + idx)
     image = request.FILES.get("image")
     if image:
         row.image = image
