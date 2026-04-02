@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from django.db import transaction
 from django.db.models import Count, Max, Q, Sum
+from django.db.models.deletion import ProtectedError
 from django.db.models.functions import TruncDate
 from django.http import HttpResponse
 from django.utils import timezone
@@ -299,7 +300,17 @@ def vendor_product_detail(request, pk):
             }
         )
     if request.method == "DELETE":
-        row.delete()
+        try:
+            row.delete()
+        except ProtectedError as exc:
+            return Response(
+                {
+                    "detail": "Cannot delete product because it is used in existing order items.",
+                    "code": "product_in_use",
+                    "protected_count": len(exc.protected_objects),
+                },
+                status=409,
+            )
         return Response({"ok": True})
     for field in (
         "name",
