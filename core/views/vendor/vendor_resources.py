@@ -305,18 +305,29 @@ def vendor_product_detail(request, pk):
             return Response({"ok": True, "deleted": True})
         except ProtectedError as exc:
             # Product is referenced by historical orders (on_delete=PROTECT).
-            # Fallback to soft-disable so vendor can "remove" it from active catalog.
+            # Fallback to soft-delete semantics: hide from vendor/frontend listings
+            # while preserving historical order integrity.
             row.status = Product.Status.DRAFT
             row.stock = 0
             row.enable_pos = False
             row.enable_reels = False
-            row.save(update_fields=["status", "stock", "enable_pos", "enable_reels", "updated_at"])
+            row.seller = None
+            row.save(
+                update_fields=[
+                    "status",
+                    "stock",
+                    "enable_pos",
+                    "enable_reels",
+                    "seller",
+                    "updated_at",
+                ]
+            )
             return Response(
                 {
                     "ok": True,
                     "deleted": False,
                     "soft_deleted": True,
-                    "detail": "Product is used in existing orders, so it was deactivated instead of hard deleted.",
+                    "detail": "Product is used in existing orders, so it was removed from listings instead of hard deleted.",
                     "code": "product_soft_deleted_in_use",
                     "protected_count": len(exc.protected_objects),
                 },
