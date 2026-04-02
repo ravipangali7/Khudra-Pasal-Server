@@ -55,6 +55,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -63,7 +64,6 @@ MIDDLEWARE = [
     'core.middleware.admin_audit_middleware.AdminApiAuditMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
 ]
 
 REST_FRAMEWORK = {
@@ -80,6 +80,14 @@ REST_FRAMEWORK = {
     },
 }
 CORS_ALLOW_ALL_ORIGINS = True
+# Keep these explicit so large multipart admin uploads are controlled by env,
+# instead of failing with default low request-body limits.
+DATA_UPLOAD_MAX_MEMORY_SIZE = int(
+    os.environ.get("DATA_UPLOAD_MAX_MEMORY_SIZE", str(25 * 1024 * 1024))
+)
+FILE_UPLOAD_MAX_MEMORY_SIZE = int(
+    os.environ.get("FILE_UPLOAD_MAX_MEMORY_SIZE", str(25 * 1024 * 1024))
+)
 SITE_ID = 1
 
 AUTHENTICATION_BACKENDS = (
