@@ -302,24 +302,20 @@ class UserAdmin(BaseUserAdmin):
         queryset.update(kyc_status=models.User.KYCStatus.VERIFIED)
         self.message_user(request, "KYC marked verified.", messages.SUCCESS)
 
+    def has_view_permission(self, request, obj=None):
+        return request.user.is_staff
+
+    def has_add_permission(self, request):
+        return request.user.is_staff
+
+    def has_change_permission(self, request, obj=None):
+        return request.user.is_staff
+
+    def has_delete_permission(self, request, obj=None):
+        return request.user.is_staff
+
     def delete_queryset(self, request, queryset):
-        protected_self = queryset.filter(pk=request.user.pk)
-        protected_superusers = queryset.filter(is_superuser=True)
-
-        protected_ids = set(protected_self.values_list("pk", flat=True)) | set(
-            protected_superusers.values_list("pk", flat=True)
-        )
-        safe_queryset = queryset.exclude(pk__in=protected_ids)
-
-        if safe_queryset.exists():
-            super().delete_queryset(request, safe_queryset)
-
-        if protected_ids:
-            self.message_user(
-                request,
-                "Skipped deleting your own account and superusers for safety.",
-                messages.WARNING,
-            )
+        super().delete_queryset(request, queryset)
 
     actions = ["delete_selected", "activate_users", "deactivate_users", "verify_kyc_bulk"]
 
