@@ -1124,6 +1124,7 @@ def admin_cms_pages_list(request):
             "lastUpdated": p.last_updated.date().isoformat(),
             "seoTitle": p.seo_title,
             "seoDesc": p.seo_description,
+            "imageUrl": absolute_media_url(request, p.featured_image) if p.featured_image else "",
         }
         for p in page
     ]
@@ -2975,6 +2976,7 @@ def admin_banner_detail_write(request, pk):
 @api_view(["POST"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, MultiPartParser, FormParser])
 def admin_cms_page_create(request):
     if err := _forbidden(request):
         return err
@@ -2982,10 +2984,12 @@ def admin_cms_page_create(request):
     content = request.data.get("content") or ""
     if not title:
         return Response({"detail": "title is required"}, status=400)
+    image = request.FILES.get("image")
     row = CMSPage.objects.create(
         title=title,
         slug=_make_unique_slug(CMSPage, request.data.get("slug") or title),
         content=content,
+        featured_image=image if image else None,
         status=request.data.get("status") or CMSPage.Status.DRAFT,
         seo_title=request.data.get("seo_title") or "",
         seo_description=request.data.get("seo_description") or "",
@@ -3007,6 +3011,7 @@ def admin_cms_page_create(request):
 @api_view(["GET", "PATCH", "DELETE"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, MultiPartParser, FormParser])
 def admin_cms_page_detail_write(request, pk):
     if err := _forbidden(request):
         return err
@@ -3024,6 +3029,7 @@ def admin_cms_page_detail_write(request, pk):
                 "seoTitle": row.seo_title,
                 "seoDesc": row.seo_description,
                 "lastUpdated": row.last_updated.date().isoformat() if row.last_updated else "",
+                "imageUrl": absolute_media_url(request, row.featured_image) if row.featured_image else "",
             }
         )
     if request.method == "DELETE":
@@ -3045,6 +3051,13 @@ def admin_cms_page_detail_write(request, pk):
             setattr(row, field, request.data.get(field))
     if "slug" in request.data or "title" in request.data:
         row.slug = _make_unique_slug(CMSPage, request.data.get("slug") or request.data.get("title") or row.title, instance_pk=row.pk)
+    image = request.FILES.get("image")
+    if image:
+        row.featured_image = image
+    elif request.data.get("clear_featured_image") in (True, "true", "1", 1):
+        if row.featured_image:
+            row.featured_image.delete(save=False)
+        row.featured_image = None
     row.save()
     audit_service.log(
         f"Updated CMS page {row.title!r} (id={row.pk})",

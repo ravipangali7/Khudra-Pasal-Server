@@ -32,6 +32,7 @@ from core.models import (
 )
 from core.services import reel_service
 from core.views.vendor.common import vendor_or_error
+from core.views.admin.admin_write_utils import absolute_media_url
 from core.serializers import (
     BannerSerializer,
     BlogPostDetailSerializer,
@@ -392,6 +393,9 @@ def cms_page_public(request, slug):
             "seo_title": row.seo_title,
             "seo_description": row.seo_description,
             "last_updated": row.last_updated.isoformat() if row.last_updated else "",
+            "featured_image_url": absolute_media_url(request, row.featured_image)
+            if row.featured_image
+            else "",
         }
     )
 

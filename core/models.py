@@ -1439,6 +1439,7 @@ class CMSPage(models.Model):
     title = models.CharField(max_length=255)
     slug = models.SlugField(max_length=300, unique=True)
     content = models.TextField()
+    featured_image = models.ImageField(upload_to="cms/", blank=True)
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.DRAFT
     )

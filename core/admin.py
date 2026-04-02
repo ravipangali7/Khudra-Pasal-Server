@@ -852,6 +852,7 @@ class CMSPageAdmin(admin.ModelAdmin):
     list_filter = ("status",)
     prepopulated_fields = {"slug": ("title",)}
     search_fields = ("title", "slug")
+    fields = ("title", "slug", "content", "featured_image", "status", "seo_title", "seo_description")
 
 
 @admin.register(models.BlogPost)
