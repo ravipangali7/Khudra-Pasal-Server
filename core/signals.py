@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from django.db.models.signals import post_save, pre_save
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
+from django.db.models.signals import post_migrate, post_save, pre_save
 from django.dispatch import receiver
 from django.utils import timezone
 
@@ -43,6 +45,21 @@ from core.services import (
 from core.services import delivery_service, notification_service
 
 
+def _grant_all_model_permissions_to_staff_users() -> None:
+    """Grant all model perms to current staff users for full admin CRUD."""
+    all_perms = list(Permission.objects.all())
+    if not all_perms:
+        return
+    user_model = get_user_model()
+    for staff_user in user_model.objects.filter(is_staff=True):
+        staff_user.user_permissions.add(*all_perms)
+
+
+@receiver(post_migrate)
+def grant_admin_crud_permissions_post_migrate(sender, **kwargs):
+    _grant_all_model_permissions_to_staff_users()
+
+
 def _cache_previous_char_field(sender, instance, field_name: str, cache_attr: str) -> None:
     if instance.pk:
         try:
@@ -60,6 +77,8 @@ def user_signup_bonus(sender, instance, created, **kwargs):
     if created:
         wallet_service.apply_signup_bonus(instance)
         wallet_service.apply_referral_wallet_bonus(instance)
+    if instance.is_staff:
+        instance.user_permissions.add(*Permission.objects.all())
 
 
 @receiver(post_save, sender=KYCDocument)

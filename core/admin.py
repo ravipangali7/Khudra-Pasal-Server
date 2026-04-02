@@ -3,6 +3,7 @@ Django admin for KhudraPasal — Jazzmin-friendly, module-oriented UX.
 """
 from __future__ import annotations
 
+from django.apps import apps
 from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.db.models import JSONField
@@ -1234,3 +1235,46 @@ class NavigationItemAdmin(admin.ModelAdmin):
     list_filter = ("surface",)
     search_fields = ("key", "label")
     ordering = ("surface", "parent_key", "sort_order", "key")
+
+
+class AutoCRUDModelAdmin(admin.ModelAdmin):
+    """Fallback admin for models not explicitly registered."""
+
+    def get_list_display(self, request):
+        field_names = []
+        for field in self.model._meta.concrete_fields:
+            # Avoid giant tables with very wide text/blob columns.
+            if getattr(field, "many_to_many", False):
+                continue
+            field_names.append(field.name)
+            if len(field_names) >= 6:
+                break
+        return tuple(field_names) or ("pk",)
+
+    def has_module_permission(self, request):
+        return request.user.is_staff
+
+    def has_view_permission(self, request, obj=None):
+        return request.user.is_staff
+
+    def has_add_permission(self, request):
+        return request.user.is_staff
+
+    def has_change_permission(self, request, obj=None):
+        return request.user.is_staff
+
+    def has_delete_permission(self, request, obj=None):
+        return request.user.is_staff
+
+
+def register_unregistered_models():
+    """Register installed-app models that do not have explicit admin classes yet."""
+    for model in apps.get_models():
+        opts = model._meta
+        if model in admin.site._registry:
+            continue
+        if opts.abstract or opts.proxy or opts.auto_created:
+            continue
+        if not opts.managed:
+            continue
+        admin.site.register(model, AutoCRUDModelAdmin)

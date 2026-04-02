@@ -7,3 +7,6 @@ class CoreConfig(AppConfig):
 
     def ready(self) -> None:
         import core.signals  # noqa: F401
+        from core.admin import register_unregistered_models
+
+        register_unregistered_models()
