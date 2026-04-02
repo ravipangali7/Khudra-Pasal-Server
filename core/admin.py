@@ -190,6 +190,12 @@ class ReelInteractionInline(admin.TabularInline):
     autocomplete_fields = ("user",)
 
 
+class PurchaseOrderLineInline(admin.TabularInline):
+    model = models.PurchaseOrderLine
+    extra = 0
+    autocomplete_fields = ("product",)
+
+
 # --- User ---------------------------------------------------------------------
 
 @admin.register(models.User)
@@ -424,6 +430,26 @@ class PurchaseOrderAdmin(admin.ModelAdmin):
     list_filter = ("status", "payment_method")
     search_fields = ("po_number",)
     autocomplete_fields = ("customer", "seller")
+    inlines = [PurchaseOrderLineInline]
+
+
+@admin.register(models.PurchaseOrderLine)
+class PurchaseOrderLineAdmin(admin.ModelAdmin):
+    list_display = ("purchase_order", "product", "quantity", "unit_price", "line_total")
+    autocomplete_fields = ("purchase_order", "product")
+
+
+@admin.register(models.Cart)
+class CartAdmin(admin.ModelAdmin):
+    list_display = ("id", "user", "created_at", "updated_at")
+    search_fields = ("user__phone", "user__name")
+    autocomplete_fields = ("user",)
+
+
+@admin.register(models.CartItem)
+class CartItemAdmin(admin.ModelAdmin):
+    list_display = ("cart", "product", "quantity", "updated_at")
+    autocomplete_fields = ("cart", "product")
 
 
 # --- Products & catalog -------------------------------------------------------
@@ -523,6 +549,12 @@ class ProductReviewAdmin(admin.ModelAdmin):
     list_display = ("product", "customer", "rating", "status", "created_at")
     list_filter = ("status", "rating")
     autocomplete_fields = ("product", "customer")
+
+
+@admin.register(models.ProductWishlist)
+class ProductWishlistAdmin(admin.ModelAdmin):
+    list_display = ("user", "product", "created_at")
+    autocomplete_fields = ("user", "product")
 
 
 # --- Vendor -------------------------------------------------------------------
@@ -661,6 +693,29 @@ class LoyaltyRuleAdmin(admin.ModelAdmin):
     list_filter = ("status", "event")
 
 
+@admin.register(models.LoyaltySettings)
+class LoyaltySettingsAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "loyalty_program_enabled",
+        "points_per_currency_unit",
+        "redeem_points_per_currency",
+        "min_redeem_points",
+        "updated_at",
+    )
+
+    def has_add_permission(self, request):
+        return not models.LoyaltySettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        if models.LoyaltySettings.objects.exists():
+            return redirect(reverse("admin:core_loyaltysettings_change", args=(1,)))
+        return super().changelist_view(request, extra_context)
+
+
 # --- Family -------------------------------------------------------------------
 
 @admin.register(models.FamilyGroup)
@@ -691,6 +746,31 @@ class FamilyInviteAdmin(admin.ModelAdmin):
     list_filter = ("status", "invite_method", "role")
     search_fields = ("token", "phone")
     autocomplete_fields = ("group", "invited_by")
+
+
+@admin.register(models.FamilyWalletCategory)
+class FamilyWalletCategoryAdmin(admin.ModelAdmin):
+    list_display = ("group", "name", "sort_order", "created_at")
+    autocomplete_fields = ("group",)
+    formfield_overrides = {
+        JSONField: {"widget": admin.widgets.AdminTextareaWidget(attrs={"rows": 4, "cols": 80})},
+    }
+
+
+@admin.register(models.FamilyPortalJoinLink)
+class FamilyPortalJoinLinkAdmin(admin.ModelAdmin):
+    list_display = ("group", "token", "default_role", "created_by", "expires_at", "revoked_at", "created_at")
+    list_filter = ("default_role",)
+    search_fields = ("token", "title", "group__name")
+    autocomplete_fields = ("group", "created_by")
+
+
+@admin.register(models.FamilyJoinRequest)
+class FamilyJoinRequestAdmin(admin.ModelAdmin):
+    list_display = ("name", "phone", "group", "status", "role", "source", "created_at")
+    list_filter = ("status", "source", "role")
+    search_fields = ("name", "phone", "email", "group__name")
+    autocomplete_fields = ("group", "requested_by", "invite", "join_link", "reviewed_by")
 
 
 @admin.register(models.FamilyGroupPermission)
@@ -801,6 +881,23 @@ class ShippingZoneAdmin(admin.ModelAdmin):
     search_fields = ("name", "areas")
 
 
+@admin.register(models.ShippingSettings)
+class ShippingSettingsAdmin(admin.ModelAdmin):
+    list_display = ("id", "seller_pays_shipping", "free_shipping_global", "default_zone", "updated_at")
+    autocomplete_fields = ("default_zone",)
+
+    def has_add_permission(self, request):
+        return not models.ShippingSettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        if models.ShippingSettings.objects.exists():
+            return redirect(reverse("admin:core_shippingsettings_change", args=(1,)))
+        return super().changelist_view(request, extra_context)
+
+
 @admin.register(models.WeightRule)
 class WeightRuleAdmin(admin.ModelAdmin):
     list_display = ("zone", "min_weight", "max_weight", "rate_per_kg")
@@ -866,6 +963,23 @@ class ReelInteractionAdmin(admin.ModelAdmin):
     list_display = ("reel", "user", "type", "created_at")
     list_filter = ("type",)
     autocomplete_fields = ("reel", "user")
+
+
+@admin.register(models.ReelView)
+class ReelViewAdmin(admin.ModelAdmin):
+    list_display = ("reel", "user", "created_at")
+    autocomplete_fields = ("reel", "user")
+
+
+@admin.register(models.ReelComment)
+class ReelCommentAdmin(admin.ModelAdmin):
+    list_display = ("id", "reel", "user", "parent_id", "created_at")
+    search_fields = ("body",)
+    autocomplete_fields = ("reel", "user", "parent")
+
+    @admin.display(description="Parent")
+    def parent_id(self, obj):
+        return obj.parent_id
 
 
 # --- Staff / audit ------------------------------------------------------------
@@ -995,6 +1109,30 @@ class NotificationAdmin(admin.ModelAdmin):
 
 
 # --- Settings (singletons) -----------------------------------------------------
+
+@admin.register(models.SecuritySettings)
+class SecuritySettingsAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "otp_sensitive_crud",
+        "rbac_enforced",
+        "duplicate_prevention",
+        "auto_lock_failed_logins",
+        "ip_rate_limiting",
+        "updated_at",
+    )
+
+    def has_add_permission(self, request):
+        return not models.SecuritySettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        if models.SecuritySettings.objects.exists():
+            return redirect(reverse("admin:core_securitysettings_change", args=(1,)))
+        return super().changelist_view(request, extra_context)
+
 
 @admin.register(models.SiteSettings)
 class SiteSettingsAdmin(admin.ModelAdmin):
