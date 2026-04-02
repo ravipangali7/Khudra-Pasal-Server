@@ -10,7 +10,17 @@ urlpatterns = [
     path("auth/change-password/", vendor_resources.vendor_change_password, name="vendor-change-password"),
     path("me/", vendor_views.vendor_me, name="vendor-me"),
     path("summary/", vendor_views.vendor_summary, name="vendor-summary"),
+    path(
+        "notifications/mark-read/",
+        vendor_views.vendor_notifications_mark_read,
+        name="vendor-notifications-mark-read",
+    ),
     path("notifications/", vendor_views.vendor_notifications_list, name="vendor-notifications"),
+    path(
+        "notifications/<int:pk>/",
+        vendor_views.vendor_notification_detail_write,
+        name="vendor-notifications-write",
+    ),
     path("profile/", vendor_resources.vendor_profile, name="vendor-profile"),
     path("settings/", vendor_resources.vendor_settings, name="vendor-settings"),
     path("bank-detail/", vendor_resources.vendor_bank_detail, name="vendor-bank"),

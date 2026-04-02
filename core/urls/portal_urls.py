@@ -90,6 +90,11 @@ urlpatterns = [
         name="portal-notifications",
     ),
     path(
+        "notifications/<int:pk>/",
+        portal_views.portal_notification_detail_write,
+        name="portal-notifications-write",
+    ),
+    path(
         "family/children/",
         portal_views.portal_family_children,
         name="portal-family-children",

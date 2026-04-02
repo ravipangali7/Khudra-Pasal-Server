@@ -877,6 +877,17 @@ def portal_notifications_mark_read(request):
     return Response({"ok": True, "updated": updated})
 
 
+@api_view(["DELETE"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated, IsPortalShopper])
+def portal_notification_detail_write(request, pk):
+    row = Notification.objects.filter(pk=pk, recipient=request.user).first()
+    if not row:
+        return Response({"detail": "Not found."}, status=404)
+    row.delete()
+    return Response({"ok": True})
+
+
 @api_view(["GET"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated, IsPortalParent])

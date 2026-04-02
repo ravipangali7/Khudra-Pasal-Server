@@ -1,5 +1,6 @@
 """Vendor portal API — authenticated vendor users (Token)."""
 
+from collections.abc import Mapping
 from datetime import datetime, time
 from decimal import Decimal
 
@@ -339,6 +340,54 @@ def vendor_notifications_list(request):
         for n in qs
     ]
     return Response({"results": rows})
+
+
+@api_view(["POST"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def vendor_notifications_mark_read(request):
+    vendor, err = vendor_or_error(request)
+    if err:
+        return err
+    del vendor
+    u = request.user
+    data = request.data if isinstance(request.data, Mapping) else {}
+    mark_all = data.get("all")
+    if mark_all in (True, "true", "1", 1):
+        updated = Notification.objects.filter(recipient=u, is_read=False).update(is_read=True)
+        return Response({"ok": True, "updated": updated})
+    raw_ids = data.get("ids")
+    if raw_ids is None:
+        return Response({"detail": "Provide all: true or ids: [...]"}, status=400)
+    if not isinstance(raw_ids, list):
+        return Response({"detail": "ids must be a list"}, status=400)
+    pks = []
+    for x in raw_ids:
+        try:
+            pks.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    if not pks:
+        return Response({"ok": True, "updated": 0})
+    updated = Notification.objects.filter(recipient=u, pk__in=pks, is_read=False).update(
+        is_read=True
+    )
+    return Response({"ok": True, "updated": updated})
+
+
+@api_view(["DELETE"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def vendor_notification_detail_write(request, pk):
+    vendor, err = vendor_or_error(request)
+    if err:
+        return err
+    del vendor
+    row = Notification.objects.filter(pk=pk, recipient=request.user).first()
+    if not row:
+        return Response({"detail": "Not found."}, status=404)
+    row.delete()
+    return Response({"ok": True})
 
 
 @api_view(["GET"])
