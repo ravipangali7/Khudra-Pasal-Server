@@ -98,7 +98,7 @@ AUTHENTICATION_BACKENDS = (
 # SPA URL after OAuth (no trailing slash). OAuth callbacks redirect here with ?token=…
 # Prefer FRONTEND_URL; BASE_URL is an alias for deployments that only set one public site origin.
 FRONTEND_URL = (
-    os.environ.get("FRONTEND_URL", "").strip()
+    os.environ.get("FRONTEND_URL", "https://khudrapasal.360winx.com").strip()
     or os.environ.get("BASE_URL", "").strip()
     or "http://localhost:8080"
 )
