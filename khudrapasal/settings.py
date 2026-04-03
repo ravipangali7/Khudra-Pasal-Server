@@ -96,7 +96,12 @@ AUTHENTICATION_BACKENDS = (
 )
 
 # SPA URL after OAuth (no trailing slash). OAuth callbacks redirect here with ?token=…
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:8080")
+# Prefer FRONTEND_URL; BASE_URL is an alias for deployments that only set one public site origin.
+FRONTEND_URL = (
+    os.environ.get("FRONTEND_URL", "").strip()
+    or os.environ.get("BASE_URL", "").strip()
+    or "http://localhost:8080"
+)
 # Public origin of this API for OAuth redirect_uri (e.g. https://api.example.com). Defaults to request host.
 OAUTH_REDIRECT_BASE = os.environ.get("OAUTH_REDIRECT_BASE", "").rstrip("/") or None
 
