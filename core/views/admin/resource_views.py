@@ -74,6 +74,7 @@ from core.models import (
 )
 from core.serializers import ReelPublicSerializer
 from core.services import audit_service, product_service, support_notification_service, support_ticket_service
+from core.services.shipping_quote import compute_shipping_fee
 from core.services.base import new_wallet_txn_id
 from core.services.reel_boost_patch import apply_reel_boost_from_data
 from core.services.vendor_service import ensure_vendor_wallet
@@ -136,25 +137,6 @@ def _paginate(request, queryset):
     paginator = AdminPagination()
     page = paginator.paginate_queryset(queryset, request)
     return paginator, page
-
-
-def _weight_rule_band_values_for_zone(zone, weight: float):
-    """
-    Matching WeightRule row as floats. Using Cast avoids SQLite DecimalField converters that can
-    raise InvalidOperation on some stored values.
-    """
-    return (
-        WeightRule.objects.filter(zone=zone)
-        .annotate(
-            min_w=Cast("min_weight", FloatField()),
-            max_w=Cast("max_weight", FloatField()),
-            rpk=Cast("rate_per_kg", FloatField()),
-        )
-        .filter(min_w__lte=weight, max_w__gte=weight)
-        .values("rpk", "min_w", "max_w")
-        .order_by("min_w")
-        .first()
-    )
 
 
 def _format_rs(amount) -> str:
@@ -5155,6 +5137,7 @@ def admin_shipping_settings_singleton(request):
                 "seller_pays_shipping": sh.seller_pays_shipping,
                 "free_shipping_global": sh.free_shipping_global,
                 "default_zone_id": str(sh.default_zone_id) if sh.default_zone_id else "",
+                "default_checkout_weight_kg": float(sh.default_checkout_weight_kg),
             }
         )
     if "seller_pays_shipping" in request.data:
@@ -5178,6 +5161,17 @@ def admin_shipping_settings_singleton(request):
         else:
             z = ShippingZone.objects.filter(pk=raw).first()
             sh.default_zone = z
+    if "default_checkout_weight_kg" in request.data:
+        raw = request.data.get("default_checkout_weight_kg")
+        try:
+            w = Decimal(str(raw))
+            if w < 0:
+                w = Decimal("0")
+            if w > Decimal("500"):
+                w = Decimal("500")
+            sh.default_checkout_weight_kg = w.quantize(Decimal("0.001"))
+        except Exception:
+            pass
     sh.save()
     return Response({"ok": True})
 
@@ -5199,100 +5193,13 @@ def admin_shipping_calculate(request):
     order_total_dec = _to_decimal(request.data.get("order_total") or 0)
     method_id = request.data.get("method_id")
     method = ShippingMethod.objects.filter(pk=method_id).first() if method_id else None
-    shipping_fee = Decimal("0")
-    breakdown = []
-    if sh.free_shipping_global and order_total_dec > 0:
-        shipping_fee = Decimal("0")
-        breakdown.append({"step": "global_free", "amount": 0})
-    else:
-        if method:
-            if method.type == ShippingMethod.Type.FREE:
-                if order_total_dec >= method.free_threshold:
-                    shipping_fee = Decimal("0")
-                    breakdown.append(
-                        {
-                            "step": "method_free_threshold",
-                            "amount": 0,
-                            "threshold": float(method.free_threshold),
-                        }
-                    )
-                else:
-                    shipping_fee = method.cost
-                    breakdown.append({"step": "method_free_not_met_flat", "amount": float(method.cost)})
-            elif method.type == ShippingMethod.Type.FLAT:
-                shipping_fee = method.cost
-                breakdown.append({"step": "flat", "amount": float(method.cost)})
-            elif method.type == ShippingMethod.Type.PICKUP:
-                shipping_fee = Decimal("0")
-                breakdown.append({"step": "pickup", "amount": 0})
-            elif method.type == ShippingMethod.Type.WEIGHT:
-                wr = _weight_rule_band_values_for_zone(zone, weight)
-                if wr:
-                    w_fee = Decimal(str(weight)) * Decimal(str(wr["rpk"]))
-                    shipping_fee = zone.flat_rate + w_fee
-                    breakdown.append(
-                        {
-                            "step": "zone_flat",
-                            "amount": float(zone.flat_rate),
-                        }
-                    )
-                    breakdown.append(
-                        {
-                            "step": "weight_band",
-                            "amount": float(w_fee),
-                            "min_weight": float(wr["min_w"]),
-                            "max_weight": float(wr["max_w"]),
-                            "weight_kg": weight,
-                            "rate_per_kg": float(wr["rpk"]),
-                        }
-                    )
-                else:
-                    shipping_fee = zone.flat_rate
-                    breakdown.append(
-                        {
-                            "step": "zone_flat_no_weight_rule",
-                            "amount": float(zone.flat_rate),
-                        }
-                    )
-        else:
-            wr = _weight_rule_band_values_for_zone(zone, weight)
-            if wr:
-                w_fee = Decimal(str(weight)) * Decimal(str(wr["rpk"]))
-                shipping_fee = zone.flat_rate + w_fee
-                breakdown.append({"step": "zone_flat", "amount": float(zone.flat_rate)})
-                breakdown.append(
-                    {
-                        "step": "weight_band",
-                        "amount": float(w_fee),
-                        "min_weight": float(wr["min_w"]),
-                        "max_weight": float(wr["max_w"]),
-                        "weight_kg": weight,
-                        "rate_per_kg": float(wr["rpk"]),
-                    }
-                )
-            else:
-                shipping_fee = zone.flat_rate
-                breakdown.append({"step": "zone_flat_only", "amount": float(zone.flat_rate)})
-
-        def _subtotal_from_breakdown_so_far() -> Decimal:
-            s = Decimal("0")
-            for row in breakdown:
-                a = row.get("amount")
-                if a is not None:
-                    s += Decimal(str(a))
-            return s
-
-        if zone.free_above is not None and order_total_dec >= zone.free_above:
-            subtotal_before_free = _subtotal_from_breakdown_so_far()
-            shipping_fee = Decimal("0")
-            breakdown.append(
-                {
-                    "step": "zone_free_above",
-                    "order_total": float(order_total_dec),
-                    "free_above": float(zone.free_above),
-                    "subtotal_before_free": float(subtotal_before_free),
-                }
-            )
+    shipping_fee, breakdown = compute_shipping_fee(
+        sh,
+        zone,
+        order_total=order_total_dec,
+        weight_kg=weight,
+        method=method,
+    )
     if sh.seller_pays_shipping:
         breakdown.append({"step": "seller_pays", "note": "fee shown but borne by seller"})
 

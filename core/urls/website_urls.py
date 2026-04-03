@@ -15,6 +15,8 @@ urlpatterns = [
     ),
     path("search-placeholders/", home_views.search_placeholders_list, name="website-search-placeholders"),
     path("store-info/", home_views.store_info, name="website-store-info"),
+    path("shipping-zones/", home_views.shipping_zones_list, name="website-shipping-zones"),
+    path("shipping-quote/", home_views.shipping_quote, name="website-shipping-quote"),
     path("brands/", home_views.brands_list, name="website-brands"),
     path("categories/", home_views.categories_list, name="website-categories"),
     path("catalog/", home_views.catalog_list, name="website-catalog"),

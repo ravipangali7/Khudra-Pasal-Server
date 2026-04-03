@@ -1020,6 +1020,12 @@ class ShippingSettings(models.Model):
         on_delete=models.SET_NULL,
         related_name="+",
     )
+    default_checkout_weight_kg = models.DecimalField(
+        max_digits=8,
+        decimal_places=3,
+        default=Decimal("1.000"),
+        help_text="Used for storefront quotes when cart has no per-product weights.",
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -1589,6 +1595,13 @@ class OrderItem(models.Model):
 class DeliveryAddress(models.Model):
     order = models.OneToOneField(
         Order, on_delete=models.CASCADE, related_name="delivery_address"
+    )
+    shipping_zone = models.ForeignKey(
+        "ShippingZone",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="delivery_addresses",
     )
     full_name = models.CharField(max_length=150)
     mobile = models.CharField(max_length=15)

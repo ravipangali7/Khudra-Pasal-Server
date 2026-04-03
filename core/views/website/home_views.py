@@ -1,4 +1,5 @@
 from collections import defaultdict
+from decimal import Decimal, InvalidOperation
 
 from django.db.models import Count, DecimalField, ExpressionWrapper, F, Prefetch, Q
 from django.shortcuts import get_object_or_404
@@ -27,10 +28,13 @@ from core.models import (
     Reel,
     ReelComment,
     ReelInteraction,
+    ShippingSettings,
+    ShippingZone,
     SiteSettings,
     Vendor,
 )
 from core.services import reel_service
+from core.services.shipping_quote import compute_shipping_fee
 from core.views.vendor.common import vendor_or_error
 from core.views.admin.admin_write_utils import absolute_media_url
 from core.serializers import (
@@ -176,6 +180,15 @@ def search_placeholders_list(request):
     return Response(out)
 
 
+def _public_social_links_from_site(site: SiteSettings) -> dict[str, str]:
+    raw = site.admin_extras or {}
+    social = raw.get("social") if isinstance(raw, dict) else None
+    if not isinstance(social, dict):
+        social = {}
+    keys = ("facebook", "instagram", "twitter", "youtube", "tiktok")
+    return {k: str(social.get(k) or "").strip() for k in keys}
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def store_info(request):
@@ -193,6 +206,77 @@ def store_info(request):
             "currency": site.currency,
             "footer_text": site.footer_text,
             "site_logo_url": logo_url,
+            "social_links": _public_social_links_from_site(site),
+        }
+    )
+
+
+def _decimal_from_request(v, default: Decimal = Decimal("0")) -> Decimal:
+    try:
+        return Decimal(str(v))
+    except (InvalidOperation, TypeError, ValueError):
+        return default
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def shipping_zones_list(request):
+    rows = ShippingZone.objects.filter(status=ShippingZone.Status.ACTIVE).order_by("name")
+    return Response(
+        [
+            {
+                "id": str(z.pk),
+                "name": z.name,
+                "areas": z.areas or "",
+            }
+            for z in rows
+        ]
+    )
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def shipping_quote(request):
+    sh = ShippingSettings.load()
+    raw_zone = request.data.get("zone_id") or request.data.get("zone")
+    if not raw_zone and sh.default_zone_id:
+        raw_zone = sh.default_zone_id
+    zone = ShippingZone.objects.filter(pk=raw_zone).first() if raw_zone else None
+    if not zone or zone.status != ShippingZone.Status.ACTIVE:
+        return Response(
+            {"detail": "Invalid or inactive zone_id. Choose a delivery zone."},
+            status=400,
+        )
+    order_total = _decimal_from_request(request.data.get("order_total"), Decimal("0"))
+    if order_total < 0:
+        order_total = Decimal("0")
+
+    raw_w = request.data.get("weight_kg")
+    if raw_w is not None and str(raw_w).strip() != "":
+        try:
+            weight_kg = float(raw_w)
+        except (TypeError, ValueError):
+            weight_kg = float(sh.default_checkout_weight_kg)
+    else:
+        weight_kg = float(sh.default_checkout_weight_kg)
+    weight_kg = max(0.0, min(500.0, weight_kg))
+
+    fee, breakdown = compute_shipping_fee(
+        sh,
+        zone,
+        order_total=order_total,
+        weight_kg=weight_kg,
+        method=None,
+    )
+    customer_fee = Decimal("0") if sh.seller_pays_shipping else fee
+    return Response(
+        {
+            "fee": float(customer_fee),
+            "currency": "NPR",
+            "zone": {"id": str(zone.pk), "name": zone.name},
+            "weight_kg": weight_kg,
+            "breakdown": breakdown,
+            "seller_pays_shipping": sh.seller_pays_shipping,
         }
     )
 

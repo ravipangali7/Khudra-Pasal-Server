@@ -53,6 +53,8 @@ from core.models import (
     Reel,
     ReelInteraction,
     Refund,
+    ShippingSettings,
+    ShippingZone,
     SiteSettings,
     SupportTicket,
     SupportTicketMessage,
@@ -100,6 +102,7 @@ from core.services.wallet_txn_signed import (
     sum_monthly_spent_from_wallet,
 )
 from core.services.order_service import pay_with_wallet
+from core.services.shipping_quote import compute_shipping_fee
 from core.services import refund_notification_service, support_notification_service, support_ticket_service
 from core.views.admin.admin_write_utils import absolute_media_url, validation_error
 from core.views.admin.resource_views import _to_decimal
@@ -3256,8 +3259,44 @@ def portal_orders_checkout(request):
                 groups[p.seller_id].append((p, qty, unit_price, line_total))
 
             delivery_fee_total = Decimal("0")
-            if want_delivery and cart_subtotal < Decimal("500"):
-                delivery_fee_total = Decimal("50.00")
+            checkout_zone: ShippingZone | None = None
+            _ship_raw = request.data.get("delivery")
+            _d = _ship_raw if isinstance(_ship_raw, dict) else {}
+            _top = request.data
+            if want_delivery:
+                sh = ShippingSettings.load()
+                raw_zid = _top.get("shipping_zone_id") or _d.get("shipping_zone_id")
+                if not raw_zid and sh.default_zone_id:
+                    raw_zid = sh.default_zone_id
+                checkout_zone = (
+                    ShippingZone.objects.filter(pk=raw_zid).first() if raw_zid else None
+                )
+                if not checkout_zone or checkout_zone.status != ShippingZone.Status.ACTIVE:
+                    return Response(
+                        {
+                            "detail": "Active shipping_zone_id is required for delivery.",
+                        },
+                        status=400,
+                    )
+                raw_w = _top.get("weight_kg") or _d.get("weight_kg")
+                if raw_w is not None and str(raw_w).strip() != "":
+                    try:
+                        weight_kg = float(raw_w)
+                    except (TypeError, ValueError):
+                        weight_kg = float(sh.default_checkout_weight_kg)
+                else:
+                    weight_kg = float(sh.default_checkout_weight_kg)
+                weight_kg = max(0.0, min(500.0, weight_kg))
+                raw_fee, _ = compute_shipping_fee(
+                    sh,
+                    checkout_zone,
+                    order_total=cart_subtotal,
+                    weight_kg=weight_kg,
+                    method=None,
+                )
+                delivery_fee_total = (
+                    Decimal("0") if sh.seller_pays_shipping else raw_fee
+                )
 
             raw_pay = request.data.get("payment_method")
             if raw_pay is None or not str(raw_pay).strip():
@@ -3386,6 +3425,7 @@ def portal_orders_checkout(request):
                             lng_dec = None
                     DeliveryAddress.objects.create(
                         order=order,
+                        shipping_zone=checkout_zone,
                         full_name=full_name[:150],
                         mobile=mobile[:15],
                         secondary_contact=(d.get("secondary_contact") or "")[:15],
