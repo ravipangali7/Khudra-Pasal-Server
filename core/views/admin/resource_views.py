@@ -38,6 +38,7 @@ from core.models import (
     FlashDeal,
     FlashDealProduct,
     FlaggedActivity,
+    KYCDocument,
     LoyaltyRule,
     LoyaltySettings,
     Notification,
@@ -77,6 +78,8 @@ from core.services import audit_service, product_service, support_notification_s
 from core.services.shipping_quote import compute_shipping_fee
 from core.services.base import new_wallet_txn_id
 from core.services.reel_boost_patch import apply_reel_boost_from_data
+from core.services.kyc_portal import supersede_non_approved_kyc, validate_kyc_upload_file
+from core.services.kyc_service import sync_user_kyc_status
 from core.services.vendor_service import ensure_vendor_wallet
 from core.views.admin.admin_access import (
     enforce_admin_api_access,
@@ -632,6 +635,7 @@ def admin_vendors_list(request):
 @api_view(["POST"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, MultiPartParser, FormParser])
 def admin_vendor_create(request):
     if err := _forbidden(request):
         return err
@@ -646,18 +650,48 @@ def admin_vendor_create(request):
     if status not in dict(Vendor.Status.choices):
         return validation_error("invalid status")
 
+    def _bool_field(key: str, default: bool) -> bool:
+        if key not in request.data:
+            return default
+        v = request.data.get(key)
+        return v in (True, "true", "1", 1, "True")
+
+    kyc_type = (request.data.get("kyc_document_type") or "").strip()
+    approve_kyc = _bool_field("kyc_approve", False) or _bool_field("approve_kyc", False)
+    kyc_img = request.FILES.get("kyc_document_image") or request.FILES.get("document_image")
+    kyc_pdf = request.FILES.get("kyc_document_file") or request.FILES.get("document_file")
+    kyc_back = request.FILES.get("kyc_document_back") or request.FILES.get("document_back")
+
+    if kyc_type and kyc_type not in {c[0] for c in KYCDocument.DocumentType.choices}:
+        return validation_error("invalid kyc_document_type", field="kyc_document_type")
+    if kyc_img or kyc_pdf or kyc_back:
+        if not kyc_type:
+            return validation_error(
+                "kyc_document_type is required when uploading KYC files",
+                field="kyc_document_type",
+            )
+        for f, name in ((kyc_img, "document_image"), (kyc_back, "document_back"), (kyc_pdf, "document_file")):
+            if f:
+                err = validate_kyc_upload_file(f, name)
+                if err:
+                    return err
+        if not kyc_img and not kyc_pdf:
+            return validation_error(
+                "Provide kyc_document_image or kyc_document_file",
+                field="kyc_document_image",
+            )
+    elif kyc_type and not (kyc_img or kyc_pdf) and not approve_kyc:
+        return validation_error(
+            "Provide kyc_document_image or kyc_document_file when kyc_document_type is set",
+            field="kyc_document_image",
+        )
+
     base_slug = slugify(store_name)[:180] or "vendor"
     store_slug = base_slug
     suffix = 0
     while Vendor.objects.filter(store_slug=store_slug).exists():
         suffix += 1
         store_slug = f"{base_slug}-{suffix}"
-
-    def _bool_field(key: str, default: bool) -> bool:
-        if key not in request.data:
-            return default
-        v = request.data.get(key)
-        return v in (True, "true", "1", 1, "True")
 
     commission_rate = _to_decimal(request.data.get("commission_rate"), "10")
     can_post = _bool_field("can_post", True)
@@ -696,6 +730,31 @@ def admin_vendor_create(request):
         vendor.save()
         if status == Vendor.Status.APPROVED:
             ensure_vendor_wallet(vendor)
+
+        if approve_kyc and not kyc_img and not kyc_pdf:
+            User.objects.filter(pk=user.pk).update(kyc_status=User.KYCStatus.VERIFIED)
+        elif kyc_img or kyc_pdf:
+            id_num = (request.data.get("kyc_document_id_number") or "").strip()[:100]
+            supersede_non_approved_kyc(user, kyc_type)
+            kyc_row = KYCDocument(
+                user=user,
+                document_type=kyc_type,
+                status=KYCDocument.Status.APPROVED if approve_kyc else KYCDocument.Status.PENDING,
+                document_id_number=id_num,
+            )
+            if kyc_img:
+                kyc_row.document_image = kyc_img
+            if kyc_pdf:
+                kyc_row.document_file = kyc_pdf
+            if kyc_back:
+                kyc_row.document_back = kyc_back
+            if approve_kyc:
+                kyc_row.reviewer = request.user
+                kyc_row.reviewed_at = timezone.now()
+            kyc_row.save()
+            sync_user_kyc_status(user)
+            if approve_kyc:
+                User.objects.filter(pk=user.pk).update(kyc_status=User.KYCStatus.VERIFIED)
 
     return Response({"id": str(vendor.pk)}, status=201)
 
