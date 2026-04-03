@@ -79,6 +79,7 @@ from core.serializers import (
     PortalProductRestrictionUpsertSerializer,
     ReelPublicSerializer,
 )
+from core.services.child_shopping_guard import validate_child_may_purchase_product
 from core.services import (
     family_join_request_service,
     family_member_provision_service,
@@ -3253,6 +3254,10 @@ def portal_orders_checkout(request):
                         {"detail": f"Insufficient stock for {p.name}."},
                         status=400,
                     )
+                try:
+                    validate_child_may_purchase_product(u, p)
+                except ValueError as e:
+                    return Response({"detail": str(e)}, status=400)
                 unit_price = p.discount_price if p.discount_price is not None else p.price
                 line_total = (unit_price * qty).quantize(Decimal("0.01"))
                 cart_subtotal += line_total

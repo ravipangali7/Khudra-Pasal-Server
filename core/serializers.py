@@ -388,6 +388,7 @@ class ReelPublicSerializer(serializers.ModelSerializer):
             "in_stock": p.stock > 0,
             "rating": float(p.rating or 0),
             "reviews": p.review_count,
+            "category_slug": p.category.slug,
         }
 
     def get_comments_count(self, obj):

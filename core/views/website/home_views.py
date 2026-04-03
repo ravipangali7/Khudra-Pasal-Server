@@ -35,6 +35,7 @@ from core.models import (
     Vendor,
 )
 from core.services import reel_service
+from core.services.child_shopping_guard import validate_child_may_purchase_product
 from core.services.shipping_quote import compute_shipping_fee
 from core.views.vendor.common import vendor_or_error
 from core.views.admin.admin_write_utils import absolute_media_url
@@ -868,6 +869,10 @@ def cart_item_add(request):
     product = Product.objects.filter(pk=product_id, status=Product.Status.ACTIVE).first()
     if not product:
         return Response({"detail": "Product not found."}, status=404)
+    try:
+        validate_child_may_purchase_product(request.user, product)
+    except ValueError as e:
+        return Response({"detail": str(e)}, status=400)
     cart, _ = Cart.objects.get_or_create(user=request.user)
     item, created = CartItem.objects.get_or_create(
         cart=cart,
@@ -896,6 +901,10 @@ def cart_item_detail(request, pk):
     quantity = int(request.data.get("quantity") or 0)
     if quantity < 1:
         return Response({"detail": "quantity must be at least 1."}, status=400)
+    try:
+        validate_child_may_purchase_product(request.user, item.product)
+    except ValueError as e:
+        return Response({"detail": str(e)}, status=400)
     item.quantity = quantity
     item.save(update_fields=["quantity", "updated_at"])
     return Response({"id": item.pk, "quantity": item.quantity})
