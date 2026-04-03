@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 from django.db.models import Count, DecimalField, ExpressionWrapper, F, Prefetch, Q
 from django.shortcuts import get_object_or_404
 from rest_framework.authentication import SessionAuthentication, TokenAuthentication
+from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -374,11 +375,20 @@ def products_all_vendors_list(request):
 
 
 def _user_has_delivered_paid_purchase(user, product: Product) -> bool:
+    """
+    Eligible to review: delivered line item and either paid online/wallet, or COD (pending until
+    settlement) — delivered implies collection for COD.
+    """
     return OrderItem.objects.filter(
         product=product,
         order__customer=user,
         order__status=Order.Status.DELIVERED,
-        order__payment_status=Order.PaymentStatus.PAID,
+    ).filter(
+        Q(order__payment_status=Order.PaymentStatus.PAID)
+        | Q(
+            order__payment_method=Order.PaymentMethod.COD,
+            order__payment_status=Order.PaymentStatus.PENDING,
+        )
     ).exists()
 
 
@@ -403,7 +413,7 @@ def product_detail(request, identifier):
 
 
 @api_view(["GET", "POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes([JWTAuthentication, TokenAuthentication, SessionAuthentication])
 @permission_classes([AllowAny])
 def product_reviews_list(request, identifier):
     queryset = Product.objects.filter(status=Product.Status.ACTIVE)
@@ -435,7 +445,7 @@ def product_reviews_list(request, identifier):
     if not _user_has_delivered_paid_purchase(request.user, product):
         return Response(
             {
-                "detail": "You can only review products from a delivered order with paid payment.",
+                "detail": "You can only review products from a delivered order (paid or COD on delivery).",
             },
             status=400,
         )
@@ -577,6 +587,13 @@ def public_reels_queryset_for_request(request):
     return qs
 
 
+def _apply_only_direct_mp4_param(qs, request):
+    raw = str(request.query_params.get("only_direct_mp4", "")).lower()
+    if raw in ("1", "true", "yes"):
+        return qs.filter(platform=Reel.Platform.DIRECT_MP4)
+    return qs
+
+
 def order_public_reels(queryset, tab: str):
     """
     trending: engagement (likes, views, shares) then recency.
@@ -624,9 +641,9 @@ def _reel_for_user_interaction(request, pk: int):
 @permission_classes([AllowAny])
 def reels_list(request):
     tab = request.query_params.get("tab") or "trending"
-    queryset = annotate_reels_comments(
-        order_public_reels(public_reels_queryset_for_request(request), tab)
-    )
+    qs = public_reels_queryset_for_request(request)
+    qs = _apply_only_direct_mp4_param(qs, request)
+    queryset = annotate_reels_comments(order_public_reels(qs, tab))
 
     paginator = ProductPagination()
     page = paginator.paginate_queryset(queryset, request)
@@ -638,9 +655,9 @@ def reels_list(request):
 @permission_classes([AllowAny])
 def reels_trending_list(request):
     """Trending reels; optional vendor_ids / vendor_id / vendor_slug narrow the set (same as /website/reels/)."""
-    queryset = annotate_reels_comments(
-        order_public_reels(public_reels_queryset_for_request(request), "trending")
-    )
+    qs = public_reels_queryset_for_request(request)
+    qs = _apply_only_direct_mp4_param(qs, request)
+    queryset = annotate_reels_comments(order_public_reels(qs, "trending"))
 
     paginator = ProductPagination()
     page = paginator.paginate_queryset(queryset, request)
@@ -714,6 +731,7 @@ def reels_by_vendor_list(request, vendor_id: int):
             return paginator.get_paginated_response(serializer.data)
 
     qs = _public_reels_base_queryset().filter(vendor_id=vendor_id)
+    qs = _apply_only_direct_mp4_param(qs, request)
     queryset = annotate_reels_comments(order_public_reels(qs, tab))
     paginator = ProductPagination()
     page = paginator.paginate_queryset(queryset, request)

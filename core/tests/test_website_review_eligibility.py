@@ -143,3 +143,52 @@ class WebsiteReviewEligibilityTests(TestCase):
         r2 = self.client.get(f"/api/website/products/{self.product.slug}/")
         self.assertEqual(r2.status_code, status.HTTP_200_OK)
         self.assertFalse(r2.data.get("can_submit_review"))
+
+    def test_post_review_allowed_delivered_cod_payment_pending(self):
+        order = Order.objects.create(
+            order_number=_gen_order_number(),
+            customer=self.user,
+            seller=self.vendor,
+            status=Order.Status.DELIVERED,
+            payment_method=Order.PaymentMethod.COD,
+            payment_status=Order.PaymentStatus.PENDING,
+            subtotal=Decimal("50.00"),
+            delivery_fee=Decimal("0"),
+            discount_amount=Decimal("0"),
+            total=Decimal("50.00"),
+        )
+        OrderItem.objects.create(
+            order=order,
+            product=self.product,
+            quantity=1,
+            unit_price=Decimal("50.00"),
+            total_price=Decimal("50.00"),
+        )
+        r = self._post_review()
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED)
+        r_detail = self.client.get(f"/api/website/products/{self.product.slug}/")
+        self.assertEqual(r_detail.status_code, status.HTTP_200_OK)
+        self.assertFalse(r_detail.data.get("can_submit_review"))
+
+    def test_post_review_rejected_delivered_non_cod_pending_payment(self):
+        order = Order.objects.create(
+            order_number=_gen_order_number(),
+            customer=self.user,
+            seller=self.vendor,
+            status=Order.Status.DELIVERED,
+            payment_method=Order.PaymentMethod.ESEWA,
+            payment_status=Order.PaymentStatus.PENDING,
+            subtotal=Decimal("50.00"),
+            delivery_fee=Decimal("0"),
+            discount_amount=Decimal("0"),
+            total=Decimal("50.00"),
+        )
+        OrderItem.objects.create(
+            order=order,
+            product=self.product,
+            quantity=1,
+            unit_price=Decimal("50.00"),
+            total_price=Decimal("50.00"),
+        )
+        r = self._post_review()
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
