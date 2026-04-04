@@ -49,6 +49,23 @@ def get_category_shared_wallet(
     )
 
 
+def ensure_category_shared_wallet(
+    group: FamilyGroup, category: FamilyWalletCategory, leader: User
+) -> Wallet:
+    """Return the active shared bucket for a category, creating it if missing (legacy data)."""
+    w = get_category_shared_wallet(group, category)
+    if w:
+        return w
+    return Wallet.objects.create(
+        owner=leader,
+        type=Wallet.Type.SHARED,
+        label=category.name,
+        family_group=group,
+        family_category=category,
+        status=Wallet.Status.ACTIVE,
+    )
+
+
 def get_member_family_wallet(group: FamilyGroup, user: User) -> Wallet | None:
     fm = (
         FamilyMember.objects.filter(group=group, user=user)

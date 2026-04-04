@@ -345,9 +345,9 @@ def _family_member_portal_row(
     spent_by_wallet: dict[int, Decimal] | None = None,
     online_user_ids: set[int] | None = None,
 ) -> dict:
-    bal = _wallet_balance(m.user, family_group=group)
     ginfo = {"id": str(group.pk), "name": group.name}
     mw = family_portal_wallet_service.get_member_family_wallet(group, m.user)
+    bal = float(mw.balance) if mw else _wallet_balance(m.user, family_group=group)
     if mw and spent_by_wallet is not None:
         spent = float(spent_by_wallet.get(mw.pk, Decimal("0")))
     elif mw:
@@ -463,16 +463,19 @@ def _family_portal_overview_payload(user: User, request=None) -> dict:
                 "image_url": "",
             }
         )
+    leader_user = primary.leader
     for cat in FamilyWalletCategory.objects.filter(group=primary).order_by(
         "sort_order", "name"
     ):
-        w = family_portal_wallet_service.get_category_shared_wallet(primary, cat)
+        w = family_portal_wallet_service.ensure_category_shared_wallet(
+            primary, cat, leader_user
+        )
         wallet_cats.append(
             {
-                "id": str(w.pk) if w else f"cat-{cat.pk}",
+                "id": str(w.pk),
                 "category_id": str(cat.pk),
                 "name": cat.name,
-                "balance": float(w.balance) if w else 0.0,
+                "balance": float(w.balance),
                 "members": member_qs.count(),
                 "allowed_member_roles": list(cat.allowed_member_roles or []),
                 "icon": "📁",
@@ -913,7 +916,8 @@ def portal_family_children(request):
     )
     rows = []
     for m in children:
-        bal = _wallet_balance(m.user, family_group=m.group)
+        mw = family_portal_wallet_service.get_member_family_wallet(m.group, m.user)
+        bal = float(mw.balance) if mw else _wallet_balance(m.user, family_group=m.group)
         rows.append(
             {
                 "id": str(m.user_id),
@@ -1543,6 +1547,30 @@ def portal_family_wallet_distribute(request):
     )
 
 
+def _resolve_family_wallet_pk_for_transfer(group: FamilyGroup, raw):
+    """Map a wallet id or legacy ``cat-<category_pk>`` placeholder to a Wallet primary key."""
+    if raw in (None, ""):
+        return None
+    s = str(raw).strip()
+    if s.startswith("cat-") and len(s) > 4:
+        tail = s[4:]
+        if tail.isdigit():
+            cat = FamilyWalletCategory.objects.filter(
+                pk=int(tail), group=group
+            ).first()
+            if not cat or not group.leader_id:
+                return None
+            w = family_portal_wallet_service.ensure_category_shared_wallet(
+                group, cat, group.leader
+            )
+            return w.pk
+        return None
+    try:
+        return int(s)
+    except ValueError:
+        return None
+
+
 @api_view(["POST"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated, IsPortalParent])
@@ -1562,11 +1590,15 @@ def portal_family_wallet_transfer(request):
         if not category:
             return validation_error("invalid category_id", field="category_id")
 
-    from_wid = request.data.get("from_wallet_id")
-    to_wid = request.data.get("to_wallet_id")
-    if from_wid not in (None, "") and to_wid not in (None, ""):
-        fw = Wallet.objects.filter(pk=from_wid, family_group=primary).first()
-        tw = Wallet.objects.filter(pk=to_wid, family_group=primary).first()
+    from_wid_raw = request.data.get("from_wallet_id")
+    to_wid_raw = request.data.get("to_wallet_id")
+    if from_wid_raw not in (None, "") and to_wid_raw not in (None, ""):
+        from_pk = _resolve_family_wallet_pk_for_transfer(primary, from_wid_raw)
+        to_pk = _resolve_family_wallet_pk_for_transfer(primary, to_wid_raw)
+        if not from_pk or not to_pk:
+            return validation_error("invalid wallet id(s)", field="from_wallet_id")
+        fw = Wallet.objects.filter(pk=from_pk, family_group=primary).first()
+        tw = Wallet.objects.filter(pk=to_pk, family_group=primary).first()
         if not fw or not tw:
             return validation_error("invalid wallet id(s)", field="from_wallet_id")
         if fw.pk == tw.pk:
@@ -1602,8 +1634,8 @@ def portal_family_wallet_transfer(request):
             fw_o, tw_o, _o, _i = (
                 family_portal_wallet_service.family_wallet_transfer_group_wallets(
                     group=primary,
-                    from_wallet_id=from_wid,
-                    to_wallet_id=to_wid,
+                    from_wallet_id=from_pk,
+                    to_wallet_id=to_pk,
                     amount=amount,
                     performed_by=request.user,
                     category=category,
