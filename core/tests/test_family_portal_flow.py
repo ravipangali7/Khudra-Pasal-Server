@@ -1105,6 +1105,12 @@ class FamilyPortalFlowTests(TestCase):
             status=Wallet.Status.ACTIVE,
             balance=Decimal("0.00"),
         )
+        Wallet.objects.create(
+            owner=child_user,
+            type=Wallet.Type.PERSONAL,
+            status=Wallet.Status.ACTIVE,
+            balance=Decimal("1500.00"),
+        )
         self.client.post(
             "/api/portal/family/wallet/distribute/",
             {"member_id": fm_child.pk, "amount": "40"},
@@ -1123,9 +1129,10 @@ class FamilyPortalFlowTests(TestCase):
         self.assertEqual(r_sum.status_code, status.HTTP_200_OK)
         self.assertAlmostEqual(r_sum.data["parentLoaded"], float(master.balance), places=2)
         self.assertEqual(r_sum.data["selfLoaded"], 40.0)
+        self.assertEqual(r_sum.data["personalBalance"], 1500.0)
         self.assertAlmostEqual(
             r_sum.data["totalBalance"],
-            float(master.balance) + 40.0,
+            float(master.balance) + 40.0 + 1500.0,
             places=2,
         )
         r_tx = self.client.get("/api/portal/child/wallet-transactions/")

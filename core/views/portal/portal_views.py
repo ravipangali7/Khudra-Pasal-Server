@@ -96,7 +96,7 @@ from core.services.nominatim_geocode import (
     area_and_landmark_from_nominatim,
     reverse_geocode,
 )
-from core.services.base import get_or_create_personal_wallet
+from core.services.base import get_or_create_personal_wallet, personal_wallet_qs
 from core.services.wallet_txn_signed import (
     aggregate_monthly_spent_for_wallet_ids,
     signed_amount_for_wallet_transaction,
@@ -1982,11 +1982,14 @@ def portal_child_summary(request):
             parent_loaded = float(sw.balance)
     limit_m = float(fm.spending_limit_monthly) if fm else 0.0
     spent_this_month = float(sum_monthly_spent_from_wallet(w)) if w else 0.0
+    pw = personal_wallet_qs(u).first()
+    personal_bal = float(pw.balance) if pw else 0.0
     return Response(
         {
             "parentLoaded": parent_loaded,
             "selfLoaded": bal,
-            "totalBalance": bal + parent_loaded,
+            "personalBalance": personal_bal,
+            "totalBalance": bal + parent_loaded + personal_bal,
             "spendingLimit": limit_m,
             "spentThisMonth": spent_this_month,
             "group_name": group.name if group else "",
