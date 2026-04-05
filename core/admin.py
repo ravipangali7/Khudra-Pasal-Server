@@ -691,7 +691,7 @@ class WalletWithdrawalAdmin(admin.ModelAdmin):
     )
     list_filter = ("status", "method")
     search_fields = ("withdrawal_number",)
-    readonly_fields = ("created_at", "updated_at", "processed_at")
+    readonly_fields = ("created_at", "updated_at", "processed_at", "proof_image")
     autocomplete_fields = ("wallet", "payout_account")
 
 

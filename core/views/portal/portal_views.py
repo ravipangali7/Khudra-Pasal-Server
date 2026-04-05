@@ -100,6 +100,7 @@ from core.services.nominatim_geocode import (
     reverse_geocode,
 )
 from core.services.base import get_or_create_personal_wallet, personal_wallet_qs
+from core.services.withdrawal_notifications import notify_family_withdrawal_submitted
 from core.services.withdrawal_requests import (
     create_pending_withdrawal,
     payout_required_block_payload,
@@ -1742,6 +1743,7 @@ def _family_parent_may_withdraw_wallet(
 @api_view(["GET", "POST"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated, IsPortalParent])
+@parser_classes([JSONParser, MultiPartParser, FormParser])
 def portal_family_wallet_withdrawals(request):
     from core.services.kyc_service import sync_user_kyc_status
     from core.services.kyc_withdraw import kyc_withdraw_block_payload
@@ -1768,7 +1770,9 @@ def portal_family_wallet_withdrawals(request):
             )
             qs = qs.filter(wallet_id__in=allowed_ids)
         qs = qs.order_by("-created_at")[:200]
-        return Response({"results": [_serialize_withdrawal_row(x) for x in qs]})
+        return Response(
+            {"results": [_serialize_withdrawal_row(x, request) for x in qs]}
+        )
 
     sync_user_kyc_status(request.user)
     request.user.refresh_from_db()
@@ -1798,6 +1802,11 @@ def portal_family_wallet_withdrawals(request):
     acct = PayoutAccount.objects.filter(pk=pid, user=request.user).first()
     if not acct:
         return validation_error("Invalid payout account.", field="payout_account_id")
+    proof = request.FILES.get("proof_image") or request.FILES.get("proof")
+    if proof:
+        ct = (getattr(proof, "content_type", "") or "").lower()
+        if not ct.startswith("image/"):
+            return validation_error("Proof must be an image file.", field="proof_image")
     try:
         wd = create_pending_withdrawal(
             wallet=w,
@@ -1807,6 +1816,10 @@ def portal_family_wallet_withdrawals(request):
         )
     except ValueError as e:
         return Response({"detail": str(e)}, status=400)
+    if proof:
+        wd.proof_image = proof
+        wd.save(update_fields=["proof_image"])
+    notify_family_withdrawal_submitted(wd, request.user)
     return Response(
         {
             "id": str(wd.pk),
@@ -2335,7 +2348,7 @@ def portal_child_wallet_withdrawals_list(request):
         return err
     _, w = pair
     qs = WalletWithdrawal.objects.filter(wallet=w).order_by("-created_at")[:200]
-    return Response({"results": [_serialize_withdrawal_row(x) for x in qs]})
+    return Response({"results": [_serialize_withdrawal_row(x, request) for x in qs]})
 
 
 @api_view(["POST"])
@@ -2885,7 +2898,10 @@ def _serialize_payout_account(request, row: PayoutAccount) -> dict:
     }
 
 
-def _serialize_withdrawal_row(w: WalletWithdrawal) -> dict:
+def _serialize_withdrawal_row(w: WalletWithdrawal, request=None) -> dict:
+    proof_url = ""
+    if request is not None and getattr(w, "proof_image", None) and w.proof_image:
+        proof_url = absolute_media_url(request, w.proof_image)
     return {
         "id": str(w.pk),
         "withdrawal_number": w.withdrawal_number,
@@ -2897,6 +2913,7 @@ def _serialize_withdrawal_row(w: WalletWithdrawal) -> dict:
         "created_at": w.created_at.isoformat(),
         "processed_at": w.processed_at.isoformat() if w.processed_at else "",
         "wallet_id": str(w.wallet_id),
+        "proof_image_url": proof_url,
     }
 
 
@@ -2982,7 +2999,7 @@ def portal_wallet_withdrawals_list(request):
     if err:
         return err
     qs = WalletWithdrawal.objects.filter(wallet=w).order_by("-created_at")[:200]
-    return Response({"results": [_serialize_withdrawal_row(x) for x in qs]})
+    return Response({"results": [_serialize_withdrawal_row(x, request) for x in qs]})
 
 
 @api_view(["POST"])

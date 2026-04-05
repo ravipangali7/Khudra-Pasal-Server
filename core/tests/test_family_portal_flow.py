@@ -5,6 +5,7 @@ from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
@@ -19,6 +20,7 @@ from core.models import (
     FamilyJoinRequest,
     FamilyMember,
     FamilyWalletCategory,
+    Notification,
     OTPVerification,
     PayoutAccount,
     ProductRestriction,
@@ -26,6 +28,7 @@ from core.models import (
     User,
     Wallet,
     WalletTransaction,
+    WalletWithdrawal,
 )
 from core.services import family_service, wallet_service
 from core.services.family_service import get_platform_hub_group
@@ -1280,6 +1283,120 @@ class FamilyPortalFlowTests(TestCase):
             format="json",
         )
         self.assertEqual(r_denied.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_family_parent_wallet_withdraw_multipart_notifications(self):
+        ss = SiteSettings.load()
+        ss.kyc_required = False
+        ss.save(update_fields=["kyc_required"])
+        User.objects.create_user(
+            username="sadmin_wd",
+            password=self.pw,
+            phone="9822222222",
+            name="SAdmin WD",
+            role=User.Role.SUPER_ADMIN,
+            is_superuser=True,
+            is_staff=True,
+        )
+        self._login_leader_with_family()
+        leader_token = Token.objects.get(user=self.leader).key
+        group = FamilyGroup.objects.get(leader=self.leader)
+        shared = get_default_shared_wallet(group)
+        self.assertIsNotNone(shared)
+        self.client.post(
+            "/api/portal/family/wallet/load/",
+            {"amount": "500", "method": "esewa"},
+            format="json",
+        )
+        pa = PayoutAccount.objects.create(
+            user=self.leader,
+            type=PayoutAccount.Type.ESEWA,
+            phone="9800111222",
+        )
+        png_1x1 = (
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+            b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
+            b"\x00\x00\x05\x00\x01\r\n-\xdb\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        img = SimpleUploadedFile("proof.png", png_1x1, content_type="image/png")
+        r = self.client.post(
+            "/api/portal/family/wallet/withdrawals/",
+            {
+                "wallet_id": str(shared.pk),
+                "amount": "100",
+                "payout_account_id": str(pa.pk),
+                "proof_image": img,
+            },
+            format="multipart",
+        )
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
+        wd = WalletWithdrawal.objects.order_by("-id").first()
+        self.assertIsNotNone(wd)
+        self.assertTrue(wd.proof_image)
+        self.assertTrue(
+            Notification.objects.filter(
+                recipient=self.leader,
+                title__icontains="submitted",
+            ).exists()
+        )
+        self.assertEqual(
+            Notification.objects.filter(
+                recipient__is_superuser=True,
+                title__icontains="withdrawal",
+            ).count(),
+            1,
+        )
+
+        admin = User.objects.get(username="sadmin_wd")
+        tok, _ = Token.objects.get_or_create(user=admin)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {tok.key}")
+        r_ap = self.client.patch(
+            f"/api/admin/withdrawals/{wd.pk}/",
+            {"status": "approved"},
+            format="json",
+        )
+        self.assertEqual(r_ap.status_code, status.HTTP_200_OK, r_ap.data)
+        self.assertTrue(
+            Notification.objects.filter(
+                recipient=self.leader,
+                title__icontains="approved",
+            ).exists()
+        )
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {leader_token}")
+        self.client.post(
+            "/api/portal/family/wallet/load/",
+            {"amount": "200", "method": "esewa"},
+            format="json",
+        )
+        pa2 = PayoutAccount.objects.create(
+            user=self.leader,
+            type=PayoutAccount.Type.ESEWA,
+            phone="9800111333",
+        )
+        r2 = self.client.post(
+            "/api/portal/family/wallet/withdrawals/",
+            {
+                "wallet_id": str(shared.pk),
+                "amount": "50",
+                "payout_account_id": str(pa2.pk),
+            },
+            format="json",
+        )
+        self.assertEqual(r2.status_code, status.HTTP_201_CREATED)
+        wd2 = WalletWithdrawal.objects.exclude(pk=wd.pk).order_by("-id").first()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {tok.key}")
+        r_rj = self.client.patch(
+            f"/api/admin/withdrawals/{wd2.pk}/",
+            {"status": "rejected", "reject_reason": "Test reject note"},
+            format="json",
+        )
+        self.assertEqual(r_rj.status_code, status.HTTP_200_OK)
+        n_rej = Notification.objects.filter(
+            recipient=self.leader,
+            title__icontains="rejected",
+        ).order_by("-id").first()
+        self.assertIsNotNone(n_rej)
+        self.assertIn("Test reject note", n_rej.message)
 
     def test_child_rules_read_only(self):
         self._login_leader_with_family()

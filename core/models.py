@@ -932,6 +932,7 @@ class WalletWithdrawal(models.Model):
     )
     admin_note = models.TextField(blank=True)
     reject_reason = models.TextField(blank=True)
+    proof_image = models.ImageField(upload_to="withdrawal_proofs/", blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     processed_at = models.DateTimeField(null=True, blank=True)

@@ -82,6 +82,10 @@ from core.services.reel_boost_patch import apply_reel_boost_from_data
 from core.services.kyc_portal import supersede_non_approved_kyc, validate_kyc_upload_file
 from core.services.kyc_service import sync_user_kyc_status
 from core.services.vendor_service import ensure_vendor_wallet
+from core.services.withdrawal_notifications import (
+    notify_withdrawal_approved,
+    notify_withdrawal_rejected,
+)
 from core.views.admin.admin_access import (
     enforce_admin_api_access,
     enforce_audit_log_access,
@@ -1771,6 +1775,9 @@ def admin_withdrawals_list(request):
                 "updated_at": w.updated_at.isoformat() if getattr(w, "updated_at", None) else "",
                 "processed_at": w.processed_at.isoformat() if w.processed_at else "",
                 "balance": float(w.wallet.balance),
+                "proof_image_url": (
+                    absolute_media_url(request, w.proof_image) if w.proof_image else ""
+                ),
             }
         )
     return paginator.get_paginated_response(rows)
@@ -1796,6 +1803,10 @@ def admin_withdrawal_detail_write(request, pk):
         row.reject_reason = (request.data.get("reject_reason") or "")[:2000]
     row.status = new_status
     row.save()
+    if new_status == WalletWithdrawal.Status.APPROVED:
+        notify_withdrawal_approved(row)
+    else:
+        notify_withdrawal_rejected(row)
     audit_service.log(
         f"Withdrawal {row.withdrawal_number} {new_status}",
         log_type=AuditLog.Type.WALLET,
