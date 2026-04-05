@@ -1034,6 +1034,28 @@ class FamilyPortalFlowTests(TestCase):
         w.refresh_from_db()
         self.assertEqual(w.status, Wallet.Status.ACTIVE)
 
+    def test_patch_member_spending_limits_rejects_inconsistent_order(self):
+        self._login_leader_with_family()
+        group = FamilyGroup.objects.get(leader=self.leader)
+        fm = FamilyMember.objects.create(
+            group=group,
+            user=self.child,
+            role=FamilyMember.Role.CHILD,
+            status=FamilyMember.Status.ACTIVE,
+        )
+        r = self.client.patch(
+            f"/api/portal/family/members/{fm.pk}/",
+            {
+                "spending_limit_daily": "500",
+                "spending_limit_weekly": "100",
+                "spending_limit_monthly": "2000",
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        err_blob = str(r.data).lower()
+        self.assertIn("spending limits", err_blob)
+
     def test_delete_family_member_removes_row(self):
         self._login_leader_with_family()
         group = FamilyGroup.objects.get(leader=self.leader)

@@ -1,3 +1,6 @@
+from decimal import Decimal
+
+from django.core.validators import MinValueValidator
 from rest_framework import serializers
 
 from core.models import (
@@ -631,19 +634,43 @@ class PortalFamilyMemberPatchSerializer(serializers.Serializer):
 
     role = serializers.ChoiceField(choices=FamilyMember.Role.choices, required=False)
     spending_limit_daily = serializers.DecimalField(
-        max_digits=8, decimal_places=2, required=False
+        max_digits=8,
+        decimal_places=2,
+        required=False,
+        validators=[MinValueValidator(Decimal("0"))],
     )
     spending_limit_weekly = serializers.DecimalField(
-        max_digits=8, decimal_places=2, required=False
+        max_digits=8,
+        decimal_places=2,
+        required=False,
+        validators=[MinValueValidator(Decimal("0"))],
     )
     spending_limit_monthly = serializers.DecimalField(
-        max_digits=8, decimal_places=2, required=False
+        max_digits=8,
+        decimal_places=2,
+        required=False,
+        validators=[MinValueValidator(Decimal("0"))],
     )
     status = serializers.ChoiceField(choices=["active", "frozen"], required=False)
 
     def validate(self, attrs):
         if not attrs:
             raise serializers.ValidationError("At least one field is required.")
+        keys = (
+            "spending_limit_daily",
+            "spending_limit_weekly",
+            "spending_limit_monthly",
+        )
+        if all(k in attrs for k in keys):
+            d, w, m = (
+                attrs["spending_limit_daily"],
+                attrs["spending_limit_weekly"],
+                attrs["spending_limit_monthly"],
+            )
+            if d > w or w > m or d > m:
+                raise serializers.ValidationError(
+                    "Spending limits must satisfy daily ≤ weekly ≤ monthly."
+                )
         return attrs
 
 
