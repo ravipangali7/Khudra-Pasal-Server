@@ -14,6 +14,7 @@ from core.models import (
     FamilyMember,
     User,
     Wallet,
+    WalletTransaction,
 )
 from core.phone_auth import normalize_nepal_phone
 
@@ -116,13 +117,7 @@ def create_family_group_for_user(
         family_group=group,
         status=Wallet.Status.ACTIVE,
     )
-    Wallet.objects.create(
-        owner=user,
-        type=Wallet.Type.PARENT,
-        label="Parent wallet",
-        family_group=group,
-        status=Wallet.Status.ACTIVE,
-    )
+    _ensure_parent_wallet_for_new_private_family(group, user)
     return group
 
 
@@ -131,9 +126,90 @@ def ensure_family_wallets_for_member(group: FamilyGroup, user: User, role: str) 
     _ensure_family_wallets_for_member(group, user, role)
 
 
+def _discard_wallet_if_empty_and_no_txns(w: Wallet) -> None:
+    if w.balance != 0:
+        return
+    if WalletTransaction.objects.filter(wallet=w).exists():
+        return
+    w.delete()
+
+
+def _try_adopt_unscoped_personal_as_family_wallet(
+    group: FamilyGroup, user: User, target_type: str
+) -> bool:
+    """
+    Re-type the user's unscoped PERSONAL wallet to target_type and attach family_group,
+    preserving balance and transaction history. Removes an empty duplicate family wallet
+    of the same type if the buggy flow created one first.
+    """
+    personal = (
+        Wallet.objects.filter(
+            owner=user,
+            type=Wallet.Type.PERSONAL,
+            status=Wallet.Status.ACTIVE,
+            family_group__isnull=True,
+        )
+        .order_by("id")
+        .first()
+    )
+    if not personal:
+        return False
+
+    for w in Wallet.objects.filter(
+        owner=user,
+        family_group=group,
+        type=target_type,
+        status=Wallet.Status.ACTIVE,
+    ).order_by("id"):
+        _discard_wallet_if_empty_and_no_txns(w)
+
+    if Wallet.objects.filter(
+        owner=user,
+        family_group=group,
+        type=target_type,
+        status=Wallet.Status.ACTIVE,
+    ).exists():
+        return False
+
+    label = (personal.label or "").strip()
+    if not label:
+        label = (
+            "Child wallet"
+            if target_type == Wallet.Type.CHILD
+            else "Family wallet"
+        )
+    personal.type = target_type
+    personal.family_group = group
+    personal.label = label
+    personal.save(update_fields=["type", "family_group", "label", "updated_at"])
+    return True
+
+
+def _ensure_parent_wallet_for_new_private_family(group: FamilyGroup, user: User) -> None:
+    """Leader's member wallet: reuse PERSONAL balance or create empty PARENT."""
+    if Wallet.objects.filter(
+        owner=user, family_group=group, type=Wallet.Type.PARENT
+    ).exists():
+        return
+    if _try_adopt_unscoped_personal_as_family_wallet(
+        group, user, Wallet.Type.PARENT
+    ):
+        return
+    Wallet.objects.create(
+        owner=user,
+        type=Wallet.Type.PARENT,
+        label="Parent wallet",
+        family_group=group,
+        status=Wallet.Status.ACTIVE,
+    )
+
+
 def _ensure_family_wallets_for_member(group: FamilyGroup, user: User, role: str) -> None:
     if role == FamilyMember.Role.CHILD:
-        if not Wallet.objects.filter(
+        adopted = _try_adopt_unscoped_personal_as_family_wallet(
+            group, user, Wallet.Type.CHILD
+        )
+        if not adopted and not Wallet.objects.filter(
             owner=user, family_group=group, type=Wallet.Type.CHILD
         ).exists():
             Wallet.objects.create(
@@ -152,13 +228,19 @@ def _ensure_family_wallets_for_member(group: FamilyGroup, user: User, role: str)
         if not Wallet.objects.filter(
             owner=user, family_group=group
         ).exclude(type=Wallet.Type.VENDOR).exists():
-            Wallet.objects.create(
-                owner=user,
-                type=Wallet.Type.PARENT,
-                label="Family wallet",
-                family_group=group,
-                status=Wallet.Status.ACTIVE,
+            adopted = _try_adopt_unscoped_personal_as_family_wallet(
+                group, user, Wallet.Type.PARENT
             )
+            if not adopted and not Wallet.objects.filter(
+                owner=user, family_group=group
+            ).exclude(type=Wallet.Type.VENDOR).exists():
+                Wallet.objects.create(
+                    owner=user,
+                    type=Wallet.Type.PARENT,
+                    label="Family wallet",
+                    family_group=group,
+                    status=Wallet.Status.ACTIVE,
+                )
 
 
 @transaction.atomic

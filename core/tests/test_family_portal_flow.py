@@ -1253,6 +1253,100 @@ class FamilyPortalFlowTests(TestCase):
         self.assertEqual(len(r.data["product_restrictions"]), 1)
         self.assertTrue(r.data["product_restrictions"][0]["is_blocked"])
 
+    def test_child_member_adopts_personal_wallet_preserves_balance_and_checkout(self):
+        group = FamilyGroup.objects.create(
+            name="Adopt Fam",
+            leader=self.leader,
+            type=FamilyGroup.Type.FAMILY,
+            status=FamilyGroup.Status.ACTIVE,
+        )
+        pw = get_or_create_personal_wallet(self.child)
+        Wallet.objects.filter(pk=pw.pk).update(balance=Decimal("1500.00"))
+        wallet_pk_before = pw.pk
+        User.objects.filter(pk=self.child.pk).update(role=User.Role.CHILD)
+        self.child.refresh_from_db()
+        FamilyMember.objects.create(
+            group=group,
+            user=self.child,
+            role=FamilyMember.Role.CHILD,
+            status=FamilyMember.Status.ACTIVE,
+        )
+        family_service.ensure_family_wallets_for_member(
+            group, self.child, FamilyMember.Role.CHILD
+        )
+        pw.refresh_from_db()
+        self.assertEqual(pw.pk, wallet_pk_before)
+        self.assertEqual(pw.type, Wallet.Type.CHILD)
+        self.assertEqual(pw.family_group_id, group.pk)
+        self.assertEqual(pw.balance, Decimal("1500.00"))
+        cw = get_member_family_wallet(group, self.child)
+        self.assertIsNotNone(cw)
+        self.assertEqual(cw.pk, pw.pk)
+        self.assertEqual(get_or_create_personal_wallet(self.child).pk, wallet_pk_before)
+
+        tok, _ = Token.objects.get_or_create(user=self.child)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {tok.key}")
+        r = self.client.get("/api/portal/orders/checkout-wallet/")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertIsNotNone(r.data["default"])
+        self.assertEqual(r.data["default"]["id"], wallet_pk_before)
+        self.assertEqual(float(r.data["default"]["balance"]), 1500.0)
+
+    def test_child_adoption_drops_empty_duplicate_child_wallet(self):
+        group = FamilyGroup.objects.create(
+            name="Dup Fam",
+            leader=self.leader,
+            type=FamilyGroup.Type.FAMILY,
+            status=FamilyGroup.Status.ACTIVE,
+        )
+        dup = Wallet.objects.create(
+            owner=self.child,
+            type=Wallet.Type.CHILD,
+            label="Child wallet",
+            family_group=group,
+            status=Wallet.Status.ACTIVE,
+        )
+        pw = get_or_create_personal_wallet(self.child)
+        Wallet.objects.filter(pk=pw.pk).update(balance=Decimal("99.50"))
+        User.objects.filter(pk=self.child.pk).update(role=User.Role.CHILD)
+        self.child.refresh_from_db()
+        FamilyMember.objects.create(
+            group=group,
+            user=self.child,
+            role=FamilyMember.Role.CHILD,
+            status=FamilyMember.Status.ACTIVE,
+        )
+        family_service.ensure_family_wallets_for_member(
+            group, self.child, FamilyMember.Role.CHILD
+        )
+        self.assertFalse(Wallet.objects.filter(pk=dup.pk).exists())
+        pw.refresh_from_db()
+        self.assertEqual(pw.type, Wallet.Type.CHILD)
+        self.assertEqual(pw.balance, Decimal("99.50"))
+
+    def test_create_private_family_adopts_leader_personal_as_parent_wallet(self):
+        rich = User.objects.create_user(
+            username="richlead",
+            password=self.pw,
+            phone="9822222222",
+            name="Rich Lead",
+            role=User.Role.NORMAL,
+        )
+        w = get_or_create_personal_wallet(rich)
+        Wallet.objects.filter(pk=w.pk).update(balance=Decimal("2000.00"))
+        w_pk = w.pk
+        g = family_service.create_family_group_for_user(rich, "Rich Home")
+        w.refresh_from_db()
+        self.assertEqual(w.pk, w_pk)
+        self.assertEqual(w.type, Wallet.Type.PARENT)
+        self.assertEqual(w.family_group_id, g.pk)
+        self.assertEqual(w.balance, Decimal("2000.00"))
+        self.assertTrue(
+            Wallet.objects.filter(
+                owner=rich, family_group=g, type=Wallet.Type.SHARED
+            ).exists()
+        )
+
 
 class PortalSignupOtpAndTransferPolicyTests(TestCase):
     def setUp(self):

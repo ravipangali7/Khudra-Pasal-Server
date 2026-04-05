@@ -24,6 +24,26 @@ def get_or_create_personal_wallet(user: User) -> Wallet:
     w = personal_wallet_qs(user).first()
     if w:
         return w
+    if user.role == User.Role.CHILD:
+        from core.models import FamilyMember
+
+        from core.services import family_portal_wallet_service
+
+        fm = (
+            FamilyMember.objects.filter(
+                user=user,
+                role=FamilyMember.Role.CHILD,
+                status=FamilyMember.Status.ACTIVE,
+            )
+            .select_related("group")
+            .first()
+        )
+        if fm and fm.group_id:
+            mw = family_portal_wallet_service.get_member_family_wallet(
+                fm.group, user
+            )
+            if mw:
+                return mw
     return Wallet.objects.create(
         owner=user,
         type=Wallet.Type.PERSONAL,
