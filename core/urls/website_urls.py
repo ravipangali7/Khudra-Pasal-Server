@@ -21,6 +21,12 @@ urlpatterns = [
     path("categories/", home_views.categories_list, name="website-categories"),
     path("catalog/", home_views.catalog_list, name="website-catalog"),
     path("products/", home_views.products_list, name="website-products"),
+    # Must be before products/<identifier>/ so "all-vendors" is not treated as a product slug.
+    path(
+        "products/all-vendors/",
+        home_views.products_all_vendors_list,
+        name="website-products-all-vendors",
+    ),
     path("products/<str:identifier>/", home_views.product_detail, name="website-product-detail"),
     path("products/<str:identifier>/reviews/", home_views.product_reviews_list, name="website-product-reviews"),
     path("cms-pages/", home_views.cms_pages_public_list, name="website-cms-pages-list"),
