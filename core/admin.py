@@ -1191,7 +1191,7 @@ class PaymentGatewaySettingsAdmin(admin.ModelAdmin):
 
 @admin.register(models.OTPVerification)
 class OTPVerificationAdmin(admin.ModelAdmin):
-    list_display = ("phone", "purpose", "is_used", "created_at", "expires_at")
+    list_display = ("phone", "otp", "purpose", "is_used", "created_at", "expires_at")
     list_filter = ("purpose", "is_used")
     readonly_fields = ("created_at",)
 
