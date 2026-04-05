@@ -103,9 +103,6 @@ def _admin_rows_filtered(rows: list, user: User | None) -> list:
                 if pk:
                     expanded.add(pk)
                 cur = pk or None
-        if "orders" in allowed:
-            expanded.add("purchase")
-            expanded.add("purchase-insights")
         result = [r for r in rows if r.key in expanded]
     return [
         r

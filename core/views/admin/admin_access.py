@@ -96,7 +96,6 @@ def admin_module_key_from_path(path: str) -> str | None:
         ("kyc-submissions/", "customers"),
         ("users/", "customers"),
         ("order-settings/", "orders"),
-        ("purchase-insights/", "orders"),
         ("orders/", "orders"),
         ("products/", "products"),
         ("vendors/", "sellers"),
