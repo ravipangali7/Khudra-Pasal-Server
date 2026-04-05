@@ -347,7 +347,17 @@ def _family_member_portal_row(
 ) -> dict:
     ginfo = {"id": str(group.pk), "name": group.name}
     mw = family_portal_wallet_service.get_member_family_wallet(group, m.user)
-    bal = float(mw.balance) if mw else _wallet_balance(m.user, family_group=group)
+    portal_w = _wallet_for_user(m.user)
+    if mw and portal_w and mw.pk == portal_w.pk:
+        bal = float(mw.balance)
+    elif portal_w and portal_w.type == Wallet.Type.SHARED:
+        bal = float(mw.balance) if mw else _wallet_balance(m.user, family_group=group)
+    elif mw and portal_w and mw.pk != portal_w.pk and portal_w.type != Wallet.Type.SHARED:
+        bal = float(mw.balance) + float(portal_w.balance)
+    elif mw:
+        bal = float(mw.balance)
+    else:
+        bal = _wallet_balance(m.user, family_group=group)
     if mw and spent_by_wallet is not None:
         spent = float(spent_by_wallet.get(mw.pk, Decimal("0")))
     elif mw:

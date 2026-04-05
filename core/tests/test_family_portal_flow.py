@@ -269,6 +269,38 @@ class FamilyPortalFlowTests(TestCase):
                 self.assertIn("group", m)
                 self.assertEqual(m["group"]["name"], ov.data["group"]["name"])
 
+    def test_family_overview_member_balance_matches_portal_me_when_personal_split_from_parent(
+        self,
+    ):
+        """Unscoped PERSONAL funds + empty family PARENT wallet: overview balance matches /portal/me/."""
+        self._login_leader_with_family()
+        group = FamilyGroup.objects.get(leader=self.leader)
+        parent_w = Wallet.objects.filter(
+            owner=self.leader,
+            family_group=group,
+            type=Wallet.Type.PARENT,
+            status=Wallet.Status.ACTIVE,
+        ).first()
+        self.assertIsNotNone(parent_w)
+        parent_w.balance = Decimal("0.00")
+        parent_w.save(update_fields=["balance", "updated_at"])
+        Wallet.objects.create(
+            owner=self.leader,
+            type=Wallet.Type.PERSONAL,
+            label="Unscoped",
+            balance=Decimal("1500.00"),
+            status=Wallet.Status.ACTIVE,
+            family_group=None,
+        )
+        me = self.client.get("/api/portal/me/")
+        self.assertEqual(me.status_code, status.HTTP_200_OK)
+        self.assertEqual(float(me.data["wallet_balance"]), 1500.0)
+
+        ov = self.client.get("/api/portal/family/members/")
+        self.assertEqual(ov.status_code, status.HTTP_200_OK)
+        leader_row = next(m for m in ov.data["members"] if m["phone"] == self.leader.phone)
+        self.assertEqual(float(leader_row["balance"]), 1500.0)
+
     def test_family_wallet_load_and_category(self):
         self._login_leader_with_family()
         group = FamilyGroup.objects.get(leader=self.leader)
