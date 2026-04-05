@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from core.models import KYCDocument, SiteSettings, User
+from core.models import KYCDocument, SiteSettings, User, Vendor
 
 
 def latest_kyc_rejection_reason(user: User) -> str:
@@ -14,12 +14,19 @@ def latest_kyc_rejection_reason(user: User) -> str:
     return (doc.rejection_reason or "").strip() if doc else ""
 
 
-def kyc_withdraw_block_payload(user: User) -> dict | None:
+def kyc_withdraw_block_payload(
+    user: User, *, vendor: Vendor | None = None
+) -> dict | None:
     """
     If withdraw must be blocked, return error dict for JSON Response.
     None means withdraw may proceed (subject to wallet rules).
+
+    When ``vendor`` is passed and the vendor is admin-approved, portal KYC is not
+    required: vendor onboarding already covers identity checks for that wallet.
     """
     if not SiteSettings.load().kyc_required:
+        return None
+    if vendor is not None and vendor.status == Vendor.Status.APPROVED:
         return None
     if user.kyc_status == User.KYCStatus.VERIFIED:
         return None

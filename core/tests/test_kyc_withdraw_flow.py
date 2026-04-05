@@ -7,9 +7,19 @@ from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
-from core.models import KYCDocument, PayoutAccount, SiteSettings, User, Wallet, WalletTransaction, WalletWithdrawal
+from core.models import (
+    KYCDocument,
+    PayoutAccount,
+    SiteSettings,
+    User,
+    Vendor,
+    Wallet,
+    WalletTransaction,
+    WalletWithdrawal,
+)
 from core.services.base import get_or_create_personal_wallet
 from core.services import wallet_service
+from core.services.vendor_service import ensure_vendor_wallet
 
 
 class KycWithdrawFlowTests(TestCase):
@@ -290,3 +300,86 @@ class KycWithdrawFlowTests(TestCase):
         r4 = self.client.get("/api/portal/kyc/status/")
         self.assertFalse(r4.data["kyc_required"])
         self.assertFalse(r4.data["can_submit"])
+
+    def test_vendor_withdraw_allowed_when_approved_without_portal_kyc(self):
+        """Approved vendors vet via vendor documents; portal User.kyc may stay pending."""
+        vu = User.objects.create_user(
+            username="v_kyc_wd",
+            password=self.pw,
+            phone="9844444444",
+            name="Vendor WD",
+            role=User.Role.NORMAL,
+            kyc_status=User.KYCStatus.PENDING,
+        )
+        vendor = Vendor.objects.create(
+            user=vu,
+            store_name="KYC WD Store",
+            store_slug="kyc-wd-store",
+            status=Vendor.Status.APPROVED,
+        )
+        ensure_vendor_wallet(vendor)
+        w = vendor.wallet
+        w.status = Wallet.Status.ACTIVE
+        w.save(update_fields=["status"])
+        wallet_service.credit_wallet(
+            w,
+            Decimal("5000"),
+            wtype=WalletTransaction.Type.TOPUP,
+            description="test vendor fund",
+            performed_by=vu,
+        )
+        pa = PayoutAccount.objects.create(
+            user=vu,
+            type=PayoutAccount.Type.ESEWA,
+            phone="9800000001",
+        )
+        tok, _ = Token.objects.get_or_create(user=vu)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {tok.key}")
+        r = self.client.post(
+            "/api/vendor/withdrawals/",
+            {"amount": 100, "payout_account_id": pa.pk},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED)
+        self.assertIn("id", r.data)
+
+    def test_vendor_withdraw_blocked_when_pending_vendor_and_kyc_required(self):
+        vu = User.objects.create_user(
+            username="v_kyc_pend",
+            password=self.pw,
+            phone="9833333333",
+            name="Vendor Pend",
+            role=User.Role.NORMAL,
+            kyc_status=User.KYCStatus.PENDING,
+        )
+        vendor = Vendor.objects.create(
+            user=vu,
+            store_name="Pend Store",
+            store_slug="pend-store-kyc",
+            status=Vendor.Status.PENDING,
+        )
+        ensure_vendor_wallet(vendor)
+        w = vendor.wallet
+        w.status = Wallet.Status.ACTIVE
+        w.save(update_fields=["status"])
+        wallet_service.credit_wallet(
+            w,
+            Decimal("5000"),
+            wtype=WalletTransaction.Type.TOPUP,
+            description="test",
+            performed_by=vu,
+        )
+        pa = PayoutAccount.objects.create(
+            user=vu,
+            type=PayoutAccount.Type.ESEWA,
+            phone="9800000002",
+        )
+        tok, _ = Token.objects.get_or_create(user=vu)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {tok.key}")
+        r = self.client.post(
+            "/api/vendor/withdrawals/",
+            {"amount": 100, "payout_account_id": pa.pk},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(r.data.get("code"), "kyc_required")

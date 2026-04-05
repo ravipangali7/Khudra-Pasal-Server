@@ -969,7 +969,7 @@ def vendor_withdrawals(request):
     vu = vendor.user
     sync_user_kyc_status(vu)
     vu.refresh_from_db()
-    block = kyc_withdraw_block_payload(vu)
+    block = kyc_withdraw_block_payload(vu, vendor=vendor)
     if block:
         return Response(block, status=403)
     pay_block = payout_required_block_payload(vu)
