@@ -41,7 +41,7 @@ ADMIN_NAV: list[tuple] = [
     ("admin", "finance", "Finance", "CreditCard", "", 80, "admin_finance_attention", ""),
     ("admin", "transactions", "Transactions", "CreditCard", "finance", 0, "", ""),
     ("admin", "refunds", "Refunds", "RefreshCw", "finance", 1, "admin_pending_refunds", ""),
-    ("admin", "withdrawals", "Withdrawal requests", "CreditCard", "finance", 2, "admin_pending_withdrawals", ""),
+    ("admin", "withdrawals", "Withdrawals Requesting", "CreditCard", "finance", 2, "admin_pending_withdrawals", ""),
     ("admin", "commission-log", "Commission log", "Percent", "finance", 3, "", ""),
     ("admin", "users", "Users", "Users", "", 90, "", ""),
     ("admin", "admins", "Administrators", "UserCog", "users", 0, "", ""),
