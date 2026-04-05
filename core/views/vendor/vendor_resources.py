@@ -23,6 +23,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from core.models import (
+    PayoutAccount,
     Attribute,
     AttributeValue,
     Brand,
@@ -48,6 +49,9 @@ from core.models import (
 )
 from core.serializers import ReelPublicSerializer
 from core.services import product_service, support_notification_service, support_ticket_service
+from core.services.kyc_service import sync_user_kyc_status
+from core.services.kyc_withdraw import kyc_withdraw_block_payload
+from core.services.withdrawal_requests import create_pending_withdrawal, payout_required_block_payload
 from core.services.reel_boost_patch import apply_reel_boost_from_data
 from core.services.vendor_service import ensure_vendor_wallet
 from core.views.admin.admin_write_utils import absolute_media_url, validation_error
@@ -73,10 +77,6 @@ def _gen_order_number():
         if len(cand) <= 20 and not Order.objects.filter(order_number=cand).exists():
             return cand
     return f"KP-{uuid4().hex[:12].upper()}"[:20]
-
-
-def _gen_withdrawal_number():
-    return f"WTH-{timezone.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
 
 
 def _gen_ticket_number():
@@ -966,28 +966,36 @@ def vendor_withdrawals(request):
             for w in page
         ]
         return paginator.get_paginated_response(rows)
+    vu = vendor.user
+    sync_user_kyc_status(vu)
+    vu.refresh_from_db()
+    block = kyc_withdraw_block_payload(vu)
+    if block:
+        return Response(block, status=403)
+    pay_block = payout_required_block_payload(vu)
+    if pay_block:
+        return Response(pay_block, status=403)
     amount = _to_decimal(request.data.get("amount"), "0")
     if amount <= 0:
         return validation_error("amount must be positive", field="amount")
-    if wallet.balance < amount:
-        return Response({"detail": "Insufficient balance."}, status=400)
-    method = request.data.get("method") or WalletWithdrawal.Method.BANK_TRANSFER
-    if method not in dict(WalletWithdrawal.Method.choices):
-        return validation_error("invalid method", field="method")
-    method_account = (request.data.get("method_account") or request.data.get("account_number") or "").strip()
-    if not method_account:
-        return validation_error("method_account (or account_number) required", field="method_account")
-    w = WalletWithdrawal.objects.create(
-        withdrawal_number=_gen_withdrawal_number(),
-        wallet=wallet,
-        amount=amount,
-        method=method,
-        method_account=method_account[:100],
-        bank_name=(request.data.get("bank_name") or "")[:100],
-        account_holder=(request.data.get("account_holder") or "")[:150],
-        status=WalletWithdrawal.Status.PENDING,
-    )
-    return Response({"id": w.withdrawal_number}, status=201)
+    raw_pid = request.data.get("payout_account_id") or request.data.get("payout_account")
+    try:
+        pid = int(raw_pid)
+    except (TypeError, ValueError):
+        return validation_error("payout_account_id required", field="payout_account_id")
+    acct = PayoutAccount.objects.filter(pk=pid, user=vu).first()
+    if not acct:
+        return validation_error("Invalid payout account.", field="payout_account_id")
+    try:
+        wd = create_pending_withdrawal(
+            wallet=wallet,
+            payout_user=vu,
+            payout_account=acct,
+            amount=amount,
+        )
+    except ValueError as e:
+        return Response({"detail": str(e)}, status=400)
+    return Response({"id": wd.withdrawal_number}, status=201)
 
 
 # --- Customers ---

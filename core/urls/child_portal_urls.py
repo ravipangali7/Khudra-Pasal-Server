@@ -33,6 +33,21 @@ urlpatterns = [
         portal_views.portal_child_wallet_withdraw,
         name="child-portal-wallet-withdraw",
     ),
+    path(
+        "child/wallet/withdrawals/",
+        portal_views.portal_child_wallet_withdrawals_list,
+        name="child-portal-wallet-withdrawals",
+    ),
+    path(
+        "payout-accounts/",
+        portal_views.portal_payout_accounts_list_create,
+        name="child-portal-payout-accounts",
+    ),
+    path(
+        "payout-accounts/<int:pk>/",
+        portal_views.portal_payout_account_detail,
+        name="child-portal-payout-account-detail",
+    ),
     path("kyc/schema/", portal_kyc.portal_kyc_schema, name="child-portal-kyc-schema"),
     path("kyc/status/", portal_kyc.portal_kyc_status, name="child-portal-kyc-status"),
     path("kyc/submit/", portal_kyc.portal_kyc_submit, name="child-portal-kyc-submit"),

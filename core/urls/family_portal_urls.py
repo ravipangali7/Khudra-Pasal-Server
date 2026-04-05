@@ -47,6 +47,21 @@ urlpatterns = [
         name="family-portal-wallet-txns",
     ),
     path(
+        "family/wallet/withdrawals/",
+        portal_views.portal_family_wallet_withdrawals,
+        name="family-portal-wallet-withdrawals",
+    ),
+    path(
+        "payout-accounts/",
+        portal_views.portal_payout_accounts_list_create,
+        name="family-portal-payout-accounts",
+    ),
+    path(
+        "payout-accounts/<int:pk>/",
+        portal_views.portal_payout_account_detail,
+        name="family-portal-payout-account-detail",
+    ),
+    path(
         "orders/<int:pk>/refund-request/",
         portal_views.portal_order_refund_request,
         {"refund_surface": Order.PlacedPortal.PORTAL_FAMILY},

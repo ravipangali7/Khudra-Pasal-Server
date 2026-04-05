@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from core.phone_auth import authenticate_user_by_phone, normalize_nepal_phone
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.contrib.sessions.models import Session
 from django.db import transaction
 from django.db.models import Count, Q, Sum
@@ -58,10 +59,12 @@ from core.models import (
     SiteSettings,
     SupportTicket,
     SupportTicketMessage,
+    PayoutAccount,
     User,
     Vendor,
     Wallet,
     WalletTransaction,
+    WalletWithdrawal,
 )
 from core.serializers import (
     FamilyJoinRequestReadSerializer,
@@ -97,6 +100,10 @@ from core.services.nominatim_geocode import (
     reverse_geocode,
 )
 from core.services.base import get_or_create_personal_wallet, personal_wallet_qs
+from core.services.withdrawal_requests import (
+    create_pending_withdrawal,
+    payout_required_block_payload,
+)
 from core.services.wallet_txn_signed import (
     aggregate_monthly_spent_for_wallet_ids,
     signed_amount_for_wallet_transaction,
@@ -1718,6 +1725,98 @@ def portal_family_wallet_transfer(request):
     )
 
 
+def _family_parent_may_withdraw_wallet(
+    user: User, primary: FamilyGroup, w: Wallet
+) -> bool:
+    if w.family_group_id != primary.pk:
+        return False
+    if w.status != Wallet.Status.ACTIVE:
+        return False
+    if w.type == Wallet.Type.SHARED:
+        return True
+    if w.type == Wallet.Type.PARENT and w.owner_id == user.pk:
+        return True
+    return False
+
+
+@api_view(["GET", "POST"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated, IsPortalParent])
+def portal_family_wallet_withdrawals(request):
+    from core.services.kyc_service import sync_user_kyc_status
+    from core.services.kyc_withdraw import kyc_withdraw_block_payload
+
+    primary = _primary_family_group(request.user)
+    if not primary:
+        return Response({"detail": "No family group found."}, status=400)
+
+    if request.method == "GET":
+        w_filter = request.query_params.get("wallet_id")
+        qs = WalletWithdrawal.objects.filter(
+            wallet__family_group=primary,
+        ).select_related("wallet")
+        if w_filter and str(w_filter).strip().isdigit():
+            qs = qs.filter(wallet_id=int(w_filter))
+        else:
+            allowed_ids = list(
+                Wallet.objects.filter(family_group=primary)
+                .filter(
+                    Q(type=Wallet.Type.SHARED)
+                    | Q(type=Wallet.Type.PARENT, owner=request.user)
+                )
+                .values_list("pk", flat=True)
+            )
+            qs = qs.filter(wallet_id__in=allowed_ids)
+        qs = qs.order_by("-created_at")[:200]
+        return Response({"results": [_serialize_withdrawal_row(x) for x in qs]})
+
+    sync_user_kyc_status(request.user)
+    request.user.refresh_from_db()
+    block = kyc_withdraw_block_payload(request.user)
+    if block:
+        return Response(block, status=403)
+    pay_block = payout_required_block_payload(request.user)
+    if pay_block:
+        return Response(pay_block, status=403)
+
+    raw_wid = request.data.get("wallet_id")
+    try:
+        wid = int(raw_wid)
+    except (TypeError, ValueError):
+        return validation_error("wallet_id required", field="wallet_id")
+    w = Wallet.objects.filter(pk=wid, family_group=primary).first()
+    if not w or not _family_parent_may_withdraw_wallet(request.user, primary, w):
+        return validation_error("Invalid wallet for withdrawal.", field="wallet_id")
+    amount = _to_decimal(request.data.get("amount"), "0")
+    if amount <= 0:
+        return validation_error("amount must be positive", field="amount")
+    raw_pid = request.data.get("payout_account_id") or request.data.get("payout_account")
+    try:
+        pid = int(raw_pid)
+    except (TypeError, ValueError):
+        return validation_error("payout_account_id required", field="payout_account_id")
+    acct = PayoutAccount.objects.filter(pk=pid, user=request.user).first()
+    if not acct:
+        return validation_error("Invalid payout account.", field="payout_account_id")
+    try:
+        wd = create_pending_withdrawal(
+            wallet=w,
+            payout_user=request.user,
+            payout_account=acct,
+            amount=amount,
+        )
+    except ValueError as e:
+        return Response({"detail": str(e)}, status=400)
+    return Response(
+        {
+            "id": str(wd.pk),
+            "withdrawal_number": wd.withdrawal_number,
+            "status": wd.status,
+        },
+        status=201,
+    )
+
+
 def _family_wallet_category_create_meta_fields():
     from django.db import models as dj_models
 
@@ -2227,6 +2326,18 @@ def portal_child_wallet_topup(request):
     return Response({"ok": True, "balance": float(w.balance)})
 
 
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated, IsPortalChild])
+def portal_child_wallet_withdrawals_list(request):
+    pair, err = _resolve_active_child_wallet_for_mutation(request.user)
+    if err:
+        return err
+    _, w = pair
+    qs = WalletWithdrawal.objects.filter(wallet=w).order_by("-created_at")[:200]
+    return Response({"results": [_serialize_withdrawal_row(x) for x in qs]})
+
+
 @api_view(["POST"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated, IsPortalChild])
@@ -2239,6 +2350,9 @@ def portal_child_wallet_withdraw(request):
     block = kyc_withdraw_block_payload(request.user)
     if block:
         return Response(block, status=403)
+    pay_block = payout_required_block_payload(request.user)
+    if pay_block:
+        return Response(pay_block, status=403)
 
     pair, err = _resolve_active_child_wallet_for_mutation(request.user)
     if err:
@@ -2253,26 +2367,31 @@ def portal_child_wallet_withdraw(request):
     amount = _to_decimal(request.data.get("amount"), "0")
     if amount <= 0:
         return validation_error("amount must be positive", field="amount")
-    bank = (request.data.get("bank_name") or "").strip()[:100]
-    acct = (request.data.get("method_account") or request.data.get("account_number") or "").strip()[:100]
-    holder = (request.data.get("account_holder") or "").strip()[:150]
-    if not acct:
-        return validation_error("method_account (or account_number) required", field="method_account")
-    desc = f"Withdrawal to {bank or 'bank'} · {acct[:4]}…" if acct else "Withdrawal"
-    if holder:
-        desc = f"{desc} ({holder[:30]})"
+    raw_pid = request.data.get("payout_account_id") or request.data.get("payout_account")
     try:
-        wallet_service.debit_wallet(
-            w,
-            amount,
-            wtype=WalletTransaction.Type.WITHDRAWAL,
-            description=desc[:255],
-            performed_by=request.user,
+        pid = int(raw_pid)
+    except (TypeError, ValueError):
+        return validation_error("payout_account_id required", field="payout_account_id")
+    acct = PayoutAccount.objects.filter(pk=pid, user=request.user).first()
+    if not acct:
+        return validation_error("Invalid payout account.", field="payout_account_id")
+    try:
+        wd = create_pending_withdrawal(
+            wallet=w,
+            payout_user=request.user,
+            payout_account=acct,
+            amount=amount,
         )
     except ValueError as e:
         return Response({"detail": str(e)}, status=400)
-    w.refresh_from_db()
-    return Response({"ok": True, "balance": float(w.balance)})
+    return Response(
+        {
+            "id": str(wd.pk),
+            "withdrawal_number": wd.withdrawal_number,
+            "status": wd.status,
+        },
+        status=201,
+    )
 
 
 @api_view(["GET"])
@@ -2752,6 +2871,120 @@ def portal_wallet_transfer(request):
     return Response({"ok": True, "balance": float(from_w.balance)})
 
 
+def _serialize_payout_account(request, row: PayoutAccount) -> dict:
+    return {
+        "id": str(row.pk),
+        "type": row.type,
+        "phone": row.phone or "",
+        "bank_account_no": row.bank_account_no or "",
+        "bank_account_holder": row.bank_account_holder or "",
+        "bank_name": row.bank_name or "",
+        "qr_image_url": absolute_media_url(request, row.qr_image) if row.qr_image else "",
+        "created_at": row.created_at.isoformat(),
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
+def _serialize_withdrawal_row(w: WalletWithdrawal) -> dict:
+    return {
+        "id": str(w.pk),
+        "withdrawal_number": w.withdrawal_number,
+        "amount": float(w.amount),
+        "method": w.method,
+        "method_account": w.method_account,
+        "status": w.status,
+        "reject_reason": (w.reject_reason or "").strip(),
+        "created_at": w.created_at.isoformat(),
+        "processed_at": w.processed_at.isoformat() if w.processed_at else "",
+        "wallet_id": str(w.wallet_id),
+    }
+
+
+@api_view(["GET", "POST"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, MultiPartParser, FormParser])
+def portal_payout_accounts_list_create(request):
+    u = request.user
+    if request.method == "GET":
+        qs = PayoutAccount.objects.filter(user=u).order_by("-updated_at", "-id")
+        return Response({"results": [_serialize_payout_account(request, x) for x in qs]})
+    typ = (request.data.get("type") or "").strip()
+    if typ not in dict(PayoutAccount.Type.choices):
+        return validation_error("invalid type", field="type")
+    row = PayoutAccount(
+        user=u,
+        type=typ,
+        phone=(request.data.get("phone") or "").strip()[:20],
+        bank_account_no=(request.data.get("bank_account_no") or "").strip()[:64],
+        bank_account_holder=(request.data.get("bank_account_holder") or "").strip()[:150],
+        bank_name=(request.data.get("bank_name") or "").strip()[:100],
+    )
+    qr = request.FILES.get("qr_image")
+    if qr:
+        row.qr_image = qr
+    try:
+        row.full_clean()
+    except ValidationError as e:
+        return Response(e.message_dict if hasattr(e, "message_dict") else {"detail": str(e)}, status=400)
+    row.save()
+    return Response(_serialize_payout_account(request, row), status=201)
+
+
+@api_view(["PATCH", "DELETE"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, MultiPartParser, FormParser])
+def portal_payout_account_detail(request, pk: int):
+    u = request.user
+    row = PayoutAccount.objects.filter(pk=pk, user=u).first()
+    if not row:
+        return Response({"detail": "Not found."}, status=404)
+    if request.method == "DELETE":
+        try:
+            row.delete()
+        except Exception:
+            return Response(
+                {
+                    "detail": "Cannot delete this payout account (it may be linked to withdrawals).",
+                },
+                status=400,
+            )
+        return Response({"ok": True})
+    if "type" in request.data:
+        t = (request.data.get("type") or "").strip()
+        if t in dict(PayoutAccount.Type.choices):
+            row.type = t
+    if "phone" in request.data:
+        row.phone = (request.data.get("phone") or "").strip()[:20]
+    if "bank_account_no" in request.data:
+        row.bank_account_no = (request.data.get("bank_account_no") or "").strip()[:64]
+    if "bank_account_holder" in request.data:
+        row.bank_account_holder = (request.data.get("bank_account_holder") or "").strip()[:150]
+    if "bank_name" in request.data:
+        row.bank_name = (request.data.get("bank_name") or "").strip()[:100]
+    qr = request.FILES.get("qr_image")
+    if qr:
+        row.qr_image = qr
+    try:
+        row.full_clean()
+    except ValidationError as e:
+        return Response(e.message_dict if hasattr(e, "message_dict") else {"detail": str(e)}, status=400)
+    row.save()
+    return Response(_serialize_payout_account(request, row))
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated, IsPortalCustomer])
+def portal_wallet_withdrawals_list(request):
+    w, err = _ensure_active_personal_wallet(request.user)
+    if err:
+        return err
+    qs = WalletWithdrawal.objects.filter(wallet=w).order_by("-created_at")[:200]
+    return Response({"results": [_serialize_withdrawal_row(x) for x in qs]})
+
+
 @api_view(["POST"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated, IsPortalCustomer])
@@ -2764,6 +2997,9 @@ def portal_wallet_withdraw(request):
     block = kyc_withdraw_block_payload(request.user)
     if block:
         return Response(block, status=403)
+    pay_block = payout_required_block_payload(request.user)
+    if pay_block:
+        return Response(pay_block, status=403)
 
     w, err = _ensure_active_personal_wallet(request.user)
     if err:
@@ -2771,26 +3007,31 @@ def portal_wallet_withdraw(request):
     amount = _to_decimal(request.data.get("amount"), "0")
     if amount <= 0:
         return validation_error("amount must be positive", field="amount")
-    bank = (request.data.get("bank_name") or "").strip()[:100]
-    acct = (request.data.get("method_account") or request.data.get("account_number") or "").strip()[:100]
-    holder = (request.data.get("account_holder") or "").strip()[:150]
-    if not acct:
-        return validation_error("method_account (or account_number) required", field="method_account")
-    desc = f"Withdrawal to {bank or 'bank'} · {acct[:4]}…" if acct else "Withdrawal"
-    if holder:
-        desc = f"{desc} ({holder[:30]})"
+    raw_pid = request.data.get("payout_account_id") or request.data.get("payout_account")
     try:
-        wallet_service.debit_wallet(
-            w,
-            amount,
-            wtype=WalletTransaction.Type.WITHDRAWAL,
-            description=desc[:255],
-            performed_by=request.user,
+        pid = int(raw_pid)
+    except (TypeError, ValueError):
+        return validation_error("payout_account_id required", field="payout_account_id")
+    acct = PayoutAccount.objects.filter(pk=pid, user=request.user).first()
+    if not acct:
+        return validation_error("Invalid payout account.", field="payout_account_id")
+    try:
+        wd = create_pending_withdrawal(
+            wallet=w,
+            payout_user=request.user,
+            payout_account=acct,
+            amount=amount,
         )
     except ValueError as e:
         return Response({"detail": str(e)}, status=400)
-    w.refresh_from_db()
-    return Response({"ok": True, "balance": float(w.balance)})
+    return Response(
+        {
+            "id": str(wd.pk),
+            "withdrawal_number": wd.withdrawal_number,
+            "status": wd.status,
+        },
+        status=201,
+    )
 
 
 # --- Support ---

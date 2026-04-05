@@ -186,7 +186,7 @@ def apply_topup_bonus_after_credit(
 
 @transaction.atomic
 def complete_withdrawal(withdrawal: WalletWithdrawal) -> WalletTransaction | None:
-    if withdrawal.status != WalletWithdrawal.Status.COMPLETED:
+    if withdrawal.status != WalletWithdrawal.Status.APPROVED:
         return None
     wd = (
         WalletWithdrawal.objects.select_for_update()

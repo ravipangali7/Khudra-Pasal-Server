@@ -114,7 +114,17 @@ urlpatterns = [
         name="admin-commission-settlements",
     ),
     path("withdrawals/", resource_views.admin_withdrawals_list, name="admin-withdrawals"),
+    path(
+        "withdrawals/summary/",
+        resource_views.admin_withdrawals_summary,
+        name="admin-withdrawals-summary",
+    ),
     path("withdrawals/<int:pk>/", resource_views.admin_withdrawal_detail_write, name="admin-withdrawals-write"),
+    path(
+        "payout-accounts/",
+        resource_views.admin_payout_accounts_list,
+        name="admin-payout-accounts",
+    ),
     path("wallets/summary/", resource_views.admin_wallets_summary, name="admin-wallets-summary"),
     path("wallets/adjust/", resource_views.admin_wallet_adjust, name="admin-wallets-adjust"),
     path("wallets/<int:pk>/", resource_views.admin_wallet_detail_write, name="admin-wallets-write"),

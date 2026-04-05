@@ -72,6 +72,7 @@ from core.models import (
     WalletTransaction,
     WalletWithdrawal,
     WeightRule,
+    PayoutAccount,
 )
 from core.serializers import ReelPublicSerializer
 from core.services import audit_service, product_service, support_notification_service, support_ticket_service
@@ -1716,8 +1717,14 @@ def admin_ledger_transactions_list(request):
 def admin_withdrawals_list(request):
     if err := _forbidden(request):
         return err
-    qs = WalletWithdrawal.objects.select_related("wallet", "wallet__vendor", "wallet__owner").order_by(
-        "-created_at"
+    qs = (
+        WalletWithdrawal.objects.select_related(
+            "wallet",
+            "wallet__vendor",
+            "wallet__owner",
+            "payout_account",
+        )
+        .order_by("-created_at")
     )
     paginator, page = _paginate(request, qs)
     rows = []
@@ -1731,6 +1738,14 @@ def admin_withdrawals_list(request):
         elif w.wallet.owner_id:
             seller = w.wallet.owner.name
             owner_id = str(w.wallet.owner_id)
+        payout_summary = ""
+        if w.payout_account_id:
+            pa = w.payout_account
+            payout_summary = f"{pa.get_type_display()}"
+            if pa.phone:
+                payout_summary += f" · {pa.phone}"
+            elif pa.bank_account_no:
+                payout_summary += f" · …{pa.bank_account_no[-4:]}"
         rows.append(
             {
                 "id": str(w.pk),
@@ -1739,6 +1754,7 @@ def admin_withdrawals_list(request):
                 "vendor_id": vendor_id,
                 "owner_id": owner_id,
                 "wallet_id": str(w.wallet_id),
+                "wallet_type": w.wallet.type,
                 "amount": float(w.amount),
                 "method": w.get_method_display(),
                 "method_code": w.method,
@@ -1746,9 +1762,13 @@ def admin_withdrawals_list(request):
                 "bank_name": w.bank_name,
                 "account_holder": w.account_holder,
                 "admin_note": w.admin_note,
+                "reject_reason": (w.reject_reason or "").strip(),
+                "payout_account_id": str(w.payout_account_id) if w.payout_account_id else "",
+                "payout_summary": payout_summary,
                 "status": w.status,
                 "date": w.created_at.date().isoformat(),
                 "created_at": w.created_at.isoformat(),
+                "updated_at": w.updated_at.isoformat() if getattr(w, "updated_at", None) else "",
                 "processed_at": w.processed_at.isoformat() if w.processed_at else "",
                 "balance": float(w.wallet.balance),
             }
@@ -1768,10 +1788,12 @@ def admin_withdrawal_detail_write(request, pk):
     if row.status != WalletWithdrawal.Status.PENDING:
         return validation_error("only pending withdrawals can be approved or rejected")
     new_status = request.data.get("status")
-    if new_status not in (WalletWithdrawal.Status.COMPLETED, WalletWithdrawal.Status.REJECTED):
-        return validation_error("status must be completed or rejected", field="status")
+    if new_status not in (WalletWithdrawal.Status.APPROVED, WalletWithdrawal.Status.REJECTED):
+        return validation_error("status must be approved or rejected", field="status")
     if "admin_note" in request.data:
         row.admin_note = (request.data.get("admin_note") or "")[:2000]
+    if new_status == WalletWithdrawal.Status.REJECTED and "reject_reason" in request.data:
+        row.reject_reason = (request.data.get("reject_reason") or "")[:2000]
     row.status = new_status
     row.save()
     audit_service.log(
@@ -1792,6 +1814,71 @@ def admin_withdrawal_detail_write(request, pk):
             "status": row.status,
         }
     )
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_withdrawals_summary(request):
+    if err := _forbidden(request):
+        return err
+    pending = WalletWithdrawal.objects.filter(
+        status=WalletWithdrawal.Status.PENDING
+    ).count()
+    start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    approved_today = WalletWithdrawal.objects.filter(
+        status=WalletWithdrawal.Status.APPROVED,
+        processed_at__gte=start,
+    ).count()
+    total_payout_accounts = PayoutAccount.objects.count()
+    users_verified_kyc = User.objects.filter(
+        kyc_status=User.KYCStatus.VERIFIED
+    ).count()
+    return Response(
+        {
+            "pending_withdrawals": pending,
+            "approved_today": approved_today,
+            "total_payout_accounts": total_payout_accounts,
+            "users_kyc_verified": users_verified_kyc,
+        }
+    )
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_payout_accounts_list(request):
+    if err := _forbidden(request):
+        return err
+    qs = PayoutAccount.objects.select_related("user").order_by("-updated_at", "-id")
+    search = (request.query_params.get("search") or "").strip()
+    if search:
+        qs = qs.filter(
+            Q(user__name__icontains=search)
+            | Q(user__phone__icontains=search)
+            | Q(phone__icontains=search)
+            | Q(bank_account_no__icontains=search)
+        )
+    paginator, page = _paginate(request, qs)
+    rows = []
+    for pa in page:
+        rows.append(
+            {
+                "id": str(pa.pk),
+                "user_id": str(pa.user_id),
+                "user_name": pa.user.name,
+                "user_phone": pa.user.phone or "",
+                "type": pa.type,
+                "phone": pa.phone or "",
+                "bank_name": pa.bank_name or "",
+                "bank_account_no": pa.bank_account_no or "",
+                "bank_account_holder": pa.bank_account_holder or "",
+                "qr_image_url": absolute_media_url(request, pa.qr_image) if pa.qr_image else "",
+                "created_at": pa.created_at.isoformat(),
+                "updated_at": pa.updated_at.isoformat(),
+            }
+        )
+    return paginator.get_paginated_response(rows)
 
 
 @api_view(["GET"])

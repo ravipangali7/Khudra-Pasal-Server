@@ -669,13 +669,30 @@ class WalletTransactionAdmin(admin.ModelAdmin):
     autocomplete_fields = ("wallet", "from_wallet", "to_wallet", "performed_by")
 
 
+@admin.register(models.PayoutAccount)
+class PayoutAccountAdmin(admin.ModelAdmin):
+    list_display = ("id", "user", "type", "phone", "bank_name", "updated_at")
+    list_filter = ("type",)
+    search_fields = ("user__name", "user__phone", "phone", "bank_account_no")
+    autocomplete_fields = ("user",)
+    readonly_fields = ("created_at", "updated_at")
+
+
 @admin.register(models.WalletWithdrawal)
 class WalletWithdrawalAdmin(admin.ModelAdmin):
-    list_display = ("withdrawal_number", "wallet", "amount", "method", "status", "created_at")
+    list_display = (
+        "withdrawal_number",
+        "wallet",
+        "payout_account",
+        "amount",
+        "method",
+        "status",
+        "created_at",
+    )
     list_filter = ("status", "method")
     search_fields = ("withdrawal_number",)
-    readonly_fields = ("created_at", "processed_at")
-    autocomplete_fields = ("wallet",)
+    readonly_fields = ("created_at", "updated_at", "processed_at")
+    autocomplete_fields = ("wallet", "payout_account")
 
 
 @admin.register(models.WalletBonus)

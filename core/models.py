@@ -861,6 +861,44 @@ class WalletTransaction(models.Model):
         return self.txn_id
 
 
+class PayoutAccount(models.Model):
+    """Saved payout destination (eSewa, Khalti, bank) for a user across portals."""
+
+    class Type(models.TextChoices):
+        ESEWA = "esewa", "eSewa"
+        KHALTI = "khalti", "Khalti"
+        BANK = "bank", "Bank"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="payout_accounts",
+    )
+    type = models.CharField(max_length=20, choices=Type.choices)
+    qr_image = models.ImageField(upload_to="payout_qr/", blank=True)
+    phone = models.CharField(max_length=20, blank=True)
+    bank_account_no = models.CharField(max_length=64, blank=True)
+    bank_account_holder = models.CharField(max_length=150, blank=True)
+    bank_name = models.CharField(max_length=100, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at", "-id"]
+
+    def clean(self):
+        super().clean()
+        if self.type == self.Type.BANK:
+            if not (self.bank_account_no or "").strip():
+                raise ValidationError({"bank_account_no": "Bank account number is required."})
+        elif self.type in (self.Type.ESEWA, self.Type.KHALTI):
+            if not (self.phone or "").strip():
+                raise ValidationError({"phone": "Phone / wallet ID is required."})
+
+    def __str__(self) -> str:
+        return f"{self.user_id} — {self.get_type_display()}"
+
+
 class WalletWithdrawal(models.Model):
     class Method(models.TextChoices):
         BANK_TRANSFER = "bank_transfer", "Bank transfer"
@@ -870,12 +908,19 @@ class WalletWithdrawal(models.Model):
 
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
-        COMPLETED = "completed", "Completed"
+        APPROVED = "approved", "Approved"
         REJECTED = "rejected", "Rejected"
 
     withdrawal_number = models.CharField(max_length=30, unique=True)
     wallet = models.ForeignKey(
         Wallet, on_delete=models.PROTECT, related_name="withdrawals"
+    )
+    payout_account = models.ForeignKey(
+        PayoutAccount,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="withdrawals",
     )
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     method = models.CharField(max_length=30, choices=Method.choices)
@@ -886,7 +931,9 @@ class WalletWithdrawal(models.Model):
         max_length=20, choices=Status.choices, default=Status.PENDING
     )
     admin_note = models.TextField(blank=True)
+    reject_reason = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
     processed_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self) -> str:

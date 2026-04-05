@@ -20,6 +20,7 @@ from core.models import (
     FamilyMember,
     FamilyWalletCategory,
     OTPVerification,
+    PayoutAccount,
     ProductRestriction,
     SiteSettings,
     User,
@@ -27,6 +28,7 @@ from core.models import (
     WalletTransaction,
 )
 from core.services import family_service, wallet_service
+from core.services.family_service import get_platform_hub_group
 from core.services.base import get_or_create_personal_wallet
 from core.services.family_portal_wallet_service import (
     get_default_shared_wallet,
@@ -757,6 +759,21 @@ class FamilyPortalFlowTests(TestCase):
         self.assertIn("leader", (r2.data.get("detail") or "").lower())
 
     def test_join_flat_uses_platform_hub(self):
+        if not get_platform_hub_group(FamilyGroup.Type.FLAT):
+            hub_leader = User.objects.create_user(
+                username="flat_hub_seed",
+                password=self.pw,
+                phone="9755555555",
+                name="Flat hub",
+                role=User.Role.NORMAL,
+            )
+            FamilyGroup.objects.create(
+                name="Platform FLAT hub",
+                leader=hub_leader,
+                type=FamilyGroup.Type.FLAT,
+                status=FamilyGroup.Status.ACTIVE,
+                is_platform_hub=True,
+            )
         other = User.objects.create_user(
             username="flatjoin",
             password=self.pw,
@@ -1241,20 +1258,25 @@ class FamilyPortalFlowTests(TestCase):
         self.assertEqual(r_top.status_code, status.HTTP_200_OK)
         cw.refresh_from_db()
         self.assertEqual(cw.balance, Decimal("35.00"))
+        pa = PayoutAccount.objects.create(
+            user=child_user,
+            type=PayoutAccount.Type.ESEWA,
+            phone="9811111111",
+        )
         r_wd = self.client.post(
             "/api/portal/child/wallet/withdraw/",
-            {"amount": "5", "method_account": "9811111111"},
+            {"amount": "5", "payout_account_id": pa.pk},
             format="json",
         )
-        self.assertEqual(r_wd.status_code, status.HTTP_200_OK)
+        self.assertEqual(r_wd.status_code, status.HTTP_201_CREATED)
         cw.refresh_from_db()
-        self.assertEqual(cw.balance, Decimal("30.00"))
+        self.assertEqual(cw.balance, Decimal("35.00"))
 
         perm.allow_cash_withdrawal = False
         perm.save()
         r_denied = self.client.post(
             "/api/portal/child/wallet/withdraw/",
-            {"amount": "1", "method_account": "9811111111"},
+            {"amount": "1", "payout_account_id": pa.pk},
             format="json",
         )
         self.assertEqual(r_denied.status_code, status.HTTP_403_FORBIDDEN)

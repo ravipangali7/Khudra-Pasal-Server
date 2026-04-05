@@ -7,7 +7,7 @@ from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
-from core.models import KYCDocument, SiteSettings, User, Wallet, WalletTransaction
+from core.models import KYCDocument, PayoutAccount, SiteSettings, User, Wallet, WalletTransaction, WalletWithdrawal
 from core.services.base import get_or_create_personal_wallet
 from core.services import wallet_service
 
@@ -63,6 +63,13 @@ class KycWithdrawFlowTests(TestCase):
             performed_by=user,
         )
 
+    def _payout_esewa(self, user: User, phone: str = "9800000000") -> PayoutAccount:
+        return PayoutAccount.objects.create(
+            user=user,
+            type=PayoutAccount.Type.ESEWA,
+            phone=phone,
+        )
+
     def test_portal_withdraw_blocked_when_kyc_not_verified(self):
         self._login(self.customer)
         self._fund_wallet(self.customer)
@@ -84,33 +91,72 @@ class KycWithdrawFlowTests(TestCase):
         ss.save(update_fields=["kyc_required"])
         self._login(self.customer)
         self._fund_wallet(self.customer)
+        pa = self._payout_esewa(self.customer)
+        w = get_or_create_personal_wallet(self.customer)
+        bal_before = w.balance
         r = self.client.post(
             "/api/portal/wallet/withdraw/",
             {
                 "amount": 100,
-                "method_account": "9800000000",
-                "bank_name": "Test",
+                "payout_account_id": pa.pk,
             },
             format="json",
         )
-        self.assertEqual(r.status_code, status.HTTP_200_OK)
-        self.assertTrue(r.data.get("ok"))
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED)
+        self.assertIn("withdrawal_number", r.data)
+        w.refresh_from_db()
+        self.assertEqual(w.balance, bal_before)
 
     def test_portal_withdraw_allowed_when_verified(self):
         self.customer.kyc_status = User.KYCStatus.VERIFIED
         self.customer.save(update_fields=["kyc_status"])
         self._login(self.customer)
         self._fund_wallet(self.customer)
+        pa = self._payout_esewa(self.customer)
         r = self.client.post(
             "/api/portal/wallet/withdraw/",
             {
                 "amount": 100,
-                "method_account": "9800000000",
-                "bank_name": "Test",
+                "payout_account_id": pa.pk,
             },
             format="json",
         )
-        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED)
+        self.assertIn("withdrawal_number", r.data)
+
+    def test_portal_withdraw_second_pending_blocked_by_available_balance(self):
+        ss = SiteSettings.load()
+        ss.kyc_required = False
+        ss.save(update_fields=["kyc_required"])
+        self._login(self.customer)
+        self._fund_wallet(self.customer, Decimal("100"))
+        pa = self._payout_esewa(self.customer)
+        r1 = self.client.post(
+            "/api/portal/wallet/withdraw/",
+            {"amount": 60, "payout_account_id": pa.pk},
+            format="json",
+        )
+        self.assertEqual(r1.status_code, status.HTTP_201_CREATED)
+        r2 = self.client.post(
+            "/api/portal/wallet/withdraw/",
+            {"amount": 50, "payout_account_id": pa.pk},
+            format="json",
+        )
+        self.assertEqual(r2.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(WalletWithdrawal.objects.filter(wallet__owner=self.customer).count(), 1)
+
+    def test_portal_withdraw_blocked_without_payout_account_when_kyc_ok(self):
+        self.customer.kyc_status = User.KYCStatus.VERIFIED
+        self.customer.save(update_fields=["kyc_status"])
+        self._login(self.customer)
+        self._fund_wallet(self.customer)
+        r = self.client.post(
+            "/api/portal/wallet/withdraw/",
+            {"amount": 50},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(r.data.get("code"), "payout_required")
 
     def test_kyc_submit_creates_pending_document(self):
         from django.core.files.uploadedfile import SimpleUploadedFile

@@ -449,7 +449,7 @@ def vendor_wallet_transactions(request):
             }
         )
 
-    # Pending / rejected only — completed payouts appear as wallet withdrawal rows.
+    # Pending / rejected only — approved payouts appear as wallet withdrawal rows.
     wd_qs = (
         WalletWithdrawal.objects.filter(
             wallet=vw,

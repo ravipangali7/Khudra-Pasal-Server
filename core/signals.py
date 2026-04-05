@@ -189,8 +189,8 @@ def withdrawal_pre(sender, instance, **kwargs):
 def withdrawal_post(sender, instance, created, **kwargs):
     prev = getattr(instance, "_previous_withdrawal_status", None)
     if (
-        instance.status == WalletWithdrawal.Status.COMPLETED
-        and prev != WalletWithdrawal.Status.COMPLETED
+        instance.status == WalletWithdrawal.Status.APPROVED
+        and prev != WalletWithdrawal.Status.APPROVED
     ):
         wallet_service.complete_withdrawal(instance)
     if (

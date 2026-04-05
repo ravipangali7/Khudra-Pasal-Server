@@ -23,6 +23,21 @@ urlpatterns = [
     ),
     path("wallet/transfer/", portal_views.portal_wallet_transfer, name="portal-wallet-transfer"),
     path("wallet/withdraw/", portal_views.portal_wallet_withdraw, name="portal-wallet-withdraw"),
+    path(
+        "wallet/withdrawals/",
+        portal_views.portal_wallet_withdrawals_list,
+        name="portal-wallet-withdrawals",
+    ),
+    path(
+        "payout-accounts/",
+        portal_views.portal_payout_accounts_list_create,
+        name="portal-payout-accounts",
+    ),
+    path(
+        "payout-accounts/<int:pk>/",
+        portal_views.portal_payout_account_detail,
+        name="portal-payout-account-detail",
+    ),
     path("support/faqs/", portal_views.portal_support_faqs, name="portal-support-faqs"),
     path(
         "support/attachments/<int:attachment_id>/",
@@ -180,6 +195,11 @@ urlpatterns = [
         name="portal-family-wallet-transfer",
     ),
     path(
+        "family/wallet/withdrawals/",
+        portal_views.portal_family_wallet_withdrawals,
+        name="portal-family-wallet-withdrawals",
+    ),
+    path(
         "family/wallet/categories/meta/",
         portal_views.portal_family_wallet_categories_meta,
         name="portal-family-wallet-categories-meta",
@@ -214,6 +234,11 @@ urlpatterns = [
         "child/wallet/withdraw/",
         portal_views.portal_child_wallet_withdraw,
         name="portal-child-wallet-withdraw",
+    ),
+    path(
+        "child/wallet/withdrawals/",
+        portal_views.portal_child_wallet_withdrawals_list,
+        name="portal-child-wallet-withdrawals",
     ),
     path("child/rules/", portal_views.portal_child_rules, name="portal-child-rules"),
 ]

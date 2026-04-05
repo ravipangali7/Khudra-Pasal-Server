@@ -1,6 +1,7 @@
 from django.urls import path
 
 from core.views import navigation_views
+from core.views.portal import portal_views
 from core.views.vendor import vendor_resources, vendor_views
 
 urlpatterns = [
@@ -44,6 +45,16 @@ urlpatterns = [
         name="vendor-commission-settlements",
     ),
     path("withdrawals/", vendor_resources.vendor_withdrawals, name="vendor-withdrawals"),
+    path(
+        "payout-accounts/",
+        portal_views.portal_payout_accounts_list_create,
+        name="vendor-payout-accounts",
+    ),
+    path(
+        "payout-accounts/<int:pk>/",
+        portal_views.portal_payout_account_detail,
+        name="vendor-payout-account-detail",
+    ),
     path("coupons/", vendor_resources.vendor_coupons_list_create, name="vendor-coupons"),
     path("coupons/<int:pk>/", vendor_resources.vendor_coupon_detail, name="vendor-coupon-detail"),
     path("flash-deals/", vendor_resources.vendor_flash_deals_list, name="vendor-flash-deals"),
