@@ -135,6 +135,12 @@ def family_wallet_load(
         reference_id=str(group.pk),
         performed_by=performed_by,
     )
+    wallet_service.apply_topup_bonus_after_credit(
+        w,
+        amount,
+        bonus_reference_id=wt.txn_id,
+        performed_by=performed_by,
+    )
     w.refresh_from_db()
     return w, wt
 

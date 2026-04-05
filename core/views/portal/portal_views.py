@@ -2207,13 +2207,20 @@ def portal_child_wallet_topup(request):
         return validation_error("amount must be positive", field="amount")
     method = (request.data.get("method") or "topup").strip()[:50]
     try:
-        wallet_service.credit_wallet(
-            w,
-            amount,
-            wtype=WalletTransaction.Type.TOPUP,
-            description=f"Child wallet top-up ({method})",
-            performed_by=request.user,
-        )
+        with transaction.atomic():
+            wt = wallet_service.credit_wallet(
+                w,
+                amount,
+                wtype=WalletTransaction.Type.TOPUP,
+                description=f"Child wallet top-up ({method})",
+                performed_by=request.user,
+            )
+            wallet_service.apply_topup_bonus_after_credit(
+                w,
+                amount,
+                bonus_reference_id=wt.txn_id,
+                performed_by=request.user,
+            )
     except Exception as e:
         return Response({"detail": str(e)}, status=400)
     w.refresh_from_db()
@@ -2675,13 +2682,20 @@ def portal_wallet_topup(request):
         return validation_error("amount must be positive", field="amount")
     method = (request.data.get("method") or "topup").strip()[:50]
     try:
-        wallet_service.credit_wallet(
-            w,
-            amount,
-            wtype=WalletTransaction.Type.TOPUP,
-            description=f"Wallet top-up ({method})",
-            performed_by=request.user,
-        )
+        with transaction.atomic():
+            wt = wallet_service.credit_wallet(
+                w,
+                amount,
+                wtype=WalletTransaction.Type.TOPUP,
+                description=f"Wallet top-up ({method})",
+                performed_by=request.user,
+            )
+            wallet_service.apply_topup_bonus_after_credit(
+                w,
+                amount,
+                bonus_reference_id=wt.txn_id,
+                performed_by=request.user,
+            )
     except Exception as e:
         return Response({"detail": str(e)}, status=400)
     w.refresh_from_db()

@@ -105,7 +105,12 @@ def credit_from_payment_transaction(pt: PaymentTransaction) -> WalletTransaction
         wallet_transaction=wt,
         verified_at=timezone.now(),
     )
-    _apply_topup_bonus_unlocked(pt_locked, wallet)
+    apply_topup_bonus_after_credit(
+        wallet,
+        pt_locked.amount,
+        bonus_reference_id=str(pt_locked.pk),
+        performed_by=pt_locked.customer,
+    )
     return wt
 
 
@@ -117,16 +122,36 @@ def _bonus_value_from_rule(rule: WalletBonus, base: Decimal) -> Decimal:
     return rule.amount
 
 
-def _apply_topup_bonus_unlocked(
-    pt: PaymentTransaction, wallet: Wallet
+def _signup_referral_bonus_value(rule: WalletBonus) -> Decimal | None:
+    """Computed bonus for signup/referral rules. % rules need min_topup > 0 as monetary base."""
+    today = timezone.now().date()
+    if rule.expires_at and rule.expires_at < today:
+        return None
+    if rule.is_percentage:
+        if rule.min_topup <= 0:
+            return None
+        val = _bonus_value_from_rule(rule, rule.min_topup)
+    else:
+        val = _bonus_value_from_rule(rule, Decimal("1"))
+    return val if val > 0 else None
+
+
+def apply_topup_bonus_after_credit(
+    wallet: Wallet,
+    topup_amount: Decimal,
+    *,
+    bonus_reference_id: str,
+    performed_by: User | None,
 ) -> WalletTransaction | None:
-    """Grant best matching active top-up bonus for this payment (same txn as main top-up)."""
+    """Grant best matching active TOPUP WalletBonus after a principal top-up credit.
+
+    Idempotent per ``bonus_reference_id`` (e.g. PaymentTransaction pk or main TOPUP txn_id).
+    """
     if WalletTransaction.objects.filter(
         reference_type="topup_bonus",
-        reference_id=str(pt.pk),
+        reference_id=bonus_reference_id,
     ).exists():
         return None
-    topup_amt = pt.amount
     today = timezone.now().date()
     best_rule: WalletBonus | None = None
     best_val = Decimal("0")
@@ -136,9 +161,9 @@ def _apply_topup_bonus_unlocked(
     ).order_by("id"):
         if rule.expires_at and rule.expires_at < today:
             continue
-        if topup_amt < rule.min_topup:
+        if topup_amount < rule.min_topup:
             continue
-        val = _bonus_value_from_rule(rule, topup_amt)
+        val = _bonus_value_from_rule(rule, topup_amount)
         if val <= 0:
             continue
         if val > best_val:
@@ -152,8 +177,8 @@ def _apply_topup_bonus_unlocked(
         wtype=WalletTransaction.Type.BONUS,
         description=best_rule.title,
         reference_type="topup_bonus",
-        reference_id=str(pt.pk),
-        performed_by=pt.customer,
+        reference_id=bonus_reference_id,
+        performed_by=performed_by,
     )
     WalletBonus.objects.filter(pk=best_rule.pk).update(used_count=F("used_count") + 1)
     return bonus_wt
@@ -260,34 +285,31 @@ def apply_signup_bonus(user: User) -> WalletTransaction | None:
         reference_type="signup_bonus",
     ).exists():
         return None
-    bonus = (
-        WalletBonus.objects.filter(
-            type=WalletBonus.Type.SIGNUP,
-            status=WalletBonus.Status.ACTIVE,
-        )
-        .order_by("-amount")
-        .first()
-    )
-    if not bonus:
-        return None
-    if bonus.expires_at and bonus.expires_at < timezone.now().date():
-        return None
-    amount = bonus.amount
-    if bonus.is_percentage:
-        return None
-    if amount <= 0:
+    best_rule: WalletBonus | None = None
+    best_val = Decimal("0")
+    for rule in WalletBonus.objects.filter(
+        type=WalletBonus.Type.SIGNUP,
+        status=WalletBonus.Status.ACTIVE,
+    ).order_by("id"):
+        val = _signup_referral_bonus_value(rule)
+        if val is None:
+            continue
+        if val > best_val:
+            best_val = val
+            best_rule = rule
+    if not best_rule or best_val <= 0:
         return None
     wallet = get_or_create_personal_wallet(user)
     wt = credit_wallet(
         wallet,
-        amount,
+        best_val,
         wtype=WalletTransaction.Type.BONUS,
-        description=bonus.title,
+        description=best_rule.title,
         reference_type="signup_bonus",
-        reference_id=str(bonus.pk),
+        reference_id=str(best_rule.pk),
         performed_by=user,
     )
-    WalletBonus.objects.filter(pk=bonus.pk).update(used_count=F("used_count") + 1)
+    WalletBonus.objects.filter(pk=best_rule.pk).update(used_count=F("used_count") + 1)
     return wt
 
 
@@ -305,34 +327,31 @@ def apply_referral_wallet_bonus(new_user: User) -> WalletTransaction | None:
     referrer = User.objects.filter(pk=rid).first()
     if not referrer:
         return None
-    bonus = (
-        WalletBonus.objects.filter(
-            type=WalletBonus.Type.REFERRAL,
-            status=WalletBonus.Status.ACTIVE,
-        )
-        .order_by("-amount")
-        .first()
-    )
-    if not bonus:
-        return None
-    if bonus.expires_at and bonus.expires_at < timezone.now().date():
-        return None
-    if bonus.is_percentage:
-        return None
-    amount = bonus.amount
-    if amount <= 0:
+    best_rule: WalletBonus | None = None
+    best_val = Decimal("0")
+    for rule in WalletBonus.objects.filter(
+        type=WalletBonus.Type.REFERRAL,
+        status=WalletBonus.Status.ACTIVE,
+    ).order_by("id"):
+        val = _signup_referral_bonus_value(rule)
+        if val is None:
+            continue
+        if val > best_val:
+            best_val = val
+            best_rule = rule
+    if not best_rule or best_val <= 0:
         return None
     wallet = get_or_create_personal_wallet(referrer)
     wt = credit_wallet(
         wallet,
-        amount,
+        best_val,
         wtype=WalletTransaction.Type.BONUS,
-        description=bonus.title,
+        description=best_rule.title,
         reference_type="referral_wallet_bonus",
         reference_id=str(new_user.pk),
         performed_by=referrer,
     )
-    WalletBonus.objects.filter(pk=bonus.pk).update(used_count=F("used_count") + 1)
+    WalletBonus.objects.filter(pk=best_rule.pk).update(used_count=F("used_count") + 1)
     return wt
 
 
