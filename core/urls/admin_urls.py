@@ -1,6 +1,13 @@
 from django.urls import path
 
-from core.views.admin import dashboard_views, kyc_submissions_views, resource_views, system_cleanup_views, user_views
+from core.views.admin import (
+    dashboard_views,
+    kyc_submissions_views,
+    purchase_insights_views,
+    resource_views,
+    system_cleanup_views,
+    user_views,
+)
 from core.views import navigation_views
 
 urlpatterns = [
@@ -41,6 +48,11 @@ urlpatterns = [
     path("dashboard/summary/", dashboard_views.dashboard_summary, name="admin-dashboard-summary"),
     path("dashboard/recent-orders/", dashboard_views.dashboard_recent_orders, name="admin-dashboard-recent-orders"),
     path("dashboard/sales-series/", dashboard_views.dashboard_sales_series, name="admin-dashboard-sales-series"),
+    path(
+        "purchase-insights/",
+        purchase_insights_views.admin_purchase_insights,
+        name="admin-purchase-insights",
+    ),
     path("orders/", resource_views.admin_orders_list, name="admin-orders"),
     path("order-settings/", resource_views.admin_order_settings_singleton, name="admin-order-settings"),
     path(

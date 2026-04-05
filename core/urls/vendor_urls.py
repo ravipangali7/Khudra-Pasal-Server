@@ -61,6 +61,7 @@ urlpatterns = [
     path("customers/", vendor_resources.vendor_customers_list, name="vendor-customers"),
     path("reports/summary/", vendor_resources.vendor_reports_summary, name="vendor-reports-summary"),
     path("reports/export.csv", vendor_resources.vendor_reports_export_csv, name="vendor-reports-csv"),
+    path("purchase-insights/", vendor_resources.vendor_purchase_insights, name="vendor-purchase-insights"),
     path("support/tickets/", vendor_resources.vendor_support_tickets, name="vendor-support-tickets"),
     path(
         "support/tickets/<str:ticket_number>/messages/",
