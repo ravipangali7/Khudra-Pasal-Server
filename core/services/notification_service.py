@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from core.models import Notification, Order, ProductReview, User
+from core.models import Notification, Order, ProductReview, PurchaseApprovalRequest, User
 
 
 def notify_user(
@@ -39,6 +39,46 @@ def notify_order_delivered(order: Order) -> Notification:
         target=Notification.Target.CUSTOMERS,
         recipient=order.customer,
         action_url="/portal/orders",
+    )
+
+
+def notify_parent_purchase_approval_requested(par: PurchaseApprovalRequest) -> Notification:
+    """In-app notice for the family leader when a child submits a purchase approval request."""
+    child = par.child
+    label = (child.name or "").strip() or (child.phone or "").strip() or f"Child #{child.pk}"
+    msg = f"{label} asked to buy {par.product.name} (Rs. {par.amount})."
+    note = (par.note or "").strip()
+    if note:
+        msg = f"{msg} Note: {note[:200]}"
+    return notify_user(
+        user=par.parent,
+        title="Purchase approval requested",
+        message=msg,
+        ntype=Notification.Type.FAMILY,
+        action_url="/family-portal/dashboard",
+    )
+
+
+def notify_child_purchase_approval_decision(par: PurchaseApprovalRequest) -> Notification:
+    """In-app notice for the child when the parent approves or rejects a purchase request."""
+    if par.status == PurchaseApprovalRequest.Status.APPROVED:
+        title = "Purchase approved"
+        msg = (
+            f"Your parent approved {par.product.name} (Rs. {par.amount}). "
+            "You can add it to your cart on the shop or child portal."
+        )
+    else:
+        title = "Purchase request declined"
+        msg = f"Your parent declined the request for {par.product.name}."
+    pn = (par.parent_note or "").strip()
+    if pn:
+        msg = f"{msg} Message: {pn[:200]}"
+    return notify_user(
+        user=par.child,
+        title=title,
+        message=msg,
+        ntype=Notification.Type.FAMILY,
+        action_url="/child-portal/requests",
     )
 
 

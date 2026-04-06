@@ -16,6 +16,7 @@ from core.models import (
     FamilyGroup,
     FamilyGroupPermission,
     FamilyMember,
+    Notification,
     Order,
     Product,
     ProductRestriction,
@@ -477,6 +478,7 @@ class PurchaseApprovalPortalApiTests(TestCase):
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.child_token.key}")
 
     def test_child_creates_purchase_approval_via_portal(self):
+        parent_n_before = Notification.objects.filter(recipient=self.leader).count()
         r = self.client.post(
             "/api/portal/child/purchase-approval-requests/",
             {"product_id": self.product.pk},
@@ -484,6 +486,17 @@ class PurchaseApprovalPortalApiTests(TestCase):
         )
         self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
         self.assertEqual(PurchaseApprovalRequest.objects.count(), 1)
+        self.assertEqual(
+            Notification.objects.filter(recipient=self.leader).count(),
+            parent_n_before + 1,
+        )
+        n = (
+            Notification.objects.filter(recipient=self.leader)
+            .order_by("-created_at")
+            .first()
+        )
+        self.assertEqual(n.type, Notification.Type.FAMILY)
+        self.assertIn("approval", n.title.lower())
 
     def test_leader_approves_via_portal(self):
         par = PurchaseApprovalRequest.objects.create(
@@ -495,6 +508,7 @@ class PurchaseApprovalPortalApiTests(TestCase):
         )
         leader_tok = Token.objects.create(user=self.leader)
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {leader_tok.key}")
+        child_n_before = Notification.objects.filter(recipient=self.child).count()
         r = self.client.patch(
             f"/api/portal/family/purchase-approval-requests/{par.pk}/",
             {"status": "approved"},
@@ -503,3 +517,45 @@ class PurchaseApprovalPortalApiTests(TestCase):
         self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
         par.refresh_from_db()
         self.assertEqual(par.status, PurchaseApprovalRequest.Status.APPROVED)
+        self.assertEqual(
+            Notification.objects.filter(recipient=self.child).count(),
+            child_n_before + 1,
+        )
+        cn = (
+            Notification.objects.filter(recipient=self.child)
+            .order_by("-created_at")
+            .first()
+        )
+        self.assertEqual(cn.type, Notification.Type.FAMILY)
+        self.assertIn("approved", cn.title.lower())
+
+    def test_leader_reject_notifies_child(self):
+        par = PurchaseApprovalRequest.objects.create(
+            child=self.child,
+            parent=self.leader,
+            product=self.product,
+            amount=Decimal("120.00"),
+            status=PurchaseApprovalRequest.Status.PENDING,
+        )
+        leader_tok = Token.objects.create(user=self.leader)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {leader_tok.key}")
+        child_n_before = Notification.objects.filter(recipient=self.child).count()
+        r = self.client.patch(
+            f"/api/portal/family/purchase-approval-requests/{par.pk}/",
+            {"status": "rejected", "parent_note": "Not now"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
+        par.refresh_from_db()
+        self.assertEqual(par.status, PurchaseApprovalRequest.Status.REJECTED)
+        self.assertEqual(
+            Notification.objects.filter(recipient=self.child).count(),
+            child_n_before + 1,
+        )
+        cn = (
+            Notification.objects.filter(recipient=self.child)
+            .order_by("-created_at")
+            .first()
+        )
+        self.assertEqual(cn.type, Notification.Type.FAMILY)
+        self.assertIn("declined", cn.title.lower())

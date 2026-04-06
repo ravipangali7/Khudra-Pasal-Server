@@ -8,6 +8,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from core.models import FamilyMember, Product, PurchaseApprovalRequest, User
+from core.services import notification_service
 from core.services.child_shopping_guard import (
     _effective_unit_price,
     resolve_merged_restriction_for_product,
@@ -58,7 +59,7 @@ def create_child_purchase_request(
 
     unit = _effective_unit_price(product)
     leader = fm.group.leader
-    return PurchaseApprovalRequest.objects.create(
+    par = PurchaseApprovalRequest.objects.create(
         child=child,
         parent=leader,
         product=product,
@@ -66,6 +67,8 @@ def create_child_purchase_request(
         note=(note or "")[:255],
         status=PurchaseApprovalRequest.Status.PENDING,
     )
+    notification_service.notify_parent_purchase_approval_requested(par)
+    return par
 
 
 @transaction.atomic
@@ -128,4 +131,5 @@ def approve_or_reject_request(
     par.parent_note = (parent_note or "")[:255]
     par.responded_at = timezone.now()
     par.save(update_fields=["status", "parent_note", "responded_at"])
+    notification_service.notify_child_purchase_approval_decision(par)
     return par
