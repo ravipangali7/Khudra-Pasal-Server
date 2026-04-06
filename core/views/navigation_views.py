@@ -12,6 +12,7 @@ from core.models import (
     Notification,
     Order,
     ProductApproval,
+    PurchaseApprovalRequest,
     Refund,
     User,
     Vendor,
@@ -166,11 +167,16 @@ def vendor_navigation(request):
 
 
 def _portal_nav_badges(user: User):
-    return {
+    badges = {
         "portal_notifications": Notification.objects.filter(
             recipient=user, is_read=False
         ).count(),
     }
+    if user.role == User.Role.CHILD:
+        badges["child_pending_purchase_requests"] = PurchaseApprovalRequest.objects.filter(
+            child=user, status=PurchaseApprovalRequest.Status.PENDING
+        ).count()
+    return badges
 
 
 @api_view(["GET"])

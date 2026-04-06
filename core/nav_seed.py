@@ -144,7 +144,7 @@ PORTAL_CHILD_NAV: list[tuple] = [
     ("portal_child", "topup", "Add Money", "ArrowDownLeft", "", 20, "", ""),
     ("portal_child", "transfer", "Transfer", "Send", "", 30, "", ""),
     ("portal_child", "withdraw", "Withdraw", "ArrowUpRight", "", 40, "", ""),
-    ("portal_child", "requests", "Pending Requests", "Clock", "", 50, "portal_notifications", ""),
+    ("portal_child", "requests", "Pending Requests", "Clock", "", 50, "child_pending_purchase_requests", ""),
     ("portal_child", "history", "Transaction History", "History", "", 60, "", ""),
     ("portal_child", "rules", "Parent Rules", "Shield", "", 70, "", ""),
     ("portal_child", "help", "Help & Support", "HelpCircle", "", 80, "", ""),
