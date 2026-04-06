@@ -7,7 +7,14 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
-from core.models import FamilyMember, Product, PurchaseApprovalRequest, User
+from core.models import (
+    Category,
+    FamilyGroup,
+    FamilyMember,
+    Product,
+    PurchaseApprovalRequest,
+    User,
+)
 from core.services import notification_service
 from core.services.child_shopping_guard import (
     _effective_unit_price,
@@ -133,3 +140,50 @@ def approve_or_reject_request(
     par.save(update_fields=["status", "parent_note", "responded_at"])
     notification_service.notify_child_purchase_approval_decision(par)
     return par
+
+
+def collect_descendant_category_ids(root_id: int) -> set[int]:
+    ids: set[int] = {root_id}
+    stack = [root_id]
+    while stack:
+        cid = stack.pop()
+        for ch in Category.objects.filter(parent_id=cid).values_list("pk", flat=True):
+            if ch not in ids:
+                ids.add(ch)
+                stack.append(ch)
+    return ids
+
+
+def invalidate_purchase_approvals_for_category_requires_toggle(
+    *, group: FamilyGroup, category_id: int
+) -> None:
+    """
+    When requires_approval changes for a category row, clear pending and revoke
+    unconsumed approvals for products in that category subtree so children can re-request.
+    """
+    if not Category.objects.filter(pk=category_id).exists():
+        return
+    descendant_ids = collect_descendant_category_ids(category_id)
+    child_user_ids = list(
+        FamilyMember.objects.filter(
+            group=group,
+            role=FamilyMember.Role.CHILD,
+            status=FamilyMember.Status.ACTIVE,
+        ).values_list("user_id", flat=True)
+    )
+    if not child_user_ids:
+        return
+    now = timezone.now()
+    base = PurchaseApprovalRequest.objects.filter(
+        child_id__in=child_user_ids,
+        product__category_id__in=descendant_ids,
+    )
+    base.filter(status=PurchaseApprovalRequest.Status.PENDING).update(
+        status=PurchaseApprovalRequest.Status.REJECTED,
+        parent_note="Purchase approval reset: category rule changed.",
+        responded_at=now,
+    )
+    base.filter(
+        status=PurchaseApprovalRequest.Status.APPROVED,
+        consumed_at__isnull=True,
+    ).update(consumed_at=now)

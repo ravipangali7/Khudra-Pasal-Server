@@ -28,6 +28,15 @@ from core.models import (
 )
 
 
+def _category_ancestor_slugs(category) -> list[str]:
+    out: list[str] = []
+    cur = category
+    while cur is not None:
+        out.append(cur.slug)
+        cur = cur.parent
+    return out
+
+
 class VendorMiniSerializer(serializers.ModelSerializer):
     logo_url = serializers.SerializerMethodField()
 
@@ -119,6 +128,7 @@ class ProductSerializer(serializers.ModelSerializer):
     category_id = serializers.IntegerField(source="category.id", read_only=True)
     parent_category_slug = serializers.SerializerMethodField()
     parent_category_name = serializers.SerializerMethodField()
+    category_ancestor_slugs = serializers.SerializerMethodField()
     list_price = serializers.DecimalField(source="price", max_digits=10, decimal_places=2, read_only=True)
     price = serializers.SerializerMethodField()
     original_price = serializers.SerializerMethodField()
@@ -147,6 +157,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "category_name",
             "parent_category_slug",
             "parent_category_name",
+            "category_ancestor_slugs",
             "unit_short_name",
             "stock",
             "rating",
@@ -177,6 +188,9 @@ class ProductSerializer(serializers.ModelSerializer):
     def get_parent_category_name(self, obj):
         p = obj.category.parent
         return p.name if p else None
+
+    def get_category_ancestor_slugs(self, obj):
+        return _category_ancestor_slugs(obj.category)
 
     def get_unit_short_name(self, obj):
         return obj.unit.short_name if obj.unit_id else ""
@@ -395,6 +409,7 @@ class ReelPublicSerializer(serializers.ModelSerializer):
             "reviews": p.review_count,
             "category_slug": cat.slug,
             "parent_category_slug": parent.slug if parent else None,
+            "category_ancestor_slugs": _category_ancestor_slugs(cat),
         }
 
     def get_comments_count(self, obj):

@@ -559,3 +559,117 @@ class PurchaseApprovalPortalApiTests(TestCase):
         )
         self.assertEqual(cn.type, Notification.Type.FAMILY)
         self.assertIn("declined", cn.title.lower())
+
+    def test_toggle_requires_approval_clears_unconsumed_approval(self):
+        par = PurchaseApprovalRequest.objects.create(
+            child=self.child,
+            parent=self.leader,
+            product=self.product,
+            amount=Decimal("120.00"),
+            status=PurchaseApprovalRequest.Status.APPROVED,
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.child_token.key}")
+        r = self.client.get("/api/portal/child/rules/")
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
+        self.assertIn(self.product.pk, r.data["approved_purchase_product_ids"])
+
+        leader_tok = Token.objects.create(user=self.leader)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {leader_tok.key}")
+        r2 = self.client.patch(
+            "/api/portal/family/product-restrictions/",
+            {
+                "category_id": self.parent_cat.pk,
+                "is_blocked": False,
+                "requires_approval": False,
+            },
+            format="json",
+        )
+        self.assertEqual(r2.status_code, status.HTTP_200_OK, r2.data)
+        par.refresh_from_db()
+        self.assertIsNotNone(par.consumed_at)
+
+        r3 = self.client.patch(
+            "/api/portal/family/product-restrictions/",
+            {
+                "category_id": self.parent_cat.pk,
+                "is_blocked": False,
+                "requires_approval": True,
+            },
+            format="json",
+        )
+        self.assertEqual(r3.status_code, status.HTTP_200_OK, r3.data)
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.child_token.key}")
+        r4 = self.client.get("/api/portal/child/rules/")
+        self.assertEqual(r4.status_code, status.HTTP_200_OK, r4.data)
+        self.assertNotIn(self.product.pk, r4.data["approved_purchase_product_ids"])
+
+        r5 = self.client.post(
+            "/api/portal/child/purchase-approval-requests/",
+            {"product_id": self.product.pk},
+            format="json",
+        )
+        self.assertEqual(r5.status_code, status.HTTP_201_CREATED, r5.data)
+
+    def test_toggle_requires_approval_rejects_pending_requests(self):
+        par = PurchaseApprovalRequest.objects.create(
+            child=self.child,
+            parent=self.leader,
+            product=self.product,
+            amount=Decimal("120.00"),
+            status=PurchaseApprovalRequest.Status.PENDING,
+        )
+        leader_tok = Token.objects.create(user=self.leader)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {leader_tok.key}")
+        r = self.client.patch(
+            "/api/portal/family/product-restrictions/",
+            {
+                "category_id": self.parent_cat.pk,
+                "is_blocked": False,
+                "requires_approval": False,
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
+        par.refresh_from_db()
+        self.assertEqual(par.status, PurchaseApprovalRequest.Status.REJECTED)
+        self.assertIsNotNone(par.responded_at)
+
+
+class ProductSerializerCategoryAncestorsTests(TestCase):
+    def test_category_ancestor_slugs_order_leaf_to_root(self):
+        from core.serializers import ProductSerializer
+
+        root = Category.objects.create(name="RootC", slug="root-c-slug")
+        mid = Category.objects.create(name="MidC", slug="mid-c-slug", parent=root)
+        leaf = Category.objects.create(name="LeafC", slug="leaf-c-slug", parent=mid)
+        vu = User.objects.create_user(
+            username="psa_vu",
+            password="x",
+            phone="9838383838",
+            name="V",
+        )
+        vendor = Vendor.objects.create(
+            user=vu,
+            store_name="PSAStore",
+            store_slug="psa-store-slug",
+            status=Vendor.Status.APPROVED,
+        )
+        img = _tiny_png()
+        product = Product.objects.create(
+            name="PSAProd",
+            slug="psa-prod-slug",
+            sku="SKU-PSA-1",
+            price=Decimal("10.00"),
+            category=leaf,
+            image=img,
+            type=Product.Type.PHYSICAL,
+            stock=5,
+            seller=vendor,
+            status=Product.Status.ACTIVE,
+        )
+        data = ProductSerializer(product).data
+        self.assertEqual(
+            data["category_ancestor_slugs"],
+            ["leaf-c-slug", "mid-c-slug", "root-c-slug"],
+        )
