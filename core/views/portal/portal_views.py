@@ -84,6 +84,10 @@ from core.serializers import (
     ReelPublicSerializer,
 )
 from core.services.child_shopping_guard import validate_child_may_purchase_product
+from core.services.child_spending_service import (
+    child_non_personal_spent_windows,
+    validate_child_spending_limits,
+)
 from core.services.purchase_approval_service import consume_purchase_approvals_after_checkout
 from core.services import (
     family_join_request_service,
@@ -354,6 +358,7 @@ def _family_member_portal_row(
     *,
     spent_by_wallet: dict[int, Decimal] | None = None,
     online_user_ids: set[int] | None = None,
+    monthly_spent_override: Decimal | None = None,
 ) -> dict:
     ginfo = {"id": str(group.pk), "name": group.name}
     mw = family_portal_wallet_service.get_member_family_wallet(group, m.user)
@@ -368,7 +373,9 @@ def _family_member_portal_row(
         bal = float(mw.balance)
     else:
         bal = _wallet_balance(m.user, family_group=group)
-    if mw and spent_by_wallet is not None:
+    if monthly_spent_override is not None:
+        spent = float(monthly_spent_override)
+    elif mw and spent_by_wallet is not None:
         spent = float(spent_by_wallet.get(mw.pk, Decimal("0")))
     elif mw:
         spent = float(sum_monthly_spent_from_wallet(mw))
@@ -432,12 +439,16 @@ def _family_portal_overview_payload(user: User, request=None) -> dict:
     spent_by_wallet = aggregate_monthly_spent_for_wallet_ids(wallet_ids)
     members_out = []
     for m in member_qs:
+        child_month_override = None
+        if m.role == FamilyMember.Role.CHILD:
+            child_month_override = child_non_personal_spent_windows(m.user)["monthly"]
         members_out.append(
             _family_member_portal_row(
                 m,
                 primary,
                 spent_by_wallet=spent_by_wallet,
                 online_user_ids=online_user_ids,
+                monthly_spent_override=child_month_override,
             )
         )
 
@@ -2158,7 +2169,14 @@ def portal_child_summary(request):
         if sw:
             parent_loaded = float(sw.balance)
     limit_m = float(fm.spending_limit_monthly) if fm else 0.0
-    spent_this_month = float(sum_monthly_spent_from_wallet(w)) if w else 0.0
+    spent_windows = (
+        child_non_personal_spent_windows(u)
+        if (fm or u.role == User.Role.CHILD)
+        else None
+    )
+    spent_this_month = (
+        float(spent_windows["monthly"]) if spent_windows is not None else 0.0
+    )
     pw = personal_wallet_qs(u).first()
     personal_bal = float(pw.balance) if pw else 0.0
     return Response(
@@ -2169,6 +2187,12 @@ def portal_child_summary(request):
             "totalBalance": bal + parent_loaded + personal_bal,
             "spendingLimit": limit_m,
             "spentThisMonth": spent_this_month,
+            "spentThisWeek": (
+                float(spent_windows["weekly"]) if spent_windows is not None else 0.0
+            ),
+            "spentToday": (
+                float(spent_windows["daily"]) if spent_windows is not None else 0.0
+            ),
             "group_name": group.name if group else "",
         }
     )
@@ -2451,6 +2475,7 @@ def portal_child_rules(request):
             {
                 "group_permissions": None,
                 "member_limits": None,
+                "member_spent": None,
                 "product_restrictions": [],
                 "auto_approval_rules": [],
                 "approved_purchase_product_ids": [],
@@ -2475,6 +2500,7 @@ def portal_child_rules(request):
             ).values_list("product_id", flat=True)
         )
     )
+    spent_track = child_non_personal_spent_windows(u)
     return Response(
         {
             "group_permissions": {
@@ -2489,6 +2515,11 @@ def portal_child_rules(request):
                 "spending_limit_daily": float(fm.spending_limit_daily or 0),
                 "spending_limit_weekly": float(fm.spending_limit_weekly or 0),
                 "spending_limit_monthly": float(fm.spending_limit_monthly or 0),
+            },
+            "member_spent": {
+                "daily": float(spent_track["daily"]),
+                "weekly": float(spent_track["weekly"]),
+                "monthly": float(spent_track["monthly"]),
             },
             "product_restrictions": PortalProductRestrictionReadSerializer(
                 restrictions, many=True
@@ -3719,6 +3750,7 @@ def portal_orders_checkout(request):
                     raise ValueError("Wallet is frozen.")
                 if pay_wallet.balance < grand_total_plan:
                     raise ValueError("Insufficient balance")
+                validate_child_spending_limits(u, pay_wallet, grand_total_plan)
 
             orders_created: list[Order] = []
             for vendor, lines, v_sub, v_delivery, v_total in orders_plan:
