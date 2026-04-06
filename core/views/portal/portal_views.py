@@ -3410,6 +3410,11 @@ def _fund_source_label_for_wallet(w: Wallet) -> str:
     return (w.label or "").strip() or w.get_type_display()
 
 
+def _wallet_child_spending_limits_apply(w: Wallet) -> bool:
+    """True when validate_child_spending_limits runs for this wallet (non-personal)."""
+    return w.type != Wallet.Type.PERSONAL
+
+
 def _checkout_fund_source_label_for_wallet(viewer: User, w: Wallet) -> str:
     """Checkout-only label customization; keep shared fund_source rules elsewhere."""
     base = _fund_source_label_for_wallet(w)
@@ -3562,6 +3567,9 @@ def portal_orders_checkout_wallet(request):
             "id": default_w.pk,
             "fund_source": _checkout_fund_source_label_for_wallet(u, default_w),
             "balance": float(default_w.balance),
+            "child_spending_limits_apply": _wallet_child_spending_limits_apply(
+                default_w
+            ),
         }
     payable = []
     for w in _payable_checkout_wallets_for_user(u):
@@ -3571,6 +3579,7 @@ def portal_orders_checkout_wallet(request):
                 "fund_source": _checkout_fund_source_label_for_wallet(u, w),
                 "balance": float(w.balance),
                 "is_default": bool(default_w and w.pk == default_w.pk),
+                "child_spending_limits_apply": _wallet_child_spending_limits_apply(w),
             }
         )
     return Response({"default": default_payload, "payable_wallets": payable})

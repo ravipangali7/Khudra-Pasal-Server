@@ -35,6 +35,10 @@ class CheckoutWalletContextTests(TestCase):
         self.assertIn("payable_wallets", r.data)
         self.assertTrue(any(x["id"] == w.pk for x in r.data["payable_wallets"]))
         self.assertTrue(any(x.get("is_default") for x in r.data["payable_wallets"]))
+        self.assertIs(r.data["default"]["child_spending_limits_apply"], False)
+        for row in r.data["payable_wallets"]:
+            self.assertIn("child_spending_limits_apply", row)
+            self.assertIs(row["child_spending_limits_apply"], False)
 
     def test_child_checkout_default_uses_adopted_family_wallet(self):
         leader = User.objects.create_user(
@@ -77,3 +81,13 @@ class CheckoutWalletContextTests(TestCase):
         self.assertIsNotNone(r.data["default"])
         self.assertEqual(r.data["default"]["id"], pw.pk)
         self.assertEqual(float(r.data["default"]["balance"]), 750.0)
+        self.assertIs(r.data["default"]["child_spending_limits_apply"], True)
+        for row in r.data["payable_wallets"]:
+            self.assertIn("child_spending_limits_apply", row)
+        self.assertTrue(
+            any(
+                row["id"] == r.data["default"]["id"]
+                and row["child_spending_limits_apply"] is True
+                for row in r.data["payable_wallets"]
+            )
+        )

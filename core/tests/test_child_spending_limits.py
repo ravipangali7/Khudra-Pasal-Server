@@ -265,3 +265,37 @@ class ChildSpendingLimitCheckoutTests(TestCase):
         )
         self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST, r.data)
         self.assertIn("daily", r.data["detail"].lower())
+
+    def test_weekly_limit_enforced(self):
+        self.fm.spending_limit_monthly = Decimal("0.00")
+        self.fm.spending_limit_daily = Decimal("0.00")
+        self.fm.spending_limit_weekly = Decimal("100.00")
+        self.fm.save(
+            update_fields=[
+                "spending_limit_monthly",
+                "spending_limit_daily",
+                "spending_limit_weekly",
+            ]
+        )
+        Order.objects.create(
+            order_number="SL-PRE-6",
+            customer=self.child,
+            seller=self.vendor,
+            status=Order.Status.PENDING,
+            payment_method=Order.PaymentMethod.WALLET,
+            payment_status=Order.PaymentStatus.PAID,
+            subtotal=Decimal("90.00"),
+            delivery_fee=Decimal("0"),
+            discount_amount=Decimal("0"),
+            total=Decimal("90.00"),
+            want_delivery=False,
+            payment_wallet=self.shared,
+            placed_portal=Order.PlacedPortal.PORTAL_CHILD,
+        )
+        r = self.client.post(
+            "/api/portal/orders/checkout/",
+            self._checkout_payload(pay_wallet_id=self.shared.pk),
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST, r.data)
+        self.assertIn("weekly", r.data["detail"].lower())
