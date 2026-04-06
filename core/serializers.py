@@ -381,6 +381,8 @@ class ReelPublicSerializer(serializers.ModelSerializer):
         disc = 0
         if orig and eff and orig > eff:
             disc = int(round((orig - eff) / orig * 100))
+        cat = p.category
+        parent = cat.parent if cat.parent_id else None
         return {
             "id": p.id,
             "name": p.name,
@@ -391,7 +393,8 @@ class ReelPublicSerializer(serializers.ModelSerializer):
             "in_stock": p.stock > 0,
             "rating": float(p.rating or 0),
             "reviews": p.review_count,
-            "category_slug": p.category.slug,
+            "category_slug": cat.slug,
+            "parent_category_slug": parent.slug if parent else None,
         }
 
     def get_comments_count(self, obj):

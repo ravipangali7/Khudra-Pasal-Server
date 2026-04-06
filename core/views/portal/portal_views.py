@@ -50,6 +50,7 @@ from core.models import (
     OrderSettings,
     PaymentTransaction,
     Product,
+    PurchaseApprovalRequest,
     ProductReview,
     Reel,
     ReelInteraction,
@@ -83,6 +84,7 @@ from core.serializers import (
     ReelPublicSerializer,
 )
 from core.services.child_shopping_guard import validate_child_may_purchase_product
+from core.services.purchase_approval_service import consume_purchase_approvals_after_checkout
 from core.services import (
     family_join_request_service,
     family_member_provision_service,
@@ -462,6 +464,27 @@ def _family_portal_overview_payload(user: User, request=None) -> dict:
                 "time": inv.created_at.strftime("%Y-%m-%d"),
             }
         )
+
+    if primary.leader_id == user.pk:
+        for par in (
+            PurchaseApprovalRequest.objects.filter(
+                parent_id=primary.leader_id,
+                status=PurchaseApprovalRequest.Status.PENDING,
+            )
+            .select_related("child", "product")
+            .order_by("-created_at")[:25]
+        ):
+            pending_out.append(
+                {
+                    "id": str(par.pk),
+                    "join_request_id": None,
+                    "member": (par.child.name or par.child.phone or "Child").strip(),
+                    "type": "purchase_approval",
+                    "item": par.product.name,
+                    "amount": float(par.amount),
+                    "time": par.created_at.strftime("%Y-%m-%d"),
+                }
+            )
 
     master = family_portal_wallet_service.get_default_shared_wallet(primary)
     master_balance = float(master.balance) if master else 0.0
@@ -2430,6 +2453,7 @@ def portal_child_rules(request):
                 "member_limits": None,
                 "product_restrictions": [],
                 "auto_approval_rules": [],
+                "approved_purchase_product_ids": [],
             }
         )
     group = fm.group
@@ -2441,6 +2465,15 @@ def portal_child_rules(request):
         AutoApprovalRule.objects.filter(group=group)
         .select_related("category")
         .order_by("name", "id")
+    )
+    approved_product_ids = sorted(
+        set(
+            PurchaseApprovalRequest.objects.filter(
+                child=u,
+                status=PurchaseApprovalRequest.Status.APPROVED,
+                consumed_at__isnull=True,
+            ).values_list("product_id", flat=True)
+        )
     )
     return Response(
         {
@@ -2463,6 +2496,7 @@ def portal_child_rules(request):
             "auto_approval_rules": PortalAutoApprovalRuleReadSerializer(
                 rules_qs, many=True
             ).data,
+            "approved_purchase_product_ids": approved_product_ids,
         }
     )
 
@@ -3779,6 +3813,21 @@ def portal_orders_checkout(request):
                     pay_with_wallet(
                         order, pay_wallet, fund_source=fund_source_label
                     )
+
+            if (
+                u.role == User.Role.CHILD
+                and orders_created
+                and payment_method == Order.PaymentMethod.WALLET
+                and pay_wallet is not None
+            ):
+                checkout_pairs: list[tuple[Product, int]] = []
+                for order in orders_created:
+                    for oi in OrderItem.objects.filter(order=order).select_related(
+                        "product"
+                    ):
+                        checkout_pairs.append((oi.product, oi.quantity))
+                if checkout_pairs:
+                    consume_purchase_approvals_after_checkout(u, checkout_pairs)
 
     except ValueError as e:
         return Response({"detail": str(e)}, status=400)

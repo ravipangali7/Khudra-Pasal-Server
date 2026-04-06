@@ -2,7 +2,7 @@ from django.urls import path
 
 from core.models import Order
 from core.views import navigation_views
-from core.views.portal import portal_views
+from core.views.portal import portal_views, purchase_approval_views
 
 urlpatterns = [
     path("auth/login/", portal_views.family_portal_login, name="family-portal-login"),
@@ -72,5 +72,15 @@ urlpatterns = [
         portal_views.portal_orders_list,
         {"list_placed_portal": Order.PlacedPortal.PORTAL_FAMILY},
         name="family-portal-orders",
+    ),
+    path(
+        "family/purchase-approval-requests/",
+        purchase_approval_views.portal_family_purchase_approval_requests,
+        name="family-portal-purchase-approval-requests",
+    ),
+    path(
+        "family/purchase-approval-requests/<int:pk>/",
+        purchase_approval_views.portal_family_purchase_approval_request_detail,
+        name="family-portal-purchase-approval-request-detail",
     ),
 ]

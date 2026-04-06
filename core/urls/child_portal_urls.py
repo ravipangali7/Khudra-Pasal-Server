@@ -2,7 +2,7 @@ from django.urls import path
 
 from core.models import Order
 from core.views import navigation_views
-from core.views.portal import portal_kyc, portal_views
+from core.views.portal import portal_kyc, portal_views, purchase_approval_views
 
 urlpatterns = [
     path("auth/login/", portal_views.child_portal_login, name="child-portal-login"),
@@ -52,6 +52,11 @@ urlpatterns = [
     path("kyc/status/", portal_kyc.portal_kyc_status, name="child-portal-kyc-status"),
     path("kyc/submit/", portal_kyc.portal_kyc_submit, name="child-portal-kyc-submit"),
     path("child/rules/", portal_views.portal_child_rules, name="child-portal-rules"),
+    path(
+        "child/purchase-approval-requests/",
+        purchase_approval_views.portal_child_purchase_approval_requests,
+        name="child-portal-purchase-approval-requests",
+    ),
     path(
         "orders/<int:pk>/refund-request/",
         portal_views.portal_order_refund_request,

@@ -1867,6 +1867,11 @@ class PurchaseApprovalRequest(models.Model):
     parent_note = models.CharField(max_length=255, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     responded_at = models.DateTimeField(null=True, blank=True)
+    consumed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set when the child completes checkout using this approval (single-use).",
+    )
 
     class Meta:
         ordering = ["-created_at"]

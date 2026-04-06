@@ -2,7 +2,7 @@ from django.urls import path
 
 from core.models import Order
 from core.views import navigation_views
-from core.views.portal import portal_kyc, portal_views
+from core.views.portal import portal_kyc, portal_views, purchase_approval_views
 
 urlpatterns = [
     path("navigation/", navigation_views.portal_navigation, name="portal-navigation"),
@@ -241,4 +241,19 @@ urlpatterns = [
         name="portal-child-wallet-withdrawals",
     ),
     path("child/rules/", portal_views.portal_child_rules, name="portal-child-rules"),
+    path(
+        "child/purchase-approval-requests/",
+        purchase_approval_views.portal_child_purchase_approval_requests,
+        name="portal-child-purchase-approval-requests",
+    ),
+    path(
+        "family/purchase-approval-requests/",
+        purchase_approval_views.portal_family_purchase_approval_requests,
+        name="portal-family-purchase-approval-requests",
+    ),
+    path(
+        "family/purchase-approval-requests/<int:pk>/",
+        purchase_approval_views.portal_family_purchase_approval_request_detail,
+        name="portal-family-purchase-approval-request-detail",
+    ),
 ]

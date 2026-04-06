@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
@@ -18,6 +19,7 @@ from core.models import (
     Order,
     Product,
     ProductRestriction,
+    PurchaseApprovalRequest,
     User,
     Vendor,
     Wallet,
@@ -266,3 +268,238 @@ class ChildShoppingGuardCheckoutTests(TestCase):
         )
         self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("blocked", r.data["detail"].lower())
+
+
+class ChildShoppingGuardAncestorCategoryTests(TestCase):
+    """Rules on parent category apply to products in descendant categories."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.parent_cat = Category.objects.create(name="ParentCat", slug="parent-guard-slug")
+        self.child_cat = Category.objects.create(
+            name="ChildCat",
+            slug="child-guard-slug",
+            parent=self.parent_cat,
+        )
+        self.vendor_user = User.objects.create_user(
+            username="ancestor_v",
+            password="x",
+            phone="9810101016",
+            name="AV",
+        )
+        self.vendor = Vendor.objects.create(
+            user=self.vendor_user,
+            store_name="AStore",
+            store_slug="a-store-slug",
+            status=Vendor.Status.APPROVED,
+        )
+        img = _tiny_png()
+        self.product = Product.objects.create(
+            name="AncestorProd",
+            slug="ancestor-prod-slug",
+            sku="SKU-ANC-1",
+            price=Decimal("100.00"),
+            category=self.child_cat,
+            image=img,
+            type=Product.Type.PHYSICAL,
+            stock=50,
+            seller=self.vendor,
+            status=Product.Status.ACTIVE,
+        )
+        self.group = FamilyGroup.objects.create(
+            name="AncestorFam",
+            leader=self.vendor_user,
+            status=FamilyGroup.Status.ACTIVE,
+        )
+        self.child = User.objects.create_user(
+            username="ancestor_child",
+            password="x",
+            phone="9820202026",
+            name="AChild",
+            role=User.Role.CHILD,
+        )
+        FamilyMember.objects.create(
+            group=self.group,
+            user=self.child,
+            role=FamilyMember.Role.CHILD,
+            status=FamilyMember.Status.ACTIVE,
+        )
+        Wallet.objects.create(
+            owner=self.child,
+            type=Wallet.Type.CHILD,
+            family_group=self.group,
+            status=Wallet.Status.ACTIVE,
+            balance=Decimal("5000.00"),
+        )
+        self.child_token = Token.objects.create(user=self.child)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.child_token.key}")
+
+    def test_parent_requires_approval_applies_to_child_category_product(self):
+        ProductRestriction.objects.create(
+            group=self.group,
+            family_member=None,
+            category=self.parent_cat,
+            requires_approval=True,
+        )
+        r = self.client.post(
+            "/api/website/cart/items/",
+            {"product_id": self.product.pk, "quantity": 1},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("approval", r.data["detail"].lower())
+
+    def test_approved_purchase_request_allows_cart_for_child_category(self):
+        ProductRestriction.objects.create(
+            group=self.group,
+            family_member=None,
+            category=self.parent_cat,
+            requires_approval=True,
+        )
+        PurchaseApprovalRequest.objects.create(
+            child=self.child,
+            parent=self.vendor_user,
+            product=self.product,
+            amount=Decimal("100.00"),
+            status=PurchaseApprovalRequest.Status.APPROVED,
+            responded_at=timezone.now(),
+        )
+        r = self.client.post(
+            "/api/website/cart/items/",
+            {"product_id": self.product.pk, "quantity": 1},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
+
+    def test_merged_max_price_uses_strictest_cap(self):
+        ProductRestriction.objects.create(
+            group=self.group,
+            family_member=None,
+            category=self.parent_cat,
+            max_price=Decimal("200.00"),
+        )
+        ProductRestriction.objects.create(
+            group=self.group,
+            family_member=None,
+            category=self.child_cat,
+            max_price=Decimal("50.00"),
+        )
+        r = self.client.post(
+            "/api/website/cart/items/",
+            {"product_id": self.product.pk, "quantity": 1},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("maximum price", r.data["detail"].lower())
+
+    def test_parent_blocked_blocks_descendant_category_product(self):
+        ProductRestriction.objects.create(
+            group=self.group,
+            family_member=None,
+            category=self.parent_cat,
+            is_blocked=True,
+        )
+        r = self.client.post(
+            "/api/website/cart/items/",
+            {"product_id": self.product.pk, "quantity": 1},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("blocked", r.data["detail"].lower())
+
+
+class PurchaseApprovalPortalApiTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.parent_cat = Category.objects.create(name="PAPR", slug="papr-parent-slug")
+        self.leaf_cat = Category.objects.create(
+            name="PAPRLeaf",
+            slug="papr-leaf-slug",
+            parent=self.parent_cat,
+        )
+        self.leader = User.objects.create_user(
+            username="papr_leader",
+            password="x",
+            phone="9817171717",
+            name="Leader",
+        )
+        self.vendor = Vendor.objects.create(
+            user=self.leader,
+            store_name="PAPRStore",
+            store_slug="papr-store-slug",
+            status=Vendor.Status.APPROVED,
+        )
+        img = _tiny_png()
+        self.product = Product.objects.create(
+            name="PAPRProd",
+            slug="papr-prod-slug",
+            sku="SKU-PAPR-1",
+            price=Decimal("120.00"),
+            category=self.leaf_cat,
+            image=img,
+            type=Product.Type.PHYSICAL,
+            stock=40,
+            seller=self.vendor,
+            status=Product.Status.ACTIVE,
+        )
+        self.group = FamilyGroup.objects.create(
+            name="PAPRG",
+            leader=self.leader,
+            status=FamilyGroup.Status.ACTIVE,
+        )
+        self.child = User.objects.create_user(
+            username="papr_child",
+            password="x",
+            phone="9827272727",
+            name="PChild",
+            role=User.Role.CHILD,
+        )
+        FamilyMember.objects.create(
+            group=self.group,
+            user=self.child,
+            role=FamilyMember.Role.CHILD,
+            status=FamilyMember.Status.ACTIVE,
+        )
+        Wallet.objects.create(
+            owner=self.child,
+            type=Wallet.Type.CHILD,
+            family_group=self.group,
+            status=Wallet.Status.ACTIVE,
+            balance=Decimal("3000.00"),
+        )
+        ProductRestriction.objects.create(
+            group=self.group,
+            family_member=None,
+            category=self.parent_cat,
+            requires_approval=True,
+        )
+        self.child_token = Token.objects.create(user=self.child)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.child_token.key}")
+
+    def test_child_creates_purchase_approval_via_portal(self):
+        r = self.client.post(
+            "/api/portal/child/purchase-approval-requests/",
+            {"product_id": self.product.pk},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
+        self.assertEqual(PurchaseApprovalRequest.objects.count(), 1)
+
+    def test_leader_approves_via_portal(self):
+        par = PurchaseApprovalRequest.objects.create(
+            child=self.child,
+            parent=self.leader,
+            product=self.product,
+            amount=Decimal("120.00"),
+            status=PurchaseApprovalRequest.Status.PENDING,
+        )
+        leader_tok = Token.objects.create(user=self.leader)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {leader_tok.key}")
+        r = self.client.patch(
+            f"/api/portal/family/purchase-approval-requests/{par.pk}/",
+            {"status": "approved"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
+        par.refresh_from_db()
+        self.assertEqual(par.status, PurchaseApprovalRequest.Status.APPROVED)
