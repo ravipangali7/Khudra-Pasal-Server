@@ -91,6 +91,7 @@ def admin_module_key_from_path(path: str) -> str | None:
     if rest.startswith("navigation/") or rest.startswith("auth/"):
         return None
     rules: list[tuple[str, str]] = [
+        ("dashboard/reports/", "reports"),
         ("dashboard/", "dashboard"),
         ("users/staff/", "employees"),
         ("kyc-submissions/", "customers"),

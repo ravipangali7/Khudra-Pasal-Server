@@ -1,15 +1,16 @@
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 
 from django.db.models import Count, Sum
 from django.db.models.functions import TruncDate
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.authentication import SessionAuthentication, TokenAuthentication
 
-from core.models import DeliveryMan, Order, User, Vendor, Wallet
+from core.models import DeliveryMan, Order, OrderItem, User, Vendor, Wallet, WalletTransaction
 from core.serializers import RecentOrderSerializer
 
 
@@ -94,4 +95,217 @@ def dashboard_sales_series(request):
         for row in queryset
     ]
     return Response(data)
+
+
+def _reports_parse_vendor_category(request):
+    vendor_id = None
+    raw_v = request.query_params.get("vendor_id") or request.query_params.get("seller_id")
+    if raw_v is not None and str(raw_v).strip() != "":
+        try:
+            vendor_id = int(raw_v)
+        except (TypeError, ValueError):
+            vendor_id = None
+    category_id = None
+    raw_c = request.query_params.get("category_id")
+    if raw_c is not None and str(raw_c).strip() != "":
+        try:
+            category_id = int(raw_c)
+        except (TypeError, ValueError):
+            category_id = None
+    return vendor_id, category_id
+
+
+def _orders_in_reports_window(start_dt, end_dt, vendor_id, category_id):
+    qs = Order.objects.filter(created_at__gte=start_dt, created_at__lte=end_dt)
+    if vendor_id:
+        qs = qs.filter(seller_id=vendor_id)
+    if category_id:
+        qs = qs.filter(items__product__category_id=category_id).distinct()
+    return qs
+
+
+def _pct_growth(current: float, previous: float):
+    if previous == 0:
+        return None if current == 0 else 100.0
+    return round(100.0 * (current - previous) / previous, 2)
+
+
+def _aggregate_kpis(qs):
+    agg = qs.aggregate(total_sales=Sum("total"), total_orders=Count("id"))
+    total_sales = float(agg["total_sales"] or Decimal("0"))
+    total_orders = int(agg["total_orders"] or 0)
+    aov = (total_sales / total_orders) if total_orders else 0.0
+    return total_sales, total_orders, aov
+
+
+def _fill_series_days(day_start, day_end, rows_by_day: dict):
+    out = []
+    d = day_start
+    while d <= day_end:
+        key = d.isoformat()
+        row = rows_by_day.get(d)
+        out.append(
+            {
+                "day": key,
+                "sales": float(row["sales"]) if row else 0.0,
+                "orders": int(row["orders"]) if row else 0,
+            }
+        )
+        d += timedelta(days=1)
+    return out
+
+
+def _fill_signup_series(day_start, day_end, counts_by_day: dict):
+    out = []
+    d = day_start
+    while d <= day_end:
+        out.append({"day": d.isoformat(), "signups": int(counts_by_day.get(d, 0))})
+        d += timedelta(days=1)
+    return out
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def dashboard_reports(request):
+    forbidden = _forbidden_if_not_admin(request)
+    if forbidden:
+        return forbidden
+
+    date_from = request.query_params.get("date_from")
+    date_to = request.query_params.get("date_to")
+    if not date_from or not date_to:
+        return Response({"detail": "date_from and date_to are required (ISO dates)."}, status=400)
+    d0 = parse_date(str(date_from).strip())
+    d1 = parse_date(str(date_to).strip())
+    if not d0 or not d1:
+        return Response({"detail": "Invalid date_from or date_to."}, status=400)
+    if d0 > d1:
+        return Response({"detail": "date_from must be on or before date_to."}, status=400)
+    span_days = (d1 - d0).days + 1
+    if span_days > 366:
+        return Response({"detail": "Date range cannot exceed 366 days."}, status=400)
+
+    tz = timezone.get_current_timezone()
+    start_dt = timezone.make_aware(datetime.combine(d0, time.min), tz)
+    end_dt = timezone.make_aware(datetime.combine(d1, time.max), tz)
+
+    vendor_id, category_id = _reports_parse_vendor_category(request)
+
+    qs = _orders_in_reports_window(start_dt, end_dt, vendor_id, category_id)
+    total_sales, total_orders, aov = _aggregate_kpis(qs)
+
+    prev_end_date = d0 - timedelta(days=1)
+    prev_start_date = prev_end_date - timedelta(days=span_days - 1)
+    prev_start_dt = timezone.make_aware(datetime.combine(prev_start_date, time.min), tz)
+    prev_end_dt = timezone.make_aware(datetime.combine(prev_end_date, time.max), tz)
+    prev_qs = _orders_in_reports_window(prev_start_dt, prev_end_dt, vendor_id, category_id)
+    prev_sales, prev_orders, _prev_aov = _aggregate_kpis(prev_qs)
+
+    series_qs = (
+        qs.annotate(day=TruncDate("created_at"))
+        .values("day")
+        .annotate(sales=Sum("total"), orders=Count("id"))
+        .order_by("day")
+    )
+    rows_by_day = {}
+    for row in series_qs:
+        day = row["day"]
+        if hasattr(day, "isoformat"):
+            rows_by_day[day] = {
+                "sales": float(row["sales"] or Decimal("0")),
+                "orders": row["orders"],
+            }
+    series = _fill_series_days(d0, d1, rows_by_day)
+
+    item_base = OrderItem.objects.filter(order__in=qs)
+    if category_id:
+        item_base = item_base.filter(product__category_id=category_id)
+
+    category_breakdown = []
+    cat_rows = (
+        item_base.values("product__category__name", "product__category_id")
+        .annotate(sales=Sum("total_price"), lines=Count("id"))
+        .order_by("-sales")[:50]
+    )
+    for row in cat_rows:
+        name = row["product__category__name"] or "Uncategorized"
+        category_breakdown.append(
+            {
+                "name": name,
+                "category_id": row["product__category_id"],
+                "sales": float(row["sales"] or Decimal("0")),
+                "lines": row["lines"],
+            }
+        )
+
+    vendor_breakdown = []
+    vend_rows = (
+        qs.exclude(seller_id__isnull=True)
+        .values("seller_id", "seller__store_name")
+        .annotate(sales=Sum("total"), orders=Count("id"))
+        .order_by("-sales")[:25]
+    )
+    for row in vend_rows:
+        vendor_breakdown.append(
+            {
+                "vendor_id": row["seller_id"],
+                "name": row["seller__store_name"] or "Vendor",
+                "sales": float(row["sales"] or Decimal("0")),
+                "orders": row["orders"],
+            }
+        )
+
+    wallet_qs = WalletTransaction.objects.filter(created_at__gte=start_dt, created_at__lte=end_dt)
+    wallet_by_type = []
+    for row in (
+        wallet_qs.values("type")
+        .annotate(total=Sum("amount"), count=Count("id"))
+        .order_by("-total")
+    ):
+        wallet_by_type.append(
+            {
+                "type": row["type"],
+                "amount": float(row["total"] or Decimal("0")),
+                "count": row["count"],
+            }
+        )
+
+    signup_rows = (
+        User.objects.filter(date_joined__gte=start_dt, date_joined__lte=end_dt)
+        .annotate(day=TruncDate("date_joined"))
+        .values("day")
+        .annotate(signups=Count("id"))
+        .order_by("day")
+    )
+    signups_by_day = {}
+    for row in signup_rows:
+        day = row["day"]
+        if hasattr(day, "isoformat"):
+            signups_by_day[day] = row["signups"]
+    signup_series = _fill_signup_series(d0, d1, signups_by_day)
+
+    return Response(
+        {
+            "period": {"date_from": d0.isoformat(), "date_to": d1.isoformat()},
+            "previous_period": {
+                "date_from": prev_start_date.isoformat(),
+                "date_to": prev_end_date.isoformat(),
+            },
+            "kpis": {
+                "total_sales": total_sales,
+                "total_orders": total_orders,
+                "aov": round(aov, 2),
+                "previous_total_sales": prev_sales,
+                "previous_total_orders": prev_orders,
+                "sales_growth_pct": _pct_growth(total_sales, prev_sales),
+                "orders_growth_pct": _pct_growth(float(total_orders), float(prev_orders)),
+            },
+            "series": series,
+            "category_breakdown": category_breakdown,
+            "vendor_breakdown": vendor_breakdown,
+            "wallet_by_type": wallet_by_type,
+            "signup_series": signup_series,
+        }
+    )
 

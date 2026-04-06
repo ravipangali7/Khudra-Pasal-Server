@@ -344,6 +344,28 @@ def admin_orders_list(request):
     status = request.query_params.get("status")
     if status:
         qs = qs.filter(status=status)
+    df = request.query_params.get("date_from")
+    dt = request.query_params.get("date_to")
+    if df:
+        d0 = parse_date(str(df).strip())
+        if d0 is not None:
+            qs = qs.filter(created_at__date__gte=d0)
+    if dt:
+        d1 = parse_date(str(dt).strip())
+        if d1 is not None:
+            qs = qs.filter(created_at__date__lte=d1)
+    raw_v = request.query_params.get("vendor_id") or request.query_params.get("seller_id")
+    if raw_v is not None and str(raw_v).strip() != "":
+        try:
+            qs = qs.filter(seller_id=int(raw_v))
+        except (TypeError, ValueError):
+            pass
+    raw_c = request.query_params.get("category_id")
+    if raw_c is not None and str(raw_c).strip() != "":
+        try:
+            qs = qs.filter(items__product__category_id=int(raw_c)).distinct()
+        except (TypeError, ValueError):
+            pass
     paginator, page = _paginate(request, qs)
     rows = []
     for o in page:
@@ -1950,6 +1972,16 @@ def admin_wallet_transactions_list(request):
     qs = WalletTransaction.objects.select_related("wallet", "wallet__owner", "wallet__vendor").order_by(
         "-created_at"
     )
+    df = request.query_params.get("date_from")
+    dt = request.query_params.get("date_to")
+    if df:
+        d0 = parse_date(str(df).strip())
+        if d0 is not None:
+            qs = qs.filter(created_at__date__gte=d0)
+    if dt:
+        d1 = parse_date(str(dt).strip())
+        if d1 is not None:
+            qs = qs.filter(created_at__date__lte=d1)
     raw_status = (request.query_params.get("status") or "").strip()
     if raw_status:
         allowed = {c.value for c in WalletTransaction.Status}
