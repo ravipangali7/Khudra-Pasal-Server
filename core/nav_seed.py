@@ -134,7 +134,6 @@ PORTAL_FAMILY_NAV: list[tuple] = [
     ("portal_family", "history", "Transaction History", "History", "", 40, "", "", "history"),
     ("portal_family", "profile", "Profile", "User", "", 45, "", "", "profile"),
     ("portal_family", "support", "Support", "HelpCircle", "", 48, "", "", "support"),
-    ("portal_family", "settings", "Settings", "Settings", "", 50, "", "", "settings"),
 ]
 
 PORTAL_CHILD_NAV: list[tuple] = [

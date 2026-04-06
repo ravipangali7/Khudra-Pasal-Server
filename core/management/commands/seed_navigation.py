@@ -66,6 +66,7 @@ class Command(BaseCommand):
         seed_family_keys = {k for (s, k, *_rest) in seed_rows if s == "portal_family"}
         deprecated_family_keys = {
             "members-add",
+            "settings",
             "wallets",
             "wallets-load",
             "wallets-transfer",
