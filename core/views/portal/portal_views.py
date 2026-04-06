@@ -2506,7 +2506,7 @@ def _primary_family_membership(user: User):
     Active FamilyMember row for self-profile family_group_* fields.
 
     For non-child users, prefer the same group as family portal APIs
-    (_primary_family_group) so Add Member / overview match profile.
+    (_primary_family_group) so overview matches profile.
     """
     if user.role == User.Role.CHILD:
         return (
