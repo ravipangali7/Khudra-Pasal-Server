@@ -62,4 +62,19 @@ class Command(BaseCommand):
             if deleted:
                 self.stdout.write(self.style.WARNING(f"Deleted {deleted} deprecated vendor nav rows: {', '.join(to_remove)}"))
 
+        # Remove deprecated family portal nav keys dropped from seeds.
+        seed_family_keys = {k for (s, k, *_rest) in seed_rows if s == "portal_family"}
+        deprecated_family_keys = {"members-add"}
+        to_remove_family = sorted(deprecated_family_keys - seed_family_keys)
+        if to_remove_family:
+            deleted, _ = NavigationItem.objects.filter(
+                surface="portal_family", key__in=to_remove_family
+            ).delete()
+            if deleted:
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"Deleted {deleted} deprecated family portal nav rows: {', '.join(to_remove_family)}"
+                    )
+                )
+
         self.stdout.write(self.style.SUCCESS(f"Navigation seeded. Created {created}, updated {updated}."))

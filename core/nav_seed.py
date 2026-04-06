@@ -122,7 +122,6 @@ PORTAL_FAMILY_NAV: list[tuple] = [
     ("portal_family", "dashboard", "Dashboard", "Home", "", 0, "", "", "dashboard"),
     ("portal_family", "members", "Family Members", "Users", "", 10, "", "", "members"),
     ("portal_family", "members-list", "All Members", "Users", "members", 0, "", "", "members"),
-    ("portal_family", "members-add", "Add Member", "UserPlus", "members", 1, "", "", "members-add"),
     ("portal_family", "members-requests", "Join Requests", "Clock", "members", 2, "", "", "members-requests"),
     ("portal_family", "wallets", "Wallet Management", "Wallet", "", 20, "", "", "wallets"),
     ("portal_family", "wallets-overview", "Overview", "Wallet", "wallets", 0, "", "", "wallets"),
