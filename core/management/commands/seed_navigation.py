@@ -64,7 +64,12 @@ class Command(BaseCommand):
 
         # Remove deprecated family portal nav keys dropped from seeds.
         seed_family_keys = {k for (s, k, *_rest) in seed_rows if s == "portal_family"}
-        deprecated_family_keys = {"members-add"}
+        deprecated_family_keys = {
+            "members-add",
+            "wallets",
+            "wallets-load",
+            "wallets-transfer",
+        }
         to_remove_family = sorted(deprecated_family_keys - seed_family_keys)
         if to_remove_family:
             deleted, _ = NavigationItem.objects.filter(
