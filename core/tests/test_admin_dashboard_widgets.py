@@ -8,7 +8,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from core.models import Category, Product, User, Wallet, WalletTransaction
+from core.models import Category, Order, Product, User, Wallet, WalletTransaction
 from core.services import wallet_service
 
 
@@ -106,6 +106,53 @@ class AdminDashboardWidgetsTests(TestCase):
         self.assertIn("inflow", r.data["totals"])
         self.assertIn("outflow", r.data["totals"])
         self.assertGreaterEqual(r.data["totals"]["inflow"], 100.0)
+
+    def test_recent_orders_days_filter(self):
+        from decimal import Decimal
+
+        now = timezone.now()
+        old = now - timedelta(days=20)
+        Order.objects.create(
+            order_number="DASH-REC-NEW",
+            customer=self.customer,
+            seller=None,
+            status=Order.Status.DELIVERED,
+            payment_method=Order.PaymentMethod.COD,
+            payment_status=Order.PaymentStatus.PAID,
+            subtotal=Decimal("50.00"),
+            delivery_fee=Decimal("0"),
+            discount_amount=Decimal("0"),
+            total=Decimal("50.00"),
+            want_delivery=False,
+        )
+        Order.objects.create(
+            order_number="DASH-REC-OLD",
+            customer=self.customer,
+            seller=None,
+            status=Order.Status.DELIVERED,
+            payment_method=Order.PaymentMethod.COD,
+            payment_status=Order.PaymentStatus.PAID,
+            subtotal=Decimal("30.00"),
+            delivery_fee=Decimal("0"),
+            discount_amount=Decimal("0"),
+            total=Decimal("30.00"),
+            want_delivery=False,
+        )
+        Order.objects.filter(order_number="DASH-REC-NEW").update(created_at=now)
+        Order.objects.filter(order_number="DASH-REC-OLD").update(created_at=old)
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self._token(self.super_admin)}")
+        r = self.client.get("/api/admin/dashboard/recent-orders/", {"days": 7, "limit": 20})
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.content)
+        numbers = [row["order_number"] for row in r.data]
+        self.assertIn("DASH-REC-NEW", numbers)
+        self.assertNotIn("DASH-REC-OLD", numbers)
+
+        r2 = self.client.get("/api/admin/dashboard/recent-orders/", {"limit": 20})
+        self.assertEqual(r2.status_code, status.HTTP_200_OK, r2.content)
+        numbers2 = [row["order_number"] for row in r2.data]
+        self.assertIn("DASH-REC-NEW", numbers2)
+        self.assertIn("DASH-REC-OLD", numbers2)
 
     def test_low_stock_respects_threshold(self):
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {self._token(self.super_admin)}")

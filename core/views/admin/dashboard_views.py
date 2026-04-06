@@ -63,7 +63,23 @@ def dashboard_recent_orders(request):
         return forbidden
 
     limit = min(int(request.query_params.get("limit", 12)), 50)
-    queryset = Order.objects.select_related("customer", "seller").order_by("-created_at")[:limit]
+    qs = Order.objects.select_related("customer", "seller").order_by("-created_at")
+
+    days_raw = request.query_params.get("days")
+    if days_raw is not None and str(days_raw).strip() != "":
+        try:
+            days = min(int(days_raw), 90)
+        except (TypeError, ValueError):
+            days = 7
+        days = max(1, days)
+        day_end = timezone.localdate()
+        day_start = day_end - timedelta(days=days - 1)
+        tz = timezone.get_current_timezone()
+        start_dt = timezone.make_aware(datetime.combine(day_start, time.min), tz)
+        end_dt = timezone.make_aware(datetime.combine(day_end, time.max), tz)
+        qs = qs.filter(created_at__gte=start_dt, created_at__lte=end_dt)
+
+    queryset = qs[:limit]
     serializer = RecentOrderSerializer(queryset, many=True)
     return Response(serializer.data)
 
