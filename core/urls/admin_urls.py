@@ -41,6 +41,16 @@ urlpatterns = [
     path("dashboard/summary/", dashboard_views.dashboard_summary, name="admin-dashboard-summary"),
     path("dashboard/recent-orders/", dashboard_views.dashboard_recent_orders, name="admin-dashboard-recent-orders"),
     path("dashboard/sales-series/", dashboard_views.dashboard_sales_series, name="admin-dashboard-sales-series"),
+    path(
+        "dashboard/wallet-series/",
+        dashboard_views.dashboard_wallet_series,
+        name="admin-dashboard-wallet-series",
+    ),
+    path(
+        "dashboard/low-stock/",
+        dashboard_views.dashboard_low_stock,
+        name="admin-dashboard-low-stock",
+    ),
     path("dashboard/reports/", dashboard_views.dashboard_reports, name="admin-dashboard-reports"),
     path("orders/", resource_views.admin_orders_list, name="admin-orders"),
     path("order-settings/", resource_views.admin_order_settings_singleton, name="admin-order-settings"),

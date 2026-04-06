@@ -1,7 +1,7 @@
 from datetime import datetime, time, timedelta
 from decimal import Decimal
 
-from django.db.models import Count, Sum
+from django.db.models import Count, Q, Sum
 from django.db.models.functions import TruncDate
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -10,7 +10,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.authentication import SessionAuthentication, TokenAuthentication
 
-from core.models import DeliveryMan, Order, OrderItem, User, Vendor, Wallet, WalletTransaction
+from core.models import DeliveryMan, Order, OrderItem, Product, User, Vendor, Wallet, WalletTransaction
 from core.serializers import RecentOrderSerializer
 
 
@@ -77,24 +77,158 @@ def dashboard_sales_series(request):
         return forbidden
 
     days = min(int(request.query_params.get("days", 7)), 90)
-    start_date = timezone.now() - timedelta(days=days - 1)
-    queryset = (
-        Order.objects.filter(created_at__gte=start_date)
+    day_end = timezone.localdate()
+    day_start = day_end - timedelta(days=days - 1)
+    tz = timezone.get_current_timezone()
+    start_dt = timezone.make_aware(datetime.combine(day_start, time.min), tz)
+    end_dt = timezone.make_aware(datetime.combine(day_end, time.max), tz)
+
+    series_qs = (
+        Order.objects.filter(created_at__gte=start_dt, created_at__lte=end_dt)
         .annotate(day=TruncDate("created_at"))
         .values("day")
         .annotate(sales=Sum("total"), orders=Count("id"))
         .order_by("day")
     )
-
-    data = [
-        {
-            "day": row["day"].isoformat(),
-            "sales": float(row["sales"] or Decimal("0")),
-            "orders": row["orders"],
-        }
-        for row in queryset
-    ]
+    rows_by_day = {}
+    for row in series_qs:
+        d = row["day"]
+        if d is not None and hasattr(d, "isoformat"):
+            rows_by_day[d] = {
+                "sales": float(row["sales"] or Decimal("0")),
+                "orders": int(row["orders"] or 0),
+            }
+    data = _fill_series_days(day_start, day_end, rows_by_day)
     return Response(data)
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def dashboard_wallet_series(request):
+    forbidden = _forbidden_if_not_admin(request)
+    if forbidden:
+        return forbidden
+
+    days = min(int(request.query_params.get("days", 7)), 90)
+    day_end = timezone.localdate()
+    day_start = day_end - timedelta(days=days - 1)
+    tz = timezone.get_current_timezone()
+    start_dt = timezone.make_aware(datetime.combine(day_start, time.min), tz)
+    end_dt = timezone.make_aware(datetime.combine(day_end, time.max), tz)
+
+    done = WalletTransaction.Status.COMPLETED
+    base = WalletTransaction.objects.filter(
+        created_at__gte=start_dt,
+        created_at__lte=end_dt,
+        status=done,
+    )
+    rows = (
+        base.annotate(day=TruncDate("created_at"))
+        .values("day", "type")
+        .annotate(vol=Sum("amount"))
+    )
+    buckets_by_day = {}
+    for row in rows:
+        d = row["day"]
+        if d is None or not hasattr(d, "isoformat"):
+            continue
+        if d not in buckets_by_day:
+            buckets_by_day[d] = {
+                "topup": Decimal("0"),
+                "transfer": Decimal("0"),
+                "withdrawal": Decimal("0"),
+            }
+        t = row["type"]
+        v = abs(row["vol"] or Decimal("0"))
+        if t in (WalletTransaction.Type.TOPUP, WalletTransaction.Type.CREDIT):
+            buckets_by_day[d]["topup"] += v
+        elif t == WalletTransaction.Type.TRANSFER:
+            buckets_by_day[d]["transfer"] += v
+        elif t == WalletTransaction.Type.WITHDRAWAL:
+            buckets_by_day[d]["withdrawal"] += v
+
+    series = []
+    d = day_start
+    while d <= day_end:
+        b = buckets_by_day.get(
+            d,
+            {"topup": Decimal("0"), "transfer": Decimal("0"), "withdrawal": Decimal("0")},
+        )
+        series.append(
+            {
+                "day": d.isoformat(),
+                "topup": float(b["topup"]),
+                "transfer": float(b["transfer"]),
+                "withdrawal": float(b["withdrawal"]),
+            }
+        )
+        d += timedelta(days=1)
+
+    credit_types = (
+        WalletTransaction.Type.CREDIT,
+        WalletTransaction.Type.TOPUP,
+        WalletTransaction.Type.BONUS,
+    )
+    debit_types = (
+        WalletTransaction.Type.DEBIT,
+        WalletTransaction.Type.PURCHASE,
+        WalletTransaction.Type.WITHDRAWAL,
+    )
+    inflow = base.filter(type__in=credit_types).aggregate(t=Sum("amount"))["t"] or Decimal("0")
+    outflow = base.filter(type__in=debit_types).aggregate(t=Sum("amount"))["t"] or Decimal("0")
+
+    return Response(
+        {
+            "series": series,
+            "totals": {
+                "inflow": float(abs(inflow)),
+                "outflow": float(abs(outflow)),
+            },
+        }
+    )
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def dashboard_low_stock(request):
+    forbidden = _forbidden_if_not_admin(request)
+    if forbidden:
+        return forbidden
+
+    try:
+        threshold = int(request.query_params.get("threshold", 15))
+    except (TypeError, ValueError):
+        threshold = 15
+    threshold = max(0, min(threshold, 500))
+    try:
+        limit = int(request.query_params.get("limit", 25))
+    except (TypeError, ValueError):
+        limit = 25
+    limit = max(1, min(limit, 100))
+
+    qs = (
+        Product.objects.select_related("seller")
+        .filter(stock__lte=threshold)
+        .filter(
+            Q(status=Product.Status.ACTIVE)
+            | Q(status=Product.Status.OUT_OF_STOCK)
+        )
+        .order_by("stock", "id")[:limit]
+    )
+    rows = [
+        {
+            "id": str(p.pk),
+            "name": p.name,
+            "sku": p.sku,
+            "stock": p.stock,
+            "status": p.status,
+            "seller": p.seller.store_name if p.seller_id else "In-House",
+        }
+        for p in qs
+    ]
+    return Response({"threshold": threshold, "results": rows})
 
 
 def _reports_parse_vendor_category(request):
