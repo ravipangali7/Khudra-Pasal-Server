@@ -121,6 +121,10 @@ def _apply_product_list_filters(queryset, request):
     has_discount = (request.query_params.get("has_discount") or "").strip().lower()
     trending = (request.query_params.get("trending") or "").strip().lower()
     brand_raw = (request.query_params.get("brand") or "").strip()
+    vendor_slug = (request.query_params.get("vendor_slug") or "").strip()
+
+    if vendor_slug:
+        queryset = queryset.filter(seller__store_slug=vendor_slug)
 
     if brand_raw:
         try:
@@ -341,6 +345,7 @@ def products_list(request):
     Storefront product list filters:
     - category=<slug>
     - brand=<integer_pk> (active brand)
+    - vendor_slug=<store_slug> (approved vendor storefront)
     - search=<term>
     - featured=true
     - bestseller=true
@@ -361,7 +366,7 @@ def products_list(request):
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def products_all_vendors_list(request):
-    """Active products sold by approved vendors only (marketplace)."""
+    """Active products sold by approved vendors only (marketplace). Supports vendor_slug filter."""
     queryset = _active_products_queryset().filter(
         seller__isnull=False,
         seller__status=Vendor.Status.APPROVED,
