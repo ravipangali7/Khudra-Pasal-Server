@@ -800,6 +800,10 @@ class WalletTransaction(models.Model):
         BONUS = "bonus", "Bonus"
         COMMISSION_IN = "commission_in", "Commission in"
         VENDOR_SETTLEMENT = "vendor_settlement", "Vendor settlement"
+        REFUND_VENDOR_DEBIT = "refund_vendor_dbt", "Refund vendor clawback"
+        REFUND_PLATFORM_DEBIT = "refund_plat_dbt", "Refund platform clawback"
+        REFUND_PLATFORM_FEE = "refund_plat_fee", "Refund platform fee retained"
+        REFUND_CREDIT = "refund_credit", "Refund to customer"
 
     class Status(models.TextChoices):
         COMPLETED = "completed", "Completed"
@@ -1693,6 +1697,12 @@ class Refund(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT
     )
     amount = models.DecimalField(max_digits=10, decimal_places=2)
+    platform_fee_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
+    net_credit_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
     reason = models.TextField()
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.PENDING

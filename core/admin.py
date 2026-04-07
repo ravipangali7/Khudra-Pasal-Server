@@ -6,6 +6,8 @@ from __future__ import annotations
 from django.apps import apps
 from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
+from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.db.models import JSONField
 from django.shortcuts import redirect
 from django.urls import reverse
@@ -13,6 +15,7 @@ from django.utils.html import format_html
 from django.utils import timezone
 
 from . import models
+from .services import refund_service
 from .forms import (
     ProductAdminForm,
     RefundProcessForm,
@@ -404,19 +407,63 @@ class DeliveryAddressAdmin(admin.ModelAdmin):
 @admin.register(models.Refund)
 class RefundAdmin(admin.ModelAdmin):
     form = RefundProcessForm
-    list_display = ("refund_number", "order", "customer", "amount", "status", "created_at")
+    list_display = (
+        "refund_number",
+        "order",
+        "customer",
+        "amount",
+        "platform_fee_amount",
+        "net_credit_amount",
+        "status",
+        "created_at",
+    )
     list_filter = ("status",)
     search_fields = ("refund_number", "customer__phone", "order__order_number")
     readonly_fields = ("created_at", "processed_at")
     autocomplete_fields = ("order", "customer")
 
-    @admin.action(description="Approve refunds (set processed time)")
+    def save_model(self, request, obj, form, change):
+        old_status = None
+        if change and obj.pk:
+            old_status = (
+                models.Refund.objects.filter(pk=obj.pk)
+                .values_list("status", flat=True)
+                .first()
+            )
+        with transaction.atomic():
+            super().save_model(request, obj, form, change)
+            obj.refresh_from_db()
+            if (
+                obj.status == models.Refund.Status.APPROVED
+                and old_status != models.Refund.Status.APPROVED
+            ):
+                try:
+                    refund_service.execute_refund(obj)
+                except ValueError as e:
+                    raise ValidationError(str(e)) from e
+
+    @admin.action(description="Approve refunds (wallet settlement)")
     def approve_refunds(self, request, queryset):
-        now = timezone.now()
-        queryset.filter(status=models.Refund.Status.PENDING).update(
-            status=models.Refund.Status.APPROVED, processed_at=now
-        )
-        self.message_user(request, "Pending refunds approved.", messages.SUCCESS)
+        pending = list(queryset.filter(status=models.Refund.Status.PENDING))
+        ok = 0
+        for rf in pending:
+            try:
+                with transaction.atomic():
+                    r = models.Refund.objects.select_for_update().get(pk=rf.pk)
+                    if r.status != models.Refund.Status.PENDING:
+                        continue
+                    r.status = models.Refund.Status.APPROVED
+                    r.save(update_fields=["status"])
+                    refund_service.execute_refund(r)
+                ok += 1
+            except ValueError as e:
+                self.message_user(
+                    request,
+                    f"{rf.refund_number}: {e}",
+                    messages.ERROR,
+                )
+        if ok:
+            self.message_user(request, f"Approved {ok} refund(s).", messages.SUCCESS)
 
     actions = ["approve_refunds"]
 

@@ -75,7 +75,14 @@ from core.models import (
     PayoutAccount,
 )
 from core.serializers import ReelPublicSerializer
-from core.services import audit_service, product_service, support_notification_service, support_ticket_service
+from core.services import (
+    audit_service,
+    product_service,
+    refund_notification_service,
+    refund_service,
+    support_notification_service,
+    support_ticket_service,
+)
 from core.services.product_pricing import effective_unit_price, validate_and_set_product_discount
 from core.services.shipping_quote import compute_shipping_fee
 from core.services.base import new_wallet_txn_id
@@ -527,22 +534,20 @@ def admin_order_refund(request, pk):
     o = Order.objects.filter(pk=pk).first()
     if not o:
         return Response({"detail": "Not found."}, status=404)
+    if o.payment_method != Order.PaymentMethod.WALLET:
+        return validation_error("refunds are only supported for wallet-paid orders", field="order")
+    if o.payment_status != Order.PaymentStatus.PAID:
+        return validation_error("order must be paid before requesting a refund", field="order")
     if o.status in (Order.Status.CANCELLED, Order.Status.REFUNDED):
         return validation_error("order cannot be refunded", field="status")
     reason = (request.data.get("reason") or "").strip()
     if not reason:
         return validation_error("reason is required", field="reason")
-    try:
-        amount = _to_decimal(request.data.get("amount"), "0")
-    except Exception:
-        amount = Decimal("0")
-    if amount <= 0:
-        return validation_error("amount must be positive", field="amount")
 
     settings = OrderSettings.load()
     max_age = timedelta(days=int(settings.refund_validity_days or 0))
     if max_age and timezone.now() - o.created_at > max_age:
-        return validation_error("refund period has expired", field="amount")
+        return validation_error("refund period has expired", field="order")
 
     already = (
         Refund.objects.filter(order=o, status=Refund.Status.APPROVED).aggregate(
@@ -551,27 +556,40 @@ def admin_order_refund(request, pk):
         or Decimal("0")
     )
     remaining = Decimal(o.total) - already
-    if amount > remaining + Decimal("0.01"):
-        return validation_error("refund exceeds remaining order total", field="amount")
+    if remaining <= Decimal("0"):
+        return validation_error("nothing left to refund for this order", field="order")
 
-    refund_no = f"RF-{timezone.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
-    with transaction.atomic():
-        Refund.objects.create(
-            refund_number=refund_no,
-            order=o,
-            customer=o.customer,
-            amount=amount,
-            reason=reason,
-            status=Refund.Status.APPROVED,
-            processed_at=timezone.now(),
+    if Refund.objects.filter(order=o, status=Refund.Status.PENDING).exists():
+        return validation_error(
+            "a refund request is already pending for this order",
+            field="order",
         )
-        new_refunded = already + amount
-        if new_refunded + Decimal("0.01") >= Decimal(o.total):
-            o.payment_status = Order.PaymentStatus.REFUNDED
-            o.status = Order.Status.REFUNDED
-        o.save()
 
-    return Response({"ok": True, "refund_number": refund_no, "amount": float(amount)})
+    fee, net = refund_service.compute_refund_breakdown(remaining)
+    refund_no = f"RF-{timezone.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
+    rf = Refund.objects.create(
+        refund_number=refund_no,
+        order=o,
+        customer=o.customer,
+        amount=remaining,
+        platform_fee_amount=fee,
+        net_credit_amount=net,
+        reason=reason[:4000],
+        status=Refund.Status.PENDING,
+    )
+    refund_notification_service.notify_admins_new_refund_request(rf)
+    return Response(
+        {
+            "ok": True,
+            "refund_number": refund_no,
+            "gross_amount": float(remaining),
+            "platform_fee": float(fee),
+            "net_credit": float(net),
+            "status": Refund.Status.PENDING,
+            "message": "Pending Super Admin approval.",
+        },
+        status=201,
+    )
 
 
 @api_view(["GET"])
@@ -1289,23 +1307,41 @@ def admin_me_notifications_mark_read(request):
 def admin_refunds_list(request):
     if err := _forbidden(request):
         return err
-    qs = Refund.objects.select_related("order", "customer").order_by("-created_at")
+    qs = Refund.objects.select_related(
+        "order", "customer", "order__commission_settlement"
+    ).order_by("-created_at")
     paginator, page = _paginate(request, qs)
-    rows = [
-        {
-            "id": r.refund_number,
-            "order": r.order.order_number,
-            "order_pk": r.order_id,
-            "customer": r.customer.name,
-            "customer_phone": getattr(r.customer, "phone", "") or "",
-            "placed_portal": r.order.placed_portal or "",
-            "amount": float(r.amount),
-            "reason": r.reason,
-            "status": r.status,
-            "date": r.created_at.date().isoformat(),
-        }
-        for r in page
-    ]
+    rows = []
+    for r in page:
+        fee, net = refund_service.breakdown_for_refund(r)
+        has_settlement = bool(
+            getattr(r.order, "commission_settlement", None)
+            and r.order.seller_id
+        )
+        rows.append(
+            {
+                "id": r.refund_number,
+                "order": r.order.order_number,
+                "order_pk": r.order_id,
+                "customer": r.customer.name,
+                "customer_phone": getattr(r.customer, "phone", "") or "",
+                "placed_portal": r.order.placed_portal or "",
+                "amount": float(r.amount),
+                "gross_amount": float(r.amount),
+                "platform_fee": float(fee),
+                "net_credit": float(net),
+                "deduction_summary": (
+                    "Vendor + platform (settlement split)"
+                    if has_settlement
+                    else "Platform pool (no vendor settlement)"
+                ),
+                "reason": r.reason,
+                "status": r.status,
+                "date": r.created_at.date().isoformat(),
+                "created_at": r.created_at.isoformat(),
+                "processed_at": r.processed_at.isoformat() if r.processed_at else None,
+            }
+        )
     return paginator.get_paginated_response(rows)
 
 
@@ -1313,7 +1349,7 @@ def admin_refunds_list(request):
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
 def admin_refund_detail_write(request, refund_number: str):
-    if err := _forbidden(request):
+    if err := enforce_audit_log_access(request):
         return err
     rf = (
         Refund.objects.filter(refund_number=refund_number)
@@ -1333,27 +1369,58 @@ def admin_refund_detail_write(request, refund_number: str):
     if new_status == "rejected" and not admin_note:
         return validation_error("admin_note is required when rejecting.", field="admin_note")
 
-    from core.services import refund_notification_service
+    reject_rid = rf.pk
 
     if new_status == "rejected":
-        rf.status = Refund.Status.REJECTED
-        rf.admin_note = admin_note[:4000]
-        rf.processed_at = timezone.now()
-        rf.save(update_fields=["status", "admin_note", "processed_at"])
-        refund_notification_service.notify_customer_refund_status(rf, approved=False)
-        return Response({"ok": True, "status": rf.status})
+        with transaction.atomic():
+            locked = Refund.objects.select_for_update().filter(pk=reject_rid).first()
+            if not locked or locked.status != Refund.Status.PENDING:
+                return validation_error("Only pending refunds can be updated.", field="status")
+            locked.status = Refund.Status.REJECTED
+            locked.admin_note = admin_note[:4000]
+            locked.processed_at = timezone.now()
+            locked.save(update_fields=["status", "admin_note", "processed_at"])
 
-    rf.status = Refund.Status.APPROVED
-    if admin_note:
-        rf.admin_note = admin_note[:4000]
-    rf.save()
-    refund_notification_service.notify_customer_refund_status(rf, approved=True)
-    rf.refresh_from_db()
+            def _notify_reject():
+                r = Refund.objects.get(pk=reject_rid)
+                refund_notification_service.notify_customer_refund_status(r, approved=False)
+
+            transaction.on_commit(_notify_reject)
+        return Response({"ok": True, "status": Refund.Status.REJECTED})
+
+    try:
+        with transaction.atomic():
+            locked = (
+                Refund.objects.select_for_update()
+                .filter(pk=reject_rid)
+                .select_related("order", "customer")
+                .first()
+            )
+            if not locked or locked.status != Refund.Status.PENDING:
+                return validation_error("Only pending refunds can be updated.", field="status")
+            locked.status = Refund.Status.APPROVED
+            update_fields = ["status"]
+            if admin_note:
+                locked.admin_note = admin_note[:4000]
+                update_fields.append("admin_note")
+            locked.save(update_fields=update_fields)
+            refund_service.execute_refund(locked)
+
+            def _notify_approve():
+                r = Refund.objects.get(pk=reject_rid)
+                refund_notification_service.notify_customer_refund_status(r, approved=True)
+                refund_notification_service.notify_vendor_refund_processed(r)
+
+            transaction.on_commit(_notify_approve)
+    except ValueError as e:
+        return Response({"detail": str(e)}, status=400)
+
+    r_final = Refund.objects.get(pk=reject_rid)
     return Response(
         {
             "ok": True,
-            "status": rf.status,
-            "processed_at": rf.processed_at.isoformat() if rf.processed_at else None,
+            "status": r_final.status,
+            "processed_at": r_final.processed_at.isoformat() if r_final.processed_at else None,
         }
     )
 
@@ -4406,11 +4473,15 @@ def admin_wallets_summary(request):
         WalletTransaction.Type.CREDIT,
         WalletTransaction.Type.TOPUP,
         WalletTransaction.Type.BONUS,
+        WalletTransaction.Type.REFUND_CREDIT,
+        WalletTransaction.Type.REFUND_PLATFORM_FEE,
     )
     debit_types = (
         WalletTransaction.Type.DEBIT,
         WalletTransaction.Type.PURCHASE,
         WalletTransaction.Type.WITHDRAWAL,
+        WalletTransaction.Type.REFUND_VENDOR_DEBIT,
+        WalletTransaction.Type.REFUND_PLATFORM_DEBIT,
     )
     total_credit = float(
         tx_done.filter(type__in=credit_types).aggregate(t=Sum("amount"))["t"] or 0

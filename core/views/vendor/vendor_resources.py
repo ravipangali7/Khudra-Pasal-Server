@@ -48,6 +48,7 @@ from core.models import (
 from core.serializers import ReelPublicSerializer
 from core.services.product_pricing import effective_unit_price, validate_and_set_product_discount
 from core.services import product_service, support_notification_service, support_ticket_service
+from core.services.refund_service import breakdown_for_refund
 from core.services.kyc_service import sync_user_kyc_status
 from core.services.kyc_withdraw import kyc_withdraw_block_payload
 from core.services.withdrawal_requests import create_pending_withdrawal, payout_required_block_payload
@@ -618,18 +619,23 @@ def vendor_refunds_list(request):
         .order_by("-created_at")
     )
     paginator, page = _paginate(request, qs)
-    rows = [
-        {
-            "id": r.refund_number,
-            "order": r.order.order_number,
-            "amount": float(r.amount),
-            "reason": r.reason,
-            "status": r.status,
-            "date": r.created_at.date().isoformat(),
-            "customer": r.customer.name,
-        }
-        for r in page
-    ]
+    rows = []
+    for r in page:
+        fee, net = breakdown_for_refund(r)
+        rows.append(
+            {
+                "id": r.refund_number,
+                "order": r.order.order_number,
+                "amount": float(r.amount),
+                "gross_amount": float(r.amount),
+                "platform_fee": float(fee),
+                "net_credit": float(net),
+                "reason": r.reason,
+                "status": r.status,
+                "date": r.created_at.date().isoformat(),
+                "customer": r.customer.name,
+            }
+        )
     return paginator.get_paginated_response(rows)
 
 

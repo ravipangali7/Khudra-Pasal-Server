@@ -119,6 +119,7 @@ from core.services.wallet_txn_signed import (
 from core.services.order_service import pay_with_wallet
 from core.services.shipping_quote import compute_shipping_fee
 from core.services import refund_notification_service, support_notification_service, support_ticket_service
+from core.services import refund_service
 from core.views.admin.admin_write_utils import absolute_media_url, validation_error
 from core.views.admin.resource_views import _to_decimal
 from core.views.vendor.vendor_resources import _gen_order_number, _gen_ticket_number
@@ -714,16 +715,21 @@ def portal_orders_list(request, list_placed_portal: str | None = None):
             }
             for it in o.items.all()
         ]
-        refund_rows = [
-            {
-                "refund_number": r.refund_number,
-                "status": r.status,
-                "amount": float(r.amount),
-                "reason": r.reason,
-                "created_at": r.created_at.isoformat(),
-            }
-            for r in o.refunds.all().order_by("-created_at")
-        ]
+        refund_rows = []
+        for r in o.refunds.all().order_by("-created_at"):
+            fee, net = refund_service.breakdown_for_refund(r)
+            refund_rows.append(
+                {
+                    "refund_number": r.refund_number,
+                    "status": r.status,
+                    "amount": float(r.amount),
+                    "gross_amount": float(r.amount),
+                    "platform_fee": float(fee),
+                    "net_credit": float(net),
+                    "reason": r.reason,
+                    "created_at": r.created_at.isoformat(),
+                }
+            )
         rows.append(
             {
                 "id": o.order_number,
@@ -793,14 +799,7 @@ def portal_order_refund_request(request, pk: int, refund_surface: str):
         )
 
     data = request.data if isinstance(request.data, Mapping) else {}
-    try:
-        amount = _to_decimal(data.get("amount"), str(remaining))
-    except Exception:
-        amount = remaining
-    if amount <= 0:
-        return validation_error("amount must be positive", field="amount")
-    if amount > remaining + Decimal("0.01"):
-        return validation_error("amount exceeds remaining refundable total", field="amount")
+    amount = remaining
 
     reason = (data.get("reason") or "").strip()
     notes = (data.get("notes") or "").strip()
@@ -809,12 +808,15 @@ def portal_order_refund_request(request, pk: int, refund_surface: str):
     if not reason:
         return validation_error("reason is required", field="reason")
 
+    fee, net = refund_service.compute_refund_breakdown(amount)
     refund_no = f"RF-{timezone.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
     rf = Refund.objects.create(
         refund_number=refund_no,
         order=o,
         customer=u,
         amount=amount,
+        platform_fee_amount=fee,
+        net_credit_amount=net,
         reason=reason[:4000],
         status=Refund.Status.PENDING,
     )
@@ -823,6 +825,9 @@ def portal_order_refund_request(request, pk: int, refund_surface: str):
         {
             "ok": True,
             "refund_number": refund_no,
+            "gross_amount": float(amount),
+            "platform_fee": float(fee),
+            "net_credit": float(net),
             "amount": float(amount),
             "status": rf.status,
         },

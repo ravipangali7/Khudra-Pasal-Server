@@ -36,7 +36,6 @@ from core.services import (
     order_service,
     po_service,
     product_service,
-    refund_service,
     reel_service,
     security_service,
     vendor_service,
@@ -208,12 +207,7 @@ def refund_pre(sender, instance, **kwargs):
 
 @receiver(post_save, sender=Refund)
 def refund_post(sender, instance, created, **kwargs):
-    prev = getattr(instance, "_previous_refund_status", None)
-    if (
-        instance.status == Refund.Status.APPROVED
-        and prev != Refund.Status.APPROVED
-    ):
-        refund_service.execute_refund(instance)
+    """Wallet execution runs in admin_refund_detail_write / RefundAdmin.save_model (atomic)."""
 
 
 # --- Family ---
