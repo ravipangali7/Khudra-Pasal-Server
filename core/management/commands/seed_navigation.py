@@ -53,14 +53,18 @@ class Command(BaseCommand):
             else:
                 updated += 1
 
-        # Remove deprecated vendor nav keys that we intentionally dropped from seeds.
+        # Remove deprecated vendor nav keys dropped from seeds (Marketing, coupons, flash-deals, etc.).
         seed_vendor_keys = {k for (s, k, *_rest) in seed_rows if s == "vendor"}
         deprecated_vendor_keys = {"logout", "marketing", "coupons", "flash-deals"}
         to_remove = sorted(deprecated_vendor_keys - seed_vendor_keys)
         if to_remove:
             deleted, _ = NavigationItem.objects.filter(surface="vendor", key__in=to_remove).delete()
             if deleted:
-                self.stdout.write(self.style.WARNING(f"Deleted {deleted} deprecated vendor nav rows: {', '.join(to_remove)}"))
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"Deleted {deleted} deprecated vendor nav row(s): {', '.join(to_remove)}"
+                    )
+                )
 
         # Remove deprecated family portal nav keys dropped from seeds.
         seed_family_keys = {k for (s, k, *_rest) in seed_rows if s == "portal_family"}
