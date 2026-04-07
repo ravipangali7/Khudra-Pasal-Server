@@ -730,6 +730,30 @@ def portal_orders_list(request, list_placed_portal: str | None = None):
                     "created_at": r.created_at.isoformat(),
                 }
             )
+        already = Decimal("0")
+        for r in o.refunds.all():
+            if r.status == Refund.Status.APPROVED:
+                already += r.amount
+        remaining = max(Decimal("0"), Decimal(o.total) - already)
+        refund_estimate = None
+        if (
+            remaining > 0
+            and o.payment_method == Order.PaymentMethod.WALLET
+            and o.payment_status == Order.PaymentStatus.PAID
+            and o.status not in (Order.Status.CANCELLED, Order.Status.REFUNDED)
+        ):
+            try:
+                fe = refund_service.refund_financials(
+                    o, remaining, persist_settlement=False
+                )
+                refund_estimate = {
+                    "gross": float(remaining),
+                    "platform_fee": float(fe.fee_retained),
+                    "net_credit": float(fe.customer_credit),
+                }
+            except ValueError:
+                refund_estimate = None
+
         rows.append(
             {
                 "id": o.order_number,
@@ -743,6 +767,7 @@ def portal_orders_list(request, list_placed_portal: str | None = None):
                 "seller_id": o.seller_id,
                 "lines": lines,
                 "refunds": refund_rows,
+                "refund_estimate": refund_estimate,
             }
         )
     return paginator.get_paginated_response(rows)
@@ -808,15 +833,15 @@ def portal_order_refund_request(request, pk: int, refund_surface: str):
     if not reason:
         return validation_error("reason is required", field="reason")
 
-    fee, net = refund_service.compute_refund_breakdown(amount)
+    fin = refund_service.refund_financials(o, amount, persist_settlement=True)
     refund_no = f"RF-{timezone.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
     rf = Refund.objects.create(
         refund_number=refund_no,
         order=o,
         customer=u,
         amount=amount,
-        platform_fee_amount=fee,
-        net_credit_amount=net,
+        platform_fee_amount=fin.fee_retained,
+        net_credit_amount=fin.customer_credit,
         reason=reason[:4000],
         status=Refund.Status.PENDING,
     )
@@ -826,8 +851,8 @@ def portal_order_refund_request(request, pk: int, refund_surface: str):
             "ok": True,
             "refund_number": refund_no,
             "gross_amount": float(amount),
-            "platform_fee": float(fee),
-            "net_credit": float(net),
+            "platform_fee": float(fin.fee_retained),
+            "net_credit": float(fin.customer_credit),
             "amount": float(amount),
             "status": rf.status,
         },
@@ -856,7 +881,12 @@ def portal_wallet_transactions(request):
         if typ in (WalletTransaction.Type.DEBIT, WalletTransaction.Type.PURCHASE, WalletTransaction.Type.WITHDRAWAL):
             ui_type = "debit"
             display_amt = abs(amt)
-        elif typ in (WalletTransaction.Type.CREDIT, WalletTransaction.Type.TOPUP, WalletTransaction.Type.BONUS):
+        elif typ in (
+            WalletTransaction.Type.CREDIT,
+            WalletTransaction.Type.TOPUP,
+            WalletTransaction.Type.BONUS,
+            WalletTransaction.Type.REFUND_CREDIT,
+        ):
             ui_type = "credit"
             display_amt = abs(amt)
         else:

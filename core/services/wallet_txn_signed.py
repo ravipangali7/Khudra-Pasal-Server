@@ -24,8 +24,12 @@ def signed_amount_for_wallet_transaction(t: WalletTransaction, w: Wallet) -> flo
         WalletTransaction.Type.WITHDRAWAL,
         WalletTransaction.Type.PURCHASE,
         WalletTransaction.Type.DEBIT,
+        WalletTransaction.Type.REFUND_VENDOR_DEBIT,
+        WalletTransaction.Type.REFUND_PLATFORM_DEBIT,
     ):
         return -amt
+    if t.type == WalletTransaction.Type.REFUND_CREDIT:
+        return amt
     if t.type == WalletTransaction.Type.TRANSFER:
         if t.to_wallet_id == w.pk:
             return amt

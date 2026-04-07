@@ -42,7 +42,7 @@ def notify_customer_refund_status(rf: Refund, *, approved: bool) -> None:
         msg = (
             f"Your refund {rf.refund_number} for order {rf.order.order_number} was approved. "
             f"Rs. {float(net):,.2f} will be credited to your wallet. "
-            f"A 3% platform fee (Rs. {float(fee):,.2f}) is retained by the platform."
+            f"The platform retains 3% of the commission portion only (Rs. {float(fee):,.2f})."
         )
     else:
         title = "Refund request declined"
@@ -74,7 +74,8 @@ def notify_vendor_refund_processed(rf: Refund) -> None:
     msg = (
         f"Refund {rf.refund_number} for order {order.order_number} was processed. "
         f"Gross Rs. {float(rf.amount):,.2f}; customer receives Rs. {float(net):,.2f}; "
-        f"platform fee Rs. {float(fee):,.2f}. Check your wallet transactions for clawback details."
+        f"platform retains Rs. {float(fee):,.2f} (3% of commission on this refund). "
+        f"Check your wallet for vendor clawback."
     )
     Notification.objects.create(
         title="Refund processed",

@@ -21,7 +21,7 @@ from core.models import (
 )
 from core.services.base import get_or_create_personal_wallet
 from core.services.order_service import pay_with_wallet
-from core.services.refund_service import compute_refund_breakdown, execute_refund
+from core.services.refund_service import execute_refund, refund_financials
 from core.views.vendor.vendor_resources import _gen_order_number
 
 
@@ -157,17 +157,17 @@ class RefundExecuteWalletTests(TestCase):
         self.assertEqual(order.payment_status, Order.PaymentStatus.PAID)
 
         gross = Decimal("30.00")
-        fee, net = compute_refund_breakdown(gross)
-        self.assertEqual(fee, Decimal("0.90"))
-        self.assertEqual(net, Decimal("29.10"))
+        fin = refund_financials(order, gross, persist_settlement=True)
+        self.assertEqual(fin.fee_retained, Decimal("0.09"))
+        self.assertEqual(fin.customer_credit, Decimal("29.91"))
 
         rf = Refund.objects.create(
             refund_number="RF-TEST-PARTIAL-1",
             order=order,
             customer=self.user,
             amount=gross,
-            platform_fee_amount=fee,
-            net_credit_amount=net,
+            platform_fee_amount=fin.fee_retained,
+            net_credit_amount=fin.customer_credit,
             reason="partial",
             status=Refund.Status.APPROVED,
         )
@@ -176,8 +176,7 @@ class RefundExecuteWalletTests(TestCase):
         self.assertNotEqual(order.status, Order.Status.REFUNDED)
         self.assertEqual(order.payment_status, Order.PaymentStatus.PAID)
         bal = Wallet.objects.get(pk=self.wallet.pk).balance
-        # 500 - 80 + 29.10 net credit
-        self.assertEqual(bal, Decimal("449.10"))
+        self.assertEqual(bal, Decimal("449.91"))
 
     def test_execute_refund_idempotent(self):
         order = Order.objects.create(
@@ -196,14 +195,14 @@ class RefundExecuteWalletTests(TestCase):
         )
         pay_with_wallet(order, self.wallet, fund_source="Personal wallet")
         gross = Decimal("10.00")
-        fee, net = compute_refund_breakdown(gross)
+        fin = refund_financials(order, gross, persist_settlement=True)
         rf = Refund.objects.create(
             refund_number="RF-TEST-IDEM",
             order=order,
             customer=self.user,
             amount=gross,
-            platform_fee_amount=fee,
-            net_credit_amount=net,
+            platform_fee_amount=fin.fee_retained,
+            net_credit_amount=fin.customer_credit,
             reason="idem",
             status=Refund.Status.APPROVED,
         )
@@ -235,20 +234,96 @@ class RefundExecuteWalletTests(TestCase):
         W.objects.filter(pk=vw.pk).update(balance=Decimal("0.00"))
 
         gross = Decimal("80.00")
-        fee, net = compute_refund_breakdown(gross)
+        fin = refund_financials(order, gross, persist_settlement=True)
         rf = Refund.objects.create(
             refund_number="RF-TEST-INSUF",
             order=order,
             customer=self.user,
             amount=gross,
-            platform_fee_amount=fee,
-            net_credit_amount=net,
+            platform_fee_amount=fin.fee_retained,
+            net_credit_amount=fin.customer_credit,
             reason="full",
             status=Refund.Status.APPROVED,
         )
         with self.assertRaises(ValueError) as ctx:
             execute_refund(rf)
         self.assertIn("vendor", str(ctx.exception).lower())
+
+
+class RefundCommissionExample200Tests(TestCase):
+    """Doc example: order 200, vendor 195, commission 5, customer receives 199.85."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="ref200u",
+            password="x",
+            phone="9810101010",
+            name="C200",
+            role=User.Role.NORMAL,
+        )
+        self.wallet = get_or_create_personal_wallet(self.user)
+        Wallet.objects.filter(pk=self.wallet.pk).update(balance=Decimal("1000.00"))
+        self.vendor_user = User.objects.create_user(
+            username="ref200v",
+            password="x",
+            phone="9820202020",
+            name="V200",
+            role=User.Role.NORMAL,
+        )
+        self.vendor = Vendor.objects.create(
+            user=self.vendor_user,
+            store_name="Ex Store",
+            status=Vendor.Status.APPROVED,
+            commission_rate=Decimal("2.50"),
+        )
+        self.cat = Category.objects.create(name="C200", slug="c200")
+        self.product = Product.objects.create(
+            name="P200",
+            sku="SKU-200",
+            category=self.cat,
+            seller=self.vendor,
+            price=Decimal("200.00"),
+            stock=5,
+            status=Product.Status.ACTIVE,
+        )
+
+    def test_full_refund_customer_receives_199_85(self):
+        order = Order.objects.create(
+            order_number=_gen_order_number(),
+            customer=self.user,
+            seller=self.vendor,
+            status=Order.Status.PENDING,
+            payment_method=Order.PaymentMethod.WALLET,
+            payment_status=Order.PaymentStatus.PENDING,
+            subtotal=Decimal("200.00"),
+            delivery_fee=Decimal("0"),
+            discount_amount=Decimal("0"),
+            total=Decimal("200.00"),
+            placed_portal=Order.PlacedPortal.PORTAL_MAIN,
+            payment_wallet=self.wallet,
+        )
+        pay_with_wallet(order, self.wallet, fund_source="Personal wallet")
+        order.refresh_from_db()
+        gross = Decimal("200.00")
+        fin = refund_financials(order, gross, persist_settlement=True)
+        self.assertEqual(fin.fee_retained, Decimal("0.15"))
+        self.assertEqual(fin.customer_credit, Decimal("199.85"))
+        self.assertEqual(fin.vendor_claw, Decimal("195.00"))
+        self.assertEqual(fin.platform_debit, Decimal("4.85"))
+
+        rf = Refund.objects.create(
+            refund_number="RF-TEST-200",
+            order=order,
+            customer=self.user,
+            amount=gross,
+            platform_fee_amount=fin.fee_retained,
+            net_credit_amount=fin.customer_credit,
+            reason="full",
+            status=Refund.Status.APPROVED,
+        )
+        execute_refund(rf)
+        bal = Wallet.objects.get(pk=self.wallet.pk).balance
+        self.assertEqual(bal, Decimal("1000.00") - Decimal("200.00") + Decimal("199.85"))
 
 
 class RefundSuperAdminPatchTests(TestCase):
@@ -332,14 +407,14 @@ class RefundSuperAdminPatchTests(TestCase):
         )
         pay_with_wallet(self.order, self.wallet, fund_source="Personal wallet")
         gross = Decimal("50.00")
-        fee, net = compute_refund_breakdown(gross)
+        fin = refund_financials(self.order, gross, persist_settlement=True)
         self.rf = Refund.objects.create(
             refund_number="RF-SA-PATCH-1",
             order=self.order,
             customer=self.customer,
             amount=gross,
-            platform_fee_amount=fee,
-            net_credit_amount=net,
+            platform_fee_amount=fin.fee_retained,
+            net_credit_amount=fin.customer_credit,
             reason="test",
             status=Refund.Status.PENDING,
         )

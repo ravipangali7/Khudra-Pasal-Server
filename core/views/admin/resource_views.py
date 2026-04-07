@@ -433,7 +433,13 @@ def admin_order_detail(request, pk):
         return err
     try:
         o = (
-            Order.objects.select_related("customer", "seller", "delivery_address", "coupon")
+            Order.objects.select_related(
+                "customer",
+                "seller",
+                "delivery_address",
+                "coupon",
+                "commission_settlement",
+            )
             .prefetch_related("items__product")
             .get(pk=pk)
         )
@@ -493,6 +499,36 @@ def admin_order_detail(request, pk):
         ).aggregate(s=Sum("amount"))["s"]
         or Decimal("0")
     )
+    remaining = max(Decimal("0"), Decimal(o.total) - refunded_sum)
+    refund_preview = None
+    if (
+        remaining > 0
+        and o.payment_method == Order.PaymentMethod.WALLET
+        and o.payment_status == Order.PaymentStatus.PAID
+        and o.status not in (Order.Status.CANCELLED, Order.Status.REFUNDED)
+    ):
+        try:
+            rfin = refund_service.refund_financials(
+                o, remaining, persist_settlement=False
+            )
+            refund_preview = {
+                "gross": float(remaining),
+                "platform_fee": float(rfin.fee_retained),
+                "net_credit": float(rfin.customer_credit),
+            }
+        except ValueError:
+            refund_preview = None
+
+    cs = getattr(o, "commission_settlement", None)
+    commission_settlement = None
+    if cs:
+        commission_settlement = {
+            "total_amount": float(cs.total_amount),
+            "vendor_amount": float(cs.vendor_amount),
+            "commission_amount": float(cs.commission_amount),
+            "commission_percent": float(cs.commission_percent),
+        }
+
     return Response(
         {
             "id": o.order_number,
@@ -521,6 +557,8 @@ def admin_order_detail(request, pk):
             "tracking_number": o.tracking_number or "",
             "carrier": o.carrier or "",
             "refunded_total": float(refunded_sum),
+            "refund_preview": refund_preview,
+            "commission_settlement": commission_settlement,
         }
     )
 
@@ -565,15 +603,15 @@ def admin_order_refund(request, pk):
             field="order",
         )
 
-    fee, net = refund_service.compute_refund_breakdown(remaining)
+    fin = refund_service.refund_financials(o, remaining, persist_settlement=True)
     refund_no = f"RF-{timezone.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
     rf = Refund.objects.create(
         refund_number=refund_no,
         order=o,
         customer=o.customer,
         amount=remaining,
-        platform_fee_amount=fee,
-        net_credit_amount=net,
+        platform_fee_amount=fin.fee_retained,
+        net_credit_amount=fin.customer_credit,
         reason=reason[:4000],
         status=Refund.Status.PENDING,
     )
@@ -583,8 +621,8 @@ def admin_order_refund(request, pk):
             "ok": True,
             "refund_number": refund_no,
             "gross_amount": float(remaining),
-            "platform_fee": float(fee),
-            "net_credit": float(net),
+            "platform_fee": float(fin.fee_retained),
+            "net_credit": float(fin.customer_credit),
             "status": Refund.Status.PENDING,
             "message": "Pending Super Admin approval.",
         },
@@ -1331,7 +1369,7 @@ def admin_refunds_list(request):
                 "platform_fee": float(fee),
                 "net_credit": float(net),
                 "deduction_summary": (
-                    "Vendor + platform (settlement split)"
+                    "Vendor full share + commission returned (3% of commission slice retained)"
                     if has_settlement
                     else "Platform pool (no vendor settlement)"
                 ),
@@ -1515,8 +1553,12 @@ def _wallet_txn_signed_amount(t: WalletTransaction) -> float:
         WalletTransaction.Type.DEBIT,
         WalletTransaction.Type.WITHDRAWAL,
         WalletTransaction.Type.PURCHASE,
+        WalletTransaction.Type.REFUND_VENDOR_DEBIT,
+        WalletTransaction.Type.REFUND_PLATFORM_DEBIT,
     ):
         return -amt
+    if typ == WalletTransaction.Type.REFUND_CREDIT:
+        return amt
     if typ == WalletTransaction.Type.TRANSFER:
         wid = t.wallet_id
         if t.from_wallet_id and t.from_wallet_id == wid:
