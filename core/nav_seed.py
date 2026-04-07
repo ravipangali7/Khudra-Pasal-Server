@@ -95,8 +95,6 @@ VENDOR_NAV: list[tuple] = [
     ("vendor", "transactions", "Transactions", "CreditCard", "wallet", 4, "", ""),
     ("vendor", "reels", "KhudraReels", "Film", "", 70, "", ""),
     ("vendor", "my-reels", "My Reels", "Film", "reels", 0, "", ""),
-    ("vendor", "upload-reel", "Upload Reel", "Plus", "reels", 1, "", ""),
-    ("vendor", "all-reels", "All Reels", "LayoutGrid", "reels", 2, "", ""),
     ("vendor", "customers", "Customers", "Users", "", 80, "", ""),
     ("vendor", "reports", "Reports", "BarChart3", "", 90, "", ""),
     ("vendor", "support", "Support", "MessageSquare", "", 100, "", ""),

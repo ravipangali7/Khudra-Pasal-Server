@@ -26,7 +26,7 @@ from core.portal_roles import (
 from core.views.admin.admin_access import admin_allowed_nav_keys, user_can_access_audit_logs
 
 # Legacy nav keys no longer shown in vendor portal sidebar (not in nav_seed VENDOR_NAV).
-_VENDOR_NAV_EXCLUDED_KEYS = frozenset({"faq", "faqs", "settings"})
+_VENDOR_NAV_EXCLUDED_KEYS = frozenset({"faq", "faqs", "settings", "upload-reel", "all-reels"})
 
 
 def _admin_nav_badges():
