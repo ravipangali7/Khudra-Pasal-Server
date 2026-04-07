@@ -42,7 +42,7 @@ def notify_family_withdrawal_submitted(
         submitter,
         "Withdrawal request submitted",
         f"Your request {withdrawal.withdrawal_number} for Rs. {amt_str} is pending admin review.",
-        "/family-portal/wallets-overview",
+        "/family-portal/wallets-withdraw",
     )
     msg = (
         f"Family wallet withdrawal {withdrawal.withdrawal_number} from {name} — "
@@ -60,10 +60,10 @@ def notify_family_withdrawal_submitted(
 def _withdrawal_portal_action_url(withdrawal: WalletWithdrawal) -> str:
     w = withdrawal.wallet
     if getattr(w, "family_group_id", None):
-        return "/family-portal/wallets-overview"
+        return "/family-portal/wallets-withdraw"
     if getattr(w, "vendor_id", None):
-        return "/vendor/wallet"
-    return "/customer-portal"
+        return "/vendor/withdrawals"
+    return "/portal/wallet-withdraw"
 
 
 def notify_withdrawal_approved(withdrawal: WalletWithdrawal) -> None:
