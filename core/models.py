@@ -1171,13 +1171,23 @@ class Product(models.Model):
         DRAFT = "draft", "Draft"
         OUT_OF_STOCK = "out_of_stock", "Out of stock"
 
+    class DiscountType(models.TextChoices):
+        FLAT = "flat", "Flat (amount off list price)"
+        PERCENTAGE = "percentage", "Percentage off list price"
+
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=300, unique=True)
     description = models.TextField(blank=True)
     short_description = models.CharField(max_length=500, blank=True)
     sku = models.CharField(max_length=100, unique=True)
     price = models.DecimalField(max_digits=10, decimal_places=2)
-    discount_price = models.DecimalField(
+    discount_type = models.CharField(
+        max_length=20,
+        choices=DiscountType.choices,
+        blank=True,
+        default="",
+    )
+    discount = models.DecimalField(
         max_digits=10, decimal_places=2, null=True, blank=True
     )
     tax_percent = models.DecimalField(

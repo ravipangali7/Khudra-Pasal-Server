@@ -30,6 +30,7 @@ from core.models import (
 )
 from core.portal_roles import PORTAL_VENDOR, assert_portal_login_allowed
 from core.services.wallet_txn_signed import signed_amount_for_wallet_transaction
+from core.services.product_pricing import effective_unit_price
 
 from core.views.vendor.common import media_url, vendor_or_error, vendor_pending_withdrawal_total
 
@@ -273,7 +274,7 @@ def vendor_products_list(request):
             "name": p.name,
             "slug": p.slug,
             "sku": p.sku,
-            "price": float(p.discount_price or p.price),
+            "price": float(effective_unit_price(p)),
             "stock": p.stock,
             "status": p.status,
             "category": p.category.name,

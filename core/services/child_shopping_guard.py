@@ -7,15 +7,14 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from core.models import Category, FamilyGroupPermission, FamilyMember, Product, ProductRestriction, User
+from core.services.product_pricing import effective_unit_price as compute_effective_unit_price
 
 if TYPE_CHECKING:
     pass
 
 
 def _effective_unit_price(product: Product) -> Decimal:
-    if product.discount_price is not None:
-        return product.discount_price
-    return product.price
+    return compute_effective_unit_price(product)
 
 
 def collect_ancestor_category_ids(category: Category) -> list[int]:

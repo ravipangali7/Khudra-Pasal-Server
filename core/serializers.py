@@ -3,6 +3,8 @@ from decimal import Decimal
 from django.core.validators import MinValueValidator
 from rest_framework import serializers
 
+from core.services.product_pricing import effective_unit_price
+
 from core.models import (
     AutoApprovalRule,
     Banner,
@@ -132,9 +134,6 @@ class ProductSerializer(serializers.ModelSerializer):
     list_price = serializers.DecimalField(source="price", max_digits=10, decimal_places=2, read_only=True)
     price = serializers.SerializerMethodField()
     original_price = serializers.SerializerMethodField()
-    discount_price = serializers.DecimalField(
-        max_digits=10, decimal_places=2, allow_null=True, read_only=True
-    )
     unit_short_name = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
     images = serializers.SerializerMethodField()
@@ -151,7 +150,8 @@ class ProductSerializer(serializers.ModelSerializer):
             "price",
             "list_price",
             "original_price",
-            "discount_price",
+            "discount_type",
+            "discount",
             "category_id",
             "category_slug",
             "category_name",
@@ -172,12 +172,11 @@ class ProductSerializer(serializers.ModelSerializer):
         ]
 
     def get_price(self, obj):
-        eff = obj.discount_price if obj.discount_price is not None else obj.price
-        return str(eff)
+        return str(effective_unit_price(obj))
 
     def get_original_price(self, obj):
-        eff = obj.discount_price if obj.discount_price is not None else obj.price
-        if obj.discount_price is not None and obj.discount_price < obj.price:
+        eff = effective_unit_price(obj)
+        if eff < obj.price:
             return str(obj.price)
         return str(eff)
 
@@ -390,7 +389,7 @@ class ReelPublicSerializer(serializers.ModelSerializer):
         if not obj.product_id:
             return None
         p = obj.product
-        eff = p.discount_price if p.discount_price is not None else p.price
+        eff = effective_unit_price(p)
         orig = p.price
         disc = 0
         if orig and eff and orig > eff:
@@ -469,8 +468,8 @@ class CartItemSerializer(serializers.ModelSerializer):
         fields = ["id", "product", "quantity", "subtotal", "created_at", "updated_at"]
 
     def get_subtotal(self, obj):
-        price = obj.product.discount_price if obj.product.discount_price is not None else obj.product.price
-        return float(price * obj.quantity)
+        unit = effective_unit_price(obj.product)
+        return float(unit * obj.quantity)
 
 
 class CartSerializer(serializers.ModelSerializer):
@@ -488,8 +487,8 @@ class CartSerializer(serializers.ModelSerializer):
     def get_total_amount(self, obj):
         total = 0
         for item in obj.items.select_related("product").all():
-            price = item.product.discount_price if item.product.discount_price is not None else item.product.price
-            total += float(price * item.quantity)
+            unit = effective_unit_price(item.product)
+            total += float(unit * item.quantity)
         return total
 
 

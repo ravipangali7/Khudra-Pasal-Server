@@ -35,6 +35,7 @@ from core.models import (
     Vendor,
 )
 from core.services import reel_service
+from core.services.product_pricing import product_effective_price_case
 from core.services.child_shopping_guard import validate_child_may_purchase_product
 from core.services.shipping_quote import compute_shipping_fee
 from core.views.vendor.common import vendor_or_error
@@ -153,7 +154,7 @@ def _apply_product_list_filters(queryset, request):
     if bestseller == "true":
         queryset = queryset.filter(is_bestseller=True)
     if has_discount == "true":
-        queryset = queryset.filter(discount_price__isnull=False, discount_price__lt=F("price"))
+        queryset = queryset.annotate(_eff=product_effective_price_case()).filter(_eff__lt=F("price"))
     if trending == "true":
         queryset = queryset.filter(Q(is_bestseller=True) | Q(rating__gte=4.5))
     return queryset
@@ -165,10 +166,14 @@ def _apply_product_ordering(queryset, request):
     if ordering not in allowed:
         ordering = "-created_at"
     if ordering == "-discount_percent":
-        queryset = queryset.filter(discount_price__isnull=False, discount_price__lt=F("price")).annotate(
-            discount_percent=ExpressionWrapper(
-                (F("price") - F("discount_price")) * 100.0 / F("price"),
-                output_field=DecimalField(max_digits=8, decimal_places=3),
+        queryset = (
+            queryset.annotate(_eff=product_effective_price_case())
+            .filter(_eff__lt=F("price"))
+            .annotate(
+                discount_percent=ExpressionWrapper(
+                    (F("price") - F("_eff")) * 100.0 / F("price"),
+                    output_field=DecimalField(max_digits=8, decimal_places=3),
+                )
             )
         )
         return queryset.order_by("-discount_percent", "-created_at")

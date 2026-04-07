@@ -83,6 +83,7 @@ from core.serializers import (
     ReelPublicSerializer,
 )
 from core.services.child_shopping_guard import validate_child_may_purchase_product
+from core.services.product_pricing import effective_unit_price
 from core.services.child_spending_service import (
     child_non_personal_spent_windows,
     validate_child_spending_limits,
@@ -3648,7 +3649,7 @@ def portal_orders_checkout(request):
                     validate_child_may_purchase_product(u, p)
                 except ValueError as e:
                     return Response({"detail": str(e)}, status=400)
-                unit_price = p.discount_price if p.discount_price is not None else p.price
+                unit_price = effective_unit_price(p)
                 line_total = (unit_price * qty).quantize(Decimal("0.01"))
                 cart_subtotal += line_total
                 groups[p.seller_id].append((p, qty, unit_price, line_total))

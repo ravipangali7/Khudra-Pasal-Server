@@ -76,6 +76,7 @@ from core.models import (
 )
 from core.serializers import ReelPublicSerializer
 from core.services import audit_service, product_service, support_notification_service, support_ticket_service
+from core.services.product_pricing import effective_unit_price, validate_and_set_product_discount
 from core.services.shipping_quote import compute_shipping_fee
 from core.services.base import new_wallet_txn_id
 from core.services.reel_boost_patch import apply_reel_boost_from_data
@@ -596,7 +597,7 @@ def admin_products_list(request):
             "name": p.name,
             "sku": p.sku,
             "category": p.category.name,
-            "price": float(p.discount_price or p.price),
+            "price": float(effective_unit_price(p)),
             "stock": p.stock,
             "status": p.status,
             "seller": p.seller.store_name if p.seller_id else "In-House",
@@ -1117,7 +1118,7 @@ def admin_flash_deals_list(request):
         products_preview = []
         for dp in deal_prods[:preview_cap]:
             p = dp.product
-            price = dp.override_price if dp.override_price is not None else (p.discount_price or p.price)
+            price = dp.override_price if dp.override_price is not None else effective_unit_price(p)
             products_preview.append(
                 {
                     "id": str(p.pk),
@@ -2880,9 +2881,8 @@ def admin_product_create(request):
         short_description=request.data.get("short_description") or "",
         sku=sku,
         price=_to_decimal(request.data.get("price"), "0"),
-        discount_price=_to_decimal(request.data.get("discount_price"), "0")
-        if request.data.get("discount_price")
-        else None,
+        discount_type="",
+        discount=None,
         tax_percent=_to_decimal(request.data.get("tax_percent"), "0"),
         category=category,
         brand=Brand.objects.filter(pk=request.data.get("brand_id")).first()
@@ -2906,6 +2906,17 @@ def admin_product_create(request):
         enable_reels=str(request.data.get("enable_reels", "")).lower() == "true",
         enable_pos=str(request.data.get("enable_pos", "")).lower() == "true",
     )
+    if request.data.get("discount_type") or request.data.get("discount"):
+        try:
+            validate_and_set_product_discount(
+                row,
+                discount_type_raw=request.data.get("discount_type"),
+                discount_raw=request.data.get("discount"),
+            )
+        except ValueError as e:
+            row.delete()
+            return Response({"detail": str(e)}, status=400)
+        row.save(update_fields=["discount_type", "discount"])
     gallery_files = request.FILES.getlist("gallery_images")[:MAX_ADMIN_PRODUCT_GALLERY]
     for idx, f in enumerate(gallery_files):
         ProductImage.objects.create(product=row, image=f, sort_order=idx)
@@ -2930,7 +2941,8 @@ def _admin_product_detail_payload(request, row: Product) -> dict:
         "description": row.description or "",
         "short_description": row.short_description or "",
         "price": float(row.price),
-        "discount_price": float(row.discount_price) if row.discount_price is not None else None,
+        "discount_type": row.discount_type or "",
+        "discount": float(row.discount) if row.discount is not None else None,
         "stock": row.stock,
         "tax_percent": float(row.tax_percent),
         "type": row.type,
@@ -2984,8 +2996,15 @@ def admin_product_detail_write(request, pk):
         row.slug = _make_unique_slug(Product, request.data.get("slug") or request.data.get("name") or row.name, instance_pk=row.pk)
     if "price" in request.data:
         row.price = _to_decimal(request.data.get("price"), "0")
-    if "discount_price" in request.data:
-        row.discount_price = _to_decimal(request.data.get("discount_price"), "0") if request.data.get("discount_price") else None
+    if "discount_type" in request.data or "discount" in request.data:
+        try:
+            validate_and_set_product_discount(
+                row,
+                discount_type_raw=request.data.get("discount_type"),
+                discount_raw=request.data.get("discount"),
+            )
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=400)
     if "tax_percent" in request.data:
         row.tax_percent = _to_decimal(request.data.get("tax_percent"), "0")
     if "stock" in request.data:
@@ -3489,7 +3508,7 @@ def admin_purchase_order_create(request):
             return validation_error("product not found", field="items")
         up_raw = raw.get("unit_price")
         if up_raw is None or up_raw == "":
-            unit_price = prod.discount_price if prod.discount_price is not None else prod.price
+            unit_price = effective_unit_price(prod)
         else:
             unit_price = _to_decimal(up_raw, "0")
         line_total = unit_price * qty

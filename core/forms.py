@@ -9,6 +9,7 @@ from django import forms
 from django.contrib.auth.forms import UserChangeForm, UserCreationForm
 from django.core.exceptions import ValidationError
 from .models import Product, Refund, User, Vendor, WalletSettings
+from .services.product_pricing import validate_and_set_product_discount
 
 # Nepal mobile: +977- followed by 10 digits (common format in spec)
 NEPAL_PHONE_PATTERN = re.compile(r"^\+977-\d{10}$")
@@ -111,9 +112,15 @@ class ProductAdminForm(forms.ModelForm):
     def clean(self):
         data = super().clean()
         price = data.get("price")
-        discount = data.get("discount_price")
-        if price is not None and discount is not None and discount >= price:
-            raise ValidationError(
-                {"discount_price": "Discount price must be less than regular price."}
+        if price is None:
+            return data
+        tmp = Product(price=price)
+        try:
+            validate_and_set_product_discount(
+                tmp,
+                discount_type_raw=data.get("discount_type"),
+                discount_raw=data.get("discount"),
             )
+        except ValueError as e:
+            raise ValidationError({"discount": str(e)})
         return data

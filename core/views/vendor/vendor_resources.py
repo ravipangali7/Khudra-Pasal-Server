@@ -48,6 +48,7 @@ from core.models import (
     WalletWithdrawal,
 )
 from core.serializers import ReelPublicSerializer
+from core.services.product_pricing import effective_unit_price, validate_and_set_product_discount
 from core.services import product_service, support_notification_service, support_ticket_service
 from core.services.kyc_service import sync_user_kyc_status
 from core.services.kyc_withdraw import kyc_withdraw_block_payload
@@ -284,7 +285,8 @@ def vendor_product_detail(request, pk):
                 "description": row.description,
                 "short_description": row.short_description,
                 "price": str(row.price),
-                "discount_price": str(row.discount_price) if row.discount_price is not None else None,
+                "discount_type": row.discount_type or "",
+                "discount": str(row.discount) if row.discount is not None else None,
                 "tax_percent": str(row.tax_percent),
                 "category_id": str(row.category_id),
                 "brand_id": str(row.brand_id) if row.brand_id else None,
@@ -351,10 +353,15 @@ def vendor_product_detail(request, pk):
         )
     if "price" in request.data:
         row.price = _to_decimal(request.data.get("price"), "0")
-    if "discount_price" in request.data:
-        row.discount_price = (
-            _to_decimal(request.data.get("discount_price"), "0") if request.data.get("discount_price") else None
-        )
+    if "discount_type" in request.data or "discount" in request.data:
+        try:
+            validate_and_set_product_discount(
+                row,
+                discount_type_raw=request.data.get("discount_type"),
+                discount_raw=request.data.get("discount"),
+            )
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=400)
     if "tax_percent" in request.data:
         row.tax_percent = _to_decimal(request.data.get("tax_percent"), "13")
     if "stock" in request.data:
@@ -421,9 +428,8 @@ def vendor_product_create(request):
         short_description=request.data.get("short_description") or "",
         sku=sku,
         price=_to_decimal(request.data.get("price"), "0"),
-        discount_price=_to_decimal(request.data.get("discount_price"), "0")
-        if request.data.get("discount_price")
-        else None,
+        discount_type="",
+        discount=None,
         tax_percent=_to_decimal(request.data.get("tax_percent"), "13"),
         category=category,
         brand=Brand.objects.filter(pk=request.data.get("brand_id")).first()
@@ -446,6 +452,17 @@ def vendor_product_create(request):
         enable_pos=str(request.data.get("enable_pos", "")).lower() == "true",
         attributes=attrs if isinstance(attrs, dict) else {},
     )
+    if request.data.get("discount_type") or request.data.get("discount"):
+        try:
+            validate_and_set_product_discount(
+                row,
+                discount_type_raw=request.data.get("discount_type"),
+                discount_raw=request.data.get("discount"),
+            )
+        except ValueError as e:
+            row.delete()
+            return Response({"detail": str(e)}, status=400)
+        row.save(update_fields=["discount_type", "discount"])
     product_service.sync_stock_status(row)
     ProductApproval.objects.create(
         product=row,
@@ -648,7 +665,7 @@ def vendor_pos_checkout(request):
                         {"detail": f"Insufficient stock for {p.name}."},
                         status=400,
                     )
-                unit_price = p.discount_price if p.discount_price is not None else p.price
+                unit_price = effective_unit_price(p)
                 line_total = (unit_price * qty).quantize(Decimal("0.01"))
                 subtotal += line_total
                 lines.append((p, qty, unit_price, line_total))
