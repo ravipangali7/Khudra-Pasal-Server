@@ -101,8 +101,6 @@ VENDOR_NAV: list[tuple] = [
     ("vendor", "reports", "Reports", "BarChart3", "", 90, "", ""),
     ("vendor", "support", "Support", "MessageSquare", "", 100, "", ""),
     ("vendor", "tickets", "Support Tickets", "MessageSquare", "support", 0, "", ""),
-    ("vendor", "faq", "FAQs", "HelpCircle", "support", 1, "", ""),
-    ("vendor", "settings", "Settings", "Settings", "", 110, "", ""),
 ]
 
 PORTAL_MAIN_NAV: list[tuple] = [
