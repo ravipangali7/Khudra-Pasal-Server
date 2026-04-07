@@ -59,6 +59,24 @@ def notify_parent_purchase_approval_requested(par: PurchaseApprovalRequest) -> N
     )
 
 
+def notify_child_purchase_auto_approved(par: PurchaseApprovalRequest) -> Notification:
+    """In-app notice when a purchase request is auto-approved by family Auto-Approval Rules."""
+    msg = (
+        f"{par.product.name} (Rs. {par.amount}) was auto-approved under your family’s rules. "
+        "You can add it to your cart on the shop or child portal."
+    )
+    note = (par.note or "").strip()
+    if note:
+        msg = f"{msg} Note: {note[:200]}"
+    return notify_user(
+        user=par.child,
+        title="Purchase auto-approved",
+        message=msg,
+        ntype=Notification.Type.FAMILY,
+        action_url="/child-portal/requests",
+    )
+
+
 def notify_child_purchase_approval_decision(par: PurchaseApprovalRequest) -> Notification:
     """In-app notice for the child when the parent approves or rejects a purchase request."""
     if par.status == PurchaseApprovalRequest.Status.APPROVED:

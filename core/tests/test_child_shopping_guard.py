@@ -10,6 +10,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from core.models import (
+    AutoApprovalRule,
     Cart,
     CartItem,
     Category,
@@ -497,6 +498,91 @@ class PurchaseApprovalPortalApiTests(TestCase):
         )
         self.assertEqual(n.type, Notification.Type.FAMILY)
         self.assertIn("approval", n.title.lower())
+
+    def test_auto_approval_rule_matches_parent_category_and_amount(self):
+        AutoApprovalRule.objects.create(
+            group=self.group,
+            name="Under 200",
+            category=self.parent_cat,
+            max_amount=Decimal("200.00"),
+            is_enabled=True,
+        )
+        parent_n_before = Notification.objects.filter(recipient=self.leader).count()
+        child_n_before = Notification.objects.filter(recipient=self.child).count()
+        r = self.client.post(
+            "/api/portal/child/purchase-approval-requests/",
+            {"product_id": self.product.pk},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
+        par = PurchaseApprovalRequest.objects.get()
+        self.assertEqual(par.status, PurchaseApprovalRequest.Status.APPROVED)
+        self.assertIsNotNone(par.responded_at)
+        self.assertEqual(
+            Notification.objects.filter(recipient=self.leader).count(),
+            parent_n_before,
+        )
+        self.assertEqual(
+            Notification.objects.filter(recipient=self.child).count(),
+            child_n_before + 1,
+        )
+        cn = (
+            Notification.objects.filter(recipient=self.child)
+            .order_by("-created_at")
+            .first()
+        )
+        self.assertEqual(cn.type, Notification.Type.FAMILY)
+        self.assertIn("auto", cn.title.lower())
+
+    def test_auto_approval_rule_amount_too_high_stays_pending(self):
+        AutoApprovalRule.objects.create(
+            group=self.group,
+            name="Only cheap",
+            category=self.parent_cat,
+            max_amount=Decimal("50.00"),
+            is_enabled=True,
+        )
+        parent_n_before = Notification.objects.filter(recipient=self.leader).count()
+        r = self.client.post(
+            "/api/portal/child/purchase-approval-requests/",
+            {"product_id": self.product.pk},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
+        par = PurchaseApprovalRequest.objects.get()
+        self.assertEqual(par.status, PurchaseApprovalRequest.Status.PENDING)
+        self.assertIsNone(par.responded_at)
+        self.assertEqual(
+            Notification.objects.filter(recipient=self.leader).count(),
+            parent_n_before + 1,
+        )
+
+    def test_auto_approval_rule_null_category_matches_any(self):
+        AutoApprovalRule.objects.create(
+            group=self.group,
+            name="Any category cap",
+            category=None,
+            max_amount=Decimal("200.00"),
+            is_enabled=True,
+        )
+        parent_n_before = Notification.objects.filter(recipient=self.leader).count()
+        child_n_before = Notification.objects.filter(recipient=self.child).count()
+        r = self.client.post(
+            "/api/portal/child/purchase-approval-requests/",
+            {"product_id": self.product.pk},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
+        par = PurchaseApprovalRequest.objects.get()
+        self.assertEqual(par.status, PurchaseApprovalRequest.Status.APPROVED)
+        self.assertEqual(
+            Notification.objects.filter(recipient=self.leader).count(),
+            parent_n_before,
+        )
+        self.assertEqual(
+            Notification.objects.filter(recipient=self.child).count(),
+            child_n_before + 1,
+        )
 
     def test_leader_approves_via_portal(self):
         par = PurchaseApprovalRequest.objects.create(

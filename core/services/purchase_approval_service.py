@@ -8,6 +8,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from core.models import (
+    AutoApprovalRule,
     Category,
     FamilyGroup,
     FamilyMember,
@@ -20,6 +21,27 @@ from core.services.child_shopping_guard import (
     _effective_unit_price,
     resolve_merged_restriction_for_product,
 )
+
+
+def _family_auto_approval_matches(
+    *, group_id: int, product_category_id: int | None, amount: Decimal
+) -> bool:
+    """
+    True if any enabled AutoApprovalRule for the group applies to this category and amount.
+    Null category on a rule matches any product category; null max_amount means no cap.
+    """
+    rules = AutoApprovalRule.objects.filter(group_id=group_id, is_enabled=True)
+    for rule in rules:
+        if rule.category_id:
+            if product_category_id is None:
+                continue
+            allowed = collect_descendant_category_ids(rule.category_id)
+            if product_category_id not in allowed:
+                continue
+        if rule.max_amount is not None and amount > rule.max_amount:
+            continue
+        return True
+    return False
 
 
 def create_child_purchase_request(
@@ -66,15 +88,32 @@ def create_child_purchase_request(
 
     unit = _effective_unit_price(product)
     leader = fm.group.leader
-    par = PurchaseApprovalRequest.objects.create(
-        child=child,
-        parent=leader,
-        product=product,
-        amount=unit,
-        note=(note or "")[:255],
-        status=PurchaseApprovalRequest.Status.PENDING,
+    cat_id = product.category_id
+    auto = _family_auto_approval_matches(
+        group_id=fm.group_id, product_category_id=cat_id, amount=unit
     )
-    notification_service.notify_parent_purchase_approval_requested(par)
+    now = timezone.now()
+    if auto:
+        par = PurchaseApprovalRequest.objects.create(
+            child=child,
+            parent=leader,
+            product=product,
+            amount=unit,
+            note=(note or "")[:255],
+            status=PurchaseApprovalRequest.Status.APPROVED,
+            responded_at=now,
+        )
+        notification_service.notify_child_purchase_auto_approved(par)
+    else:
+        par = PurchaseApprovalRequest.objects.create(
+            child=child,
+            parent=leader,
+            product=product,
+            amount=unit,
+            note=(note or "")[:255],
+            status=PurchaseApprovalRequest.Status.PENDING,
+        )
+        notification_service.notify_parent_purchase_approval_requested(par)
     return par
 
 
