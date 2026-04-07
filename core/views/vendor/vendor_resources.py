@@ -10,7 +10,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from django.db import transaction
-from django.db.models import Count, Max, Q, Sum
+from django.db.models import Count, Max, Prefetch, Q, Sum
 from django.db.models.deletion import ProtectedError
 from django.db.models.functions import TruncDate
 from django.http import HttpResponse
@@ -37,6 +37,7 @@ from core.models import (
     OrderItem,
     Product,
     ProductApproval,
+    ProductImage,
     ProductReview,
     Refund,
     Reel,
@@ -64,6 +65,51 @@ from core.views.vendor.common import (
     vendor_or_error,
 )
 from core.views.vendor.vendor_views import VendorPagination
+
+MAX_VENDOR_PRODUCT_GALLERY = 15
+
+
+def _vendor_product_detail_payload(request, row: Product) -> dict:
+    imgs = sorted(row.images.all(), key=lambda x: (x.sort_order, x.id))
+    images_payload = [
+        {
+            "id": str(im.pk),
+            "image_url": absolute_media_url(request, im.image) if im.image else "",
+            "sort_order": im.sort_order,
+        }
+        for im in imgs
+    ]
+    return {
+        "id": str(row.pk),
+        "name": row.name,
+        "slug": row.slug,
+        "sku": row.sku,
+        "description": row.description or "",
+        "short_description": row.short_description or "",
+        "price": float(row.price),
+        "discount_type": row.discount_type or "",
+        "discount": float(row.discount) if row.discount is not None else None,
+        "tax_percent": float(row.tax_percent),
+        "category_id": str(row.category_id),
+        "category_name": row.category.name if row.category_id else "",
+        "brand_id": str(row.brand_id) if row.brand_id else "",
+        "brand_name": row.brand.name if row.brand_id else "",
+        "unit_id": str(row.unit_id) if row.unit_id else "",
+        "unit_name": row.unit.name if row.unit_id else "",
+        "type": row.type,
+        "stock": row.stock,
+        "status": row.status,
+        "is_featured": row.is_featured,
+        "has_variations": row.has_variations,
+        "enable_reels": row.enable_reels,
+        "enable_pos": row.enable_pos,
+        "seo_title": row.seo_title or "",
+        "seo_description": row.seo_description or "",
+        "seo_keywords": row.seo_keywords or "",
+        "image_url": media_url(request, row.image),
+        "images": images_payload,
+        "attributes": row.attributes or {},
+    }
 
 
 def _paginate(request, queryset):
@@ -268,39 +314,21 @@ def vendor_product_slug_preview(request):
 @api_view(["GET", "PATCH", "DELETE"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, MultiPartParser, FormParser])
 def vendor_product_detail(request, pk):
     vendor, err = vendor_or_error(request)
     if err:
         return err
-    row = Product.objects.filter(pk=pk, seller=vendor).select_related("category", "brand", "unit").first()
+    row = (
+        Product.objects.filter(pk=pk, seller=vendor)
+        .select_related("category", "brand", "unit")
+        .prefetch_related(Prefetch("images", queryset=ProductImage.objects.order_by("sort_order", "id")))
+        .first()
+    )
     if not row:
         return Response({"detail": "Not found."}, status=404)
     if request.method == "GET":
-        return Response(
-            {
-                "id": str(row.pk),
-                "name": row.name,
-                "slug": row.slug,
-                "sku": row.sku,
-                "description": row.description,
-                "short_description": row.short_description,
-                "price": str(row.price),
-                "discount_type": row.discount_type or "",
-                "discount": str(row.discount) if row.discount is not None else None,
-                "tax_percent": str(row.tax_percent),
-                "category_id": str(row.category_id),
-                "brand_id": str(row.brand_id) if row.brand_id else None,
-                "unit_id": str(row.unit_id) if row.unit_id else None,
-                "type": row.type,
-                "stock": row.stock,
-                "status": row.status,
-                "image_url": media_url(request, row.image),
-                "attributes": row.attributes or {},
-                "seo_title": row.seo_title,
-                "seo_description": row.seo_description,
-                "seo_keywords": row.seo_keywords,
-            }
-        )
+        return Response(_vendor_product_detail_payload(request, row))
     if request.method == "DELETE":
         try:
             row.delete()
@@ -363,7 +391,7 @@ def vendor_product_detail(request, pk):
         except ValueError as e:
             return Response({"detail": str(e)}, status=400)
     if "tax_percent" in request.data:
-        row.tax_percent = _to_decimal(request.data.get("tax_percent"), "13")
+        row.tax_percent = _to_decimal(request.data.get("tax_percent"), "0")
     if "stock" in request.data:
         row.stock = int(request.data.get("stock") or 0)
     if "category_id" in request.data:
@@ -383,9 +411,23 @@ def vendor_product_detail(request, pk):
                 row.attributes = json.loads(raw)
             except json.JSONDecodeError:
                 pass
-    for bfield in ("is_featured", "has_variations", "enable_reels", "enable_pos"):
+    for bfield in ("has_variations", "enable_reels", "enable_pos"):
         if bfield in request.data:
             setattr(row, bfield, str(request.data.get(bfield)).lower() == "true")
+    for raw_id in request.data.getlist("delete_gallery_image_ids"):
+        try:
+            gid = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        ProductImage.objects.filter(pk=gid, product_id=row.pk).delete()
+    gallery_new = request.FILES.getlist("gallery_images")
+    if gallery_new:
+        current_count = ProductImage.objects.filter(product=row).count()
+        remaining = max(0, MAX_VENDOR_PRODUCT_GALLERY - current_count)
+        agg = ProductImage.objects.filter(product=row).aggregate(m=Max("sort_order"))
+        start_order = (agg["m"] if agg["m"] is not None else -1) + 1
+        for idx, f in enumerate(gallery_new[:remaining]):
+            ProductImage.objects.create(product=row, image=f, sort_order=start_order + idx)
     image = request.FILES.get("image")
     if image:
         row.image = image
@@ -397,6 +439,7 @@ def vendor_product_detail(request, pk):
 @api_view(["POST"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, MultiPartParser, FormParser])
 def vendor_product_create(request):
     vendor, err = vendor_or_error(request)
     if err:
@@ -430,7 +473,7 @@ def vendor_product_create(request):
         price=_to_decimal(request.data.get("price"), "0"),
         discount_type="",
         discount=None,
-        tax_percent=_to_decimal(request.data.get("tax_percent"), "13"),
+        tax_percent=_to_decimal(request.data.get("tax_percent"), "0"),
         category=category,
         brand=Brand.objects.filter(pk=request.data.get("brand_id")).first()
         if request.data.get("brand_id")
@@ -443,7 +486,7 @@ def vendor_product_create(request):
         stock=int(request.data.get("stock") or 0),
         seller=vendor,
         status=Product.Status.DRAFT,
-        is_featured=str(request.data.get("is_featured", "")).lower() == "true",
+        is_featured=False,
         has_variations=str(request.data.get("has_variations", "")).lower() == "true",
         seo_title=request.data.get("seo_title") or "",
         seo_description=request.data.get("seo_description") or "",
@@ -463,6 +506,9 @@ def vendor_product_create(request):
             row.delete()
             return Response({"detail": str(e)}, status=400)
         row.save(update_fields=["discount_type", "discount"])
+    gallery_files = request.FILES.getlist("gallery_images")[:MAX_VENDOR_PRODUCT_GALLERY]
+    for idx, f in enumerate(gallery_files):
+        ProductImage.objects.create(product=row, image=f, sort_order=idx)
     product_service.sync_stock_status(row)
     ProductApproval.objects.create(
         product=row,
