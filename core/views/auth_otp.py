@@ -41,9 +41,9 @@ def _username_from_name(name: str) -> str:
 def _fallback_portal_key_for_user(user: User) -> str | None:
     """
     Use a best-effort portal fallback when generic storefront login was requested.
-    Priority mirrors current surface resolution behavior.
+    Priority: admin, vendor, family, child, customer (matches primary_spa_redirect).
     """
-    for key in (PORTAL_ADMIN, PORTAL_VENDOR, PORTAL_CHILD, PORTAL_FAMILY, PORTAL_MAIN):
+    for key in (PORTAL_ADMIN, PORTAL_VENDOR, PORTAL_FAMILY, PORTAL_CHILD, PORTAL_MAIN):
         if user_allowed_for_portal_key(user, key):
             return key
     return None

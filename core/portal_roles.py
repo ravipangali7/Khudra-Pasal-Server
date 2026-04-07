@@ -84,6 +84,22 @@ def user_has_family_portal_access(user: User) -> bool:
     ).exists()
 
 
+def primary_spa_redirect(user: User) -> str:
+    """
+    Canonical SPA entry path for this user (priority: admin, vendor, family, child, customer).
+    Matches login redirect ordering and session-home guard.
+    """
+    if user_allowed_for_portal_key(user, PORTAL_ADMIN):
+        return "/admin"
+    if user_allowed_for_portal_key(user, PORTAL_VENDOR):
+        return "/vendor"
+    if user_has_family_portal_access(user):
+        return "/family-portal"
+    if user_allowed_for_portal_key(user, PORTAL_CHILD):
+        return "/child-portal"
+    return "/portal"
+
+
 def user_allowed_for_portal_key(user: User, portal_key: str) -> bool:
     if portal_key == PORTAL_ADMIN:
         return user_allowed_for_admin_portal(user)

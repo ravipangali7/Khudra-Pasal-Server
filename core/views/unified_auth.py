@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from rest_framework.authentication import SessionAuthentication, TokenAuthentication
 from rest_framework.authtoken.models import Token
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from core.models import User
@@ -16,6 +17,7 @@ from core.portal_roles import (
     PORTAL_VENDOR,
     assert_portal_login_allowed,
     normalize_portal_key,
+    primary_spa_redirect,
     user_allowed_for_portal_key,
     user_has_family_portal_access,
 )
@@ -23,15 +25,12 @@ from core.portal_roles import (
 
 def resolve_surface_and_redirect(user: User) -> tuple[str, str]:
     """Best-effort SPA path hint (does not bypass portal role checks on login)."""
-    if user_allowed_for_portal_key(user, PORTAL_ADMIN):
-        return "admin", "/admin"
-    if user_allowed_for_portal_key(user, PORTAL_VENDOR):
-        return "vendor", "/vendor"
-    if user.role == User.Role.CHILD:
-        return "portal", "/child-portal"
-    if user_has_family_portal_access(user):
-        return "portal", "/family-portal"
-    return "portal", "/portal"
+    path = primary_spa_redirect(user)
+    if path.startswith("/admin"):
+        return "admin", path
+    if path.startswith("/vendor"):
+        return "vendor", path
+    return "portal", path
 
 
 def user_payload(user: User, surface: str) -> dict:
@@ -58,7 +57,7 @@ def build_auth_success_response(user: User, portal_key: str) -> dict:
     surface, redirect = resolve_surface_and_redirect(user)
     if portal_key == PORTAL_FAMILY and user_has_family_portal_access(user):
         redirect = "/family-portal/dashboard"
-    elif portal_key == PORTAL_CHILD and user.role == User.Role.CHILD:
+    elif portal_key == PORTAL_CHILD and user_allowed_for_portal_key(user, PORTAL_CHILD):
         redirect = "/child-portal/dashboard"
     token, _ = Token.objects.get_or_create(user=user)
     return {
@@ -103,3 +102,11 @@ def unified_login(request):
     if isinstance(out, Response):
         return out
     return Response(out)
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def auth_session_home(request):
+    """SPA shell guard: canonical home path for the authenticated user."""
+    return Response({"redirect": primary_spa_redirect(request.user)})
