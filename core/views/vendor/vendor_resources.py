@@ -829,6 +829,17 @@ def vendor_customers_list(request):
 
 # --- Reports ---
 
+_PLACED_PORTAL_LABELS = dict(Order.PlacedPortal.choices)
+_PAYMENT_METHOD_LABELS = dict(Order.PaymentMethod.choices)
+
+
+def _vendor_reports_date_range(request):
+    end_d = parse_date(request.query_params.get("to") or "") or timezone.localdate()
+    start_d = parse_date(request.query_params.get("from") or "") or (end_d - timedelta(days=30))
+    start_dt = timezone.make_aware(datetime.combine(start_d, datetime.min.time()))
+    end_dt = timezone.make_aware(datetime.combine(end_d, datetime.max.time()))
+    return start_d, end_d, start_dt, end_dt
+
 
 @api_view(["GET"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
@@ -837,10 +848,7 @@ def vendor_reports_summary(request):
     vendor, err = vendor_or_error(request)
     if err:
         return err
-    end_d = parse_date(request.query_params.get("to") or "") or timezone.localdate()
-    start_d = parse_date(request.query_params.get("from") or "") or (end_d - timedelta(days=30))
-    start_dt = timezone.make_aware(datetime.combine(start_d, datetime.min.time()))
-    end_dt = timezone.make_aware(datetime.combine(end_d, datetime.max.time()))
+    start_d, end_d, start_dt, end_dt = _vendor_reports_date_range(request)
     oq = Order.objects.filter(seller=vendor, created_at__gte=start_dt, created_at__lte=end_dt)
     daily = list(
         oq.annotate(d=TruncDate("created_at"))
@@ -856,15 +864,12 @@ def vendor_reports_summary(request):
         }
         for x in daily
     ]
-    cat_rows = (
-        OrderItem.objects.filter(
-            order__seller=vendor,
-            order__created_at__gte=start_dt,
-            order__created_at__lte=end_dt,
-        )
-        .values("product__category__name")
-        .annotate(revenue=Sum("total_price"))
+    item_fq = OrderItem.objects.filter(
+        order__seller=vendor,
+        order__created_at__gte=start_dt,
+        order__created_at__lte=end_dt,
     )
+    cat_rows = item_fq.values("product__category__name").annotate(revenue=Sum("total_price"))
     category_breakdown = [
         {"name": r["product__category__name"] or "—", "value": float(r["revenue"] or 0)}
         for r in cat_rows
@@ -880,6 +885,70 @@ def vendor_reports_summary(request):
         created_at__lte=end_dt,
     ).aggregate(s=Sum("vendor_amount"))["s"] or Decimal("0")
     wallet_settled_total = float(settled)
+
+    order_count = oq.count()
+    items_agg = item_fq.aggregate(t=Sum("quantity"))
+    items_sold = int(items_agg["t"] or 0)
+    avg_order_value = float(gross / order_count) if order_count else 0.0
+    summary_counts = {
+        "order_count": order_count,
+        "avg_order_value": avg_order_value,
+        "items_sold": items_sold,
+    }
+
+    by_placed_portal = []
+    for r in oq.values("placed_portal").annotate(orders=Count("id"), revenue=Sum("total")):
+        raw = r["placed_portal"]
+        key = (raw or "").strip() or "legacy"
+        label = _PLACED_PORTAL_LABELS.get(raw, "Legacy") if raw else "Legacy"
+        by_placed_portal.append(
+            {
+                "key": key,
+                "label": label,
+                "orders": r["orders"],
+                "revenue": float(r["revenue"] or 0),
+            }
+        )
+    by_placed_portal.sort(key=lambda x: x["revenue"], reverse=True)
+
+    by_channel = []
+    for r in oq.values("is_pos_order").annotate(orders=Count("id"), revenue=Sum("total")):
+        ch = "pos" if r["is_pos_order"] else "online"
+        by_channel.append(
+            {
+                "channel": ch,
+                "label": "POS" if r["is_pos_order"] else "Online store",
+                "orders": r["orders"],
+                "revenue": float(r["revenue"] or 0),
+            }
+        )
+    by_channel.sort(key=lambda x: x["revenue"], reverse=True)
+
+    by_payment_method = []
+    for r in oq.values("payment_method").annotate(orders=Count("id"), revenue=Sum("total")):
+        pm = r["payment_method"] or ""
+        by_payment_method.append(
+            {
+                "method": pm,
+                "label": _PAYMENT_METHOD_LABELS.get(pm, pm or "—"),
+                "orders": r["orders"],
+                "revenue": float(r["revenue"] or 0),
+            }
+        )
+    by_payment_method.sort(key=lambda x: x["revenue"], reverse=True)
+
+    top_products = [
+        {
+            "product_id": r["product_id"],
+            "name": (r["product__name"] or "—")[:200],
+            "quantity": int(r["qty"] or 0),
+            "revenue": float(r["revenue"] or 0),
+        }
+        for r in item_fq.values("product_id", "product__name")
+        .annotate(qty=Sum("quantity"), revenue=Sum("total_price"))
+        .order_by("-revenue")[:10]
+    ]
+
     return Response(
         {
             "daily": daily_out,
@@ -890,6 +959,11 @@ def vendor_reports_summary(request):
             "wallet_settled_total": wallet_settled_total,
             "from": start_d.isoformat(),
             "to": end_d.isoformat(),
+            "summary_counts": summary_counts,
+            "by_placed_portal": by_placed_portal,
+            "by_channel": by_channel,
+            "by_payment_method": by_payment_method,
+            "top_products": top_products,
         }
     )
 
@@ -901,16 +975,25 @@ def vendor_reports_export_csv(request):
     vendor, err = vendor_or_error(request)
     if err:
         return err
-    end_d = parse_date(request.query_params.get("to") or "") or timezone.localdate()
-    start_d = parse_date(request.query_params.get("from") or "") or (end_d - timedelta(days=30))
-    start_dt = timezone.make_aware(datetime.combine(start_d, datetime.min.time()))
-    end_dt = timezone.make_aware(datetime.combine(end_d, datetime.max.time()))
+    start_d, end_d, start_dt, end_dt = _vendor_reports_date_range(request)
     oq = Order.objects.filter(seller=vendor, created_at__gte=start_dt, created_at__lte=end_dt).order_by(
         "-created_at"
     )
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["order_number", "date", "customer", "status", "total", "payment_status"])
+    w.writerow(
+        [
+            "order_number",
+            "date",
+            "customer",
+            "status",
+            "total",
+            "payment_status",
+            "placed_portal",
+            "is_pos_order",
+            "payment_method",
+        ]
+    )
     for o in oq.iterator(chunk_size=200):
         w.writerow(
             [
@@ -920,6 +1003,9 @@ def vendor_reports_export_csv(request):
                 o.status,
                 float(o.total),
                 o.payment_status,
+                (o.placed_portal or ""),
+                "yes" if o.is_pos_order else "no",
+                o.payment_method,
             ]
         )
     resp = HttpResponse(buf.getvalue(), content_type="text/csv; charset=utf-8")
