@@ -10,7 +10,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from django.db import transaction
-from django.db.models import Count, Max, Prefetch, Q, Sum
+from django.db.models import Count, Max, Prefetch, Sum
 from django.db.models.deletion import ProtectedError
 from django.db.models.functions import TruncDate
 from django.http import HttpResponse
@@ -28,10 +28,7 @@ from core.models import (
     AttributeValue,
     Brand,
     Category,
-    Coupon,
     FAQ,
-    FlashDeal,
-    FlashDealProduct,
     Order,
     OrderCommissionSettlement,
     OrderItem,
@@ -128,33 +125,6 @@ def _gen_order_number():
 
 def _gen_ticket_number():
     return f"TKT-{uuid4().hex[:8].upper()}"
-
-
-def _flash_deal_refresh_status(row: FlashDeal) -> None:
-    now = timezone.now()
-    if row.end_at <= now:
-        row.status = FlashDeal.Status.EXPIRED
-    elif row.start_at > now:
-        row.status = FlashDeal.Status.SCHEDULED
-    else:
-        row.status = FlashDeal.Status.ACTIVE
-
-
-def _vendor_flash_deal_set_products(vendor, deal: FlashDeal, product_ids) -> None:
-    if product_ids is None:
-        return
-    if not isinstance(product_ids, list):
-        return
-    deal.deal_products.all().delete()
-    for raw in product_ids:
-        try:
-            pid = int(raw)
-        except (TypeError, ValueError):
-            continue
-        if Product.objects.filter(pk=pid, seller=vendor).exists():
-            FlashDealProduct.objects.get_or_create(
-                flash_deal=deal, product_id=pid, defaults={"override_price": None}
-            )
 
 
 # --- Profile ---
@@ -532,10 +502,6 @@ def vendor_review_update(request, pk):
     r = ProductReview.objects.filter(pk=pk, product__seller=vendor).first()
     if not r:
         return Response({"detail": "Not found."}, status=404)
-    if "reply_text" in request.data:
-        r.reply_text = (request.data.get("reply_text") or "").strip()
-        if r.reply_text:
-            r.replied_at = timezone.now()
     if request.data.get("mark_read") in (True, "true", "1", 1):
         r.vendor_read_at = timezone.now()
     r.save()
@@ -750,257 +716,6 @@ def vendor_pos_checkout(request):
         return Response({"detail": str(e)}, status=400)
 
     return Response({"order_number": order.order_number, "total": float(order.total)}, status=201)
-
-
-# --- Coupons ---
-
-
-@api_view(["GET", "POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
-@permission_classes([IsAuthenticated])
-def vendor_coupons_list_create(request):
-    vendor, err = vendor_or_error(request)
-    if err:
-        return err
-    if request.method == "GET":
-        qs = Coupon.objects.filter(vendor=vendor).select_related("category").order_by("-created_at")
-        paginator, page = _paginate(request, qs)
-        rows = [
-            {
-                "id": str(c.pk),
-                "code": c.code,
-                "type": c.type,
-                "value": float(c.value),
-                "min_order": float(c.min_order),
-                "usage_limit": c.usage_limit,
-                "used_count": c.used_count,
-                "status": c.status,
-                "expires_at": c.expires_at.isoformat() if c.expires_at else None,
-                "category_id": str(c.category_id) if c.category_id else None,
-            }
-            for c in page
-        ]
-        return paginator.get_paginated_response(rows)
-    code = (request.data.get("code") or "").strip().upper()
-    if not code:
-        return validation_error("code required", field="code")
-    if Coupon.objects.filter(code=code).exists():
-        return validation_error("code already exists", field="code")
-    exp_raw = request.data.get("expires_at")
-    exp_dt = None
-    if exp_raw:
-        exp_dt = parse_datetime(str(exp_raw).replace("Z", "+00:00"))
-        if exp_dt and timezone.is_naive(exp_dt):
-            exp_dt = timezone.make_aware(exp_dt, timezone.get_current_timezone())
-    c = Coupon.objects.create(
-        code=code[:30],
-        type=request.data.get("type") or Coupon.Type.PERCENTAGE,
-        value=_to_decimal(request.data.get("value"), "0"),
-        min_order=_to_decimal(request.data.get("min_order"), "0"),
-        usage_limit=int(request.data.get("usage_limit") or 0) or None,
-        status=request.data.get("status") or Coupon.Status.ACTIVE,
-        expires_at=exp_dt,
-        vendor=vendor,
-        category=Category.objects.filter(pk=request.data.get("category_id")).first()
-        if request.data.get("category_id")
-        else None,
-    )
-    return Response({"id": str(c.pk)}, status=201)
-
-
-@api_view(["PATCH", "DELETE"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
-@permission_classes([IsAuthenticated])
-def vendor_coupon_detail(request, pk):
-    vendor, err = vendor_or_error(request)
-    if err:
-        return err
-    c = Coupon.objects.filter(pk=pk, vendor=vendor).first()
-    if not c:
-        return Response({"detail": "Not found."}, status=404)
-    if request.method == "DELETE":
-        c.delete()
-        return Response({"ok": True})
-    if "value" in request.data:
-        c.value = _to_decimal(request.data.get("value"), "0")
-    if "min_order" in request.data:
-        c.min_order = _to_decimal(request.data.get("min_order"), "0")
-    if "usage_limit" in request.data:
-        v = request.data.get("usage_limit")
-        c.usage_limit = int(v) if v not in (None, "") else None
-    if "status" in request.data:
-        c.status = request.data.get("status")
-    if "expires_at" in request.data:
-        exp_raw = request.data.get("expires_at")
-        if not exp_raw:
-            c.expires_at = None
-        else:
-            exp_dt = parse_datetime(str(exp_raw).replace("Z", "+00:00"))
-            if exp_dt and timezone.is_naive(exp_dt):
-                exp_dt = timezone.make_aware(exp_dt, timezone.get_current_timezone())
-            c.expires_at = exp_dt
-    c.save()
-    return Response({"id": str(c.pk)})
-
-
-# --- Flash deals ---
-
-
-@api_view(["GET", "POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
-@permission_classes([IsAuthenticated])
-def vendor_flash_deals_list(request):
-    vendor, err = vendor_or_error(request)
-    if err:
-        return err
-    if request.method == "POST":
-        name = (request.data.get("name") or "").strip()
-        if not name:
-            return validation_error("name required", field="name")
-        start_raw = request.data.get("start_at") or request.data.get("startDate")
-        end_raw = request.data.get("end_at") or request.data.get("endDate")
-        start_at = parse_datetime(str(start_raw).replace("Z", "+00:00")) if start_raw else None
-        end_at = parse_datetime(str(end_raw).replace("Z", "+00:00")) if end_raw else None
-        if start_at and timezone.is_naive(start_at):
-            start_at = timezone.make_aware(start_at, timezone.get_current_timezone())
-        if end_at and timezone.is_naive(end_at):
-            end_at = timezone.make_aware(end_at, timezone.get_current_timezone())
-        if not start_at or not end_at:
-            return validation_error("start_at and end_at are required", field="start_at")
-        row = FlashDeal(
-            name=name[:150],
-            discount_percent=_to_decimal(request.data.get("discount_percent"), "0"),
-            start_at=start_at,
-            end_at=end_at,
-            priority=int(request.data.get("priority") or 0),
-            status=FlashDeal.Status.SCHEDULED,
-            vendor=vendor,
-        )
-        _flash_deal_refresh_status(row)
-        row.save()
-        _vendor_flash_deal_set_products(vendor, row, request.data.get("product_ids"))
-        return Response({"id": str(row.pk)}, status=201)
-
-    qs = (
-        FlashDeal.objects.filter(Q(vendor=vendor) | Q(deal_products__product__seller=vendor))
-        .distinct()
-        .annotate(product_count=Count("deal_products", distinct=True))
-        .prefetch_related("deal_products")
-        .order_by("-start_at")
-    )
-    paginator, page = _paginate(request, qs)
-    rows = []
-    for d in page:
-        _flash_deal_refresh_status(d)
-        FlashDeal.objects.filter(pk=d.pk).update(status=d.status)
-        pids = [str(x.product_id) for x in d.deal_products.all()]
-        rows.append(
-            {
-                "id": str(d.pk),
-                "name": d.name,
-                "discount_percent": float(d.discount_percent),
-                "start_at": d.start_at.isoformat(),
-                "end_at": d.end_at.isoformat(),
-                "status": d.status,
-                "priority": d.priority,
-                "vendor_id": str(d.vendor_id) if d.vendor_id else None,
-                "is_owner": d.vendor_id == vendor.pk,
-                "product_count": int(getattr(d, "product_count", 0) or 0),
-                "product_ids": pids,
-            }
-        )
-    return paginator.get_paginated_response(rows)
-
-
-@api_view(["PATCH", "DELETE"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
-@permission_classes([IsAuthenticated])
-def vendor_flash_deal_detail(request, pk):
-    vendor, err = vendor_or_error(request)
-    if err:
-        return err
-    deal = FlashDeal.objects.filter(pk=pk).first()
-    if not deal:
-        return Response({"detail": "Not found."}, status=404)
-    if deal.vendor_id != vendor.pk:
-        return Response({"detail": "You can only edit or delete flash deals you created."}, status=403)
-    if request.method == "DELETE":
-        deal.delete()
-        return Response({"ok": True})
-    if "name" in request.data:
-        nm = (request.data.get("name") or "").strip()
-        if nm:
-            deal.name = nm[:150]
-    if "discount_percent" in request.data or "discount" in request.data:
-        deal.discount_percent = _to_decimal(
-            request.data.get("discount_percent") or request.data.get("discount"), "0"
-        )
-    if "start_at" in request.data or "startDate" in request.data:
-        raw = request.data.get("start_at") or request.data.get("startDate")
-        v = parse_datetime(str(raw).replace("Z", "+00:00")) if raw else None
-        if v and timezone.is_naive(v):
-            v = timezone.make_aware(v, timezone.get_current_timezone())
-        if v:
-            deal.start_at = v
-    if "end_at" in request.data or "endDate" in request.data:
-        raw = request.data.get("end_at") or request.data.get("endDate")
-        v = parse_datetime(str(raw).replace("Z", "+00:00")) if raw else None
-        if v and timezone.is_naive(v):
-            v = timezone.make_aware(v, timezone.get_current_timezone())
-        if v:
-            deal.end_at = v
-    if "priority" in request.data:
-        deal.priority = int(request.data.get("priority") or 0)
-    _flash_deal_refresh_status(deal)
-    deal.save()
-    if "product_ids" in request.data:
-        _vendor_flash_deal_set_products(vendor, deal, request.data.get("product_ids"))
-    return Response({"id": str(deal.pk)})
-
-
-@api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
-@permission_classes([IsAuthenticated])
-def vendor_flash_deal_add_products(request, deal_id):
-    vendor, err = vendor_or_error(request)
-    if err:
-        return err
-    deal = FlashDeal.objects.filter(pk=deal_id).first()
-    if not deal:
-        return Response({"detail": "Not found."}, status=404)
-    _flash_deal_refresh_status(deal)
-    deal.save(update_fields=["status"])
-    if deal.status == FlashDeal.Status.EXPIRED:
-        return Response({"detail": "Deal expired."}, status=400)
-    pids = request.data.get("product_ids")
-    if not isinstance(pids, list):
-        return validation_error("product_ids must be a list", field="product_ids")
-    added = 0
-    for raw in pids:
-        try:
-            pid = int(raw)
-        except (TypeError, ValueError):
-            continue
-        if not Product.objects.filter(pk=pid, seller=vendor).exists():
-            continue
-        FlashDealProduct.objects.get_or_create(
-            flash_deal=deal, product_id=pid, defaults={"override_price": None}
-        )
-        added += 1
-    return Response({"added": added})
-
-
-@api_view(["DELETE"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
-@permission_classes([IsAuthenticated])
-def vendor_flash_deal_remove_product(request, deal_id, product_id):
-    vendor, err = vendor_or_error(request)
-    if err:
-        return err
-    if not Product.objects.filter(pk=product_id, seller=vendor).exists():
-        return Response({"detail": "Not found."}, status=404)
-    FlashDealProduct.objects.filter(flash_deal_id=deal_id, product_id=product_id).delete()
-    return Response({"ok": True})
 
 
 # --- Withdrawals ---
