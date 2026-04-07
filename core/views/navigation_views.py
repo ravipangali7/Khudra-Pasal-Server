@@ -176,6 +176,10 @@ def _portal_nav_badges(user: User):
         badges["child_pending_purchase_requests"] = PurchaseApprovalRequest.objects.filter(
             child=user, status=PurchaseApprovalRequest.Status.PENDING
         ).count()
+    if user_has_family_portal_access(user):
+        badges["family_pending_purchase_requests"] = PurchaseApprovalRequest.objects.filter(
+            parent=user, status=PurchaseApprovalRequest.Status.PENDING
+        ).count()
     return badges
 
 
