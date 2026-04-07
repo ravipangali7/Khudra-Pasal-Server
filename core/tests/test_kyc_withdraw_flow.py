@@ -95,15 +95,13 @@ class KycWithdrawFlowTests(TestCase):
         self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(r.data.get("code"), "kyc_required")
 
-    def test_portal_withdraw_allowed_when_kyc_disabled(self):
+    def test_portal_withdraw_blocked_when_site_kyc_disabled_if_not_verified(self):
         ss = SiteSettings.load()
         ss.kyc_required = False
         ss.save(update_fields=["kyc_required"])
         self._login(self.customer)
         self._fund_wallet(self.customer)
         pa = self._payout_esewa(self.customer)
-        w = get_or_create_personal_wallet(self.customer)
-        bal_before = w.balance
         r = self.client.post(
             "/api/portal/wallet/withdraw/",
             {
@@ -112,10 +110,8 @@ class KycWithdrawFlowTests(TestCase):
             },
             format="json",
         )
-        self.assertEqual(r.status_code, status.HTTP_201_CREATED)
-        self.assertIn("withdrawal_number", r.data)
-        w.refresh_from_db()
-        self.assertEqual(w.balance, bal_before)
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(r.data.get("code"), "kyc_required")
 
     def test_portal_withdraw_allowed_when_verified(self):
         self.customer.kyc_status = User.KYCStatus.VERIFIED
@@ -135,9 +131,8 @@ class KycWithdrawFlowTests(TestCase):
         self.assertIn("withdrawal_number", r.data)
 
     def test_portal_withdraw_second_pending_blocked_by_available_balance(self):
-        ss = SiteSettings.load()
-        ss.kyc_required = False
-        ss.save(update_fields=["kyc_required"])
+        self.customer.kyc_status = User.KYCStatus.VERIFIED
+        self.customer.save(update_fields=["kyc_status"])
         self._login(self.customer)
         self._fund_wallet(self.customer, Decimal("100"))
         pa = self._payout_esewa(self.customer)
@@ -298,11 +293,11 @@ class KycWithdrawFlowTests(TestCase):
         self.customer.kyc_status = User.KYCStatus.PENDING
         self.customer.save(update_fields=["kyc_status"])
         r4 = self.client.get("/api/portal/kyc/status/")
-        self.assertFalse(r4.data["kyc_required"])
-        self.assertFalse(r4.data["can_submit"])
+        self.assertTrue(r4.data["kyc_required"])
+        self.assertTrue(r4.data["can_submit"])
 
-    def test_vendor_withdraw_allowed_when_approved_without_portal_kyc(self):
-        """Approved vendors vet via vendor documents; portal User.kyc may stay pending."""
+    def test_vendor_withdraw_blocked_when_approved_without_portal_kyc(self):
+        """Approved vendors still need verified portal User.kyc_status to withdraw."""
         vu = User.objects.create_user(
             username="v_kyc_wd",
             password=self.pw,
@@ -340,8 +335,8 @@ class KycWithdrawFlowTests(TestCase):
             {"amount": 100, "payout_account_id": pa.pk},
             format="json",
         )
-        self.assertEqual(r.status_code, status.HTTP_201_CREATED)
-        self.assertIn("id", r.data)
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(r.data.get("code"), "kyc_required")
 
     def test_vendor_withdraw_blocked_when_pending_vendor_and_kyc_required(self):
         vu = User.objects.create_user(

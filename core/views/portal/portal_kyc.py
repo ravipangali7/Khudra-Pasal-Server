@@ -13,7 +13,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from core.models import KYCDocument, SiteSettings, User
+from core.models import KYCDocument, User
 from core.services.kyc_portal import (
     kyc_allowed_extensions,
     kyc_upload_max_bytes,
@@ -97,15 +97,14 @@ def _kyc_status_payload(request, user: User) -> dict:
     else:
         msg_key = "needs_submission"
 
-    ss = SiteSettings.load()
-    can_submit = ss.kyc_required and user.kyc_status not in (
+    can_submit = user.kyc_status not in (
         User.KYCStatus.VERIFIED,
         User.KYCStatus.REVIEW,
     )
 
     return {
         "kyc_status": user.kyc_status,
-        "kyc_required": ss.kyc_required,
+        "kyc_required": True,
         "can_submit": can_submit,
         "message_key": msg_key,
         "rejection_reason": latest_kyc_rejection_reason(user),

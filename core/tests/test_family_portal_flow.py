@@ -24,7 +24,6 @@ from core.models import (
     OTPVerification,
     PayoutAccount,
     ProductRestriction,
-    SiteSettings,
     User,
     Wallet,
     WalletTransaction,
@@ -1217,9 +1216,6 @@ class FamilyPortalFlowTests(TestCase):
         self.assertEqual(inc[0]["wallet"], "Parent")
 
     def test_child_wallet_topup_and_withdraw(self):
-        ss = SiteSettings.load()
-        ss.kyc_required = False
-        ss.save(update_fields=["kyc_required"])
         self._login_leader_with_family()
         group = FamilyGroup.objects.get(leader=self.leader)
         perm, _ = FamilyGroupPermission.objects.get_or_create(group=group)
@@ -1231,6 +1227,7 @@ class FamilyPortalFlowTests(TestCase):
             phone="9711111111",
             name="ChildTW",
             role=User.Role.CHILD,
+            kyc_status=User.KYCStatus.VERIFIED,
         )
         FamilyMember.objects.create(
             group=group,
@@ -1285,9 +1282,8 @@ class FamilyPortalFlowTests(TestCase):
         self.assertEqual(r_denied.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_family_parent_wallet_withdraw_multipart_notifications(self):
-        ss = SiteSettings.load()
-        ss.kyc_required = False
-        ss.save(update_fields=["kyc_required"])
+        self.leader.kyc_status = User.KYCStatus.VERIFIED
+        self.leader.save(update_fields=["kyc_status"])
         User.objects.create_user(
             username="sadmin_wd",
             password=self.pw,

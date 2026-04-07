@@ -2,6 +2,8 @@
 Seed tuples: (surface, key, label, icon, parent_key, sort_order, badge_key, roles_filter[, view_key]).
 Optional 9th field `view_key` is the frontend screen id (empty = use key). Only required where key != screen.
 surface: admin | vendor | portal_main | portal_family | portal_child
+
+Apply to the database with: python manage.py seed_navigation
 """
 
 NavRow = tuple[str, str, str, str, str, int, str, str, str]
@@ -90,8 +92,9 @@ VENDOR_NAV: list[tuple] = [
     ("vendor", "flash-deals", "Flash Deals", "Clock", "marketing", 1, "", ""),
     ("vendor", "wallet", "Wallet & Finance", "Wallet", "", 60, "", ""),
     ("vendor", "earnings", "Earnings", "TrendingUp", "wallet", 0, "", ""),
-    ("vendor", "withdrawals", "Withdrawals", "Banknote", "wallet", 1, "", ""),
-    ("vendor", "transactions", "Transactions", "CreditCard", "wallet", 2, "", ""),
+    ("vendor", "kyc", "KYC Verification", "Shield", "wallet", 1, "", ""),
+    ("vendor", "withdrawals", "Withdrawals", "Banknote", "wallet", 2, "", ""),
+    ("vendor", "transactions", "Transactions", "CreditCard", "wallet", 3, "", ""),
     ("vendor", "reels", "KhudraReels", "Film", "", 70, "", ""),
     ("vendor", "my-reels", "My Reels", "Film", "reels", 0, "", ""),
     ("vendor", "upload-reel", "Upload Reel", "Plus", "reels", 1, "", ""),
@@ -107,6 +110,7 @@ VENDOR_NAV: list[tuple] = [
 PORTAL_MAIN_NAV: list[tuple] = [
     ("portal_main", "dashboard", "Dashboard", "LayoutDashboard", "", 0, "portal_notifications", ""),
     ("portal_main", "wallet", "Wallet", "Wallet", "", 10, "", ""),
+    ("portal_main", "kyc", "KYC Verification", "Shield", "", 11, "", ""),
     ("portal_main", "child-accounts", "Child Accounts", "Users", "", 20, "", "parent"),
     ("portal_main", "family-wallet", "Family Wallet", "UsersRound", "", 30, "", "parent"),
     ("portal_main", "products", "Products", "Package", "", 35, "", ""),
@@ -143,6 +147,7 @@ PORTAL_FAMILY_NAV: list[tuple] = [
     ("portal_family", "products", "Products", "Package", "", 35, "", "", "products"),
     ("portal_family", "my-orders", "My Orders", "ShoppingBag", "", 36, "", "", "my-orders"),
     ("portal_family", "history", "Transaction History", "History", "", 40, "", "", "history"),
+    ("portal_family", "kyc", "KYC Verification", "Shield", "", 44, "", "", "kyc"),
     ("portal_family", "profile", "Profile", "User", "", 45, "", "", "profile"),
     ("portal_family", "support", "Support", "HelpCircle", "", 48, "", "", "support"),
 ]
@@ -150,6 +155,7 @@ PORTAL_FAMILY_NAV: list[tuple] = [
 PORTAL_CHILD_NAV: list[tuple] = [
     ("portal_child", "dashboard", "Dashboard", "Home", "", 0, "", ""),
     ("portal_child", "wallet", "My Wallet", "Wallet", "", 10, "", ""),
+    ("portal_child", "kyc", "KYC Verification", "Shield", "", 11, "", ""),
     ("portal_child", "products", "Products", "Package", "", 15, "", ""),
     ("portal_child", "my-orders", "My Orders", "ShoppingBag", "", 16, "", "", "my-orders"),
     ("portal_child", "topup", "Add Money", "ArrowDownLeft", "", 20, "", ""),
