@@ -55,7 +55,7 @@ class Command(BaseCommand):
 
         # Remove deprecated vendor nav keys dropped from seeds (Marketing, coupons, flash-deals, etc.).
         seed_vendor_keys = {k for (s, k, *_rest) in seed_rows if s == "vendor"}
-        deprecated_vendor_keys = {"logout", "marketing", "coupons", "flash-deals", "faq", "settings"}
+        deprecated_vendor_keys = {"logout", "marketing", "coupons", "flash-deals", "faq", "faqs", "settings"}
         to_remove = sorted(deprecated_vendor_keys - seed_vendor_keys)
         if to_remove:
             deleted, _ = NavigationItem.objects.filter(surface="vendor", key__in=to_remove).delete()

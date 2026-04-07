@@ -25,6 +25,9 @@ from core.portal_roles import (
 )
 from core.views.admin.admin_access import admin_allowed_nav_keys, user_can_access_audit_logs
 
+# Legacy nav keys no longer shown in vendor portal sidebar (not in nav_seed VENDOR_NAV).
+_VENDOR_NAV_EXCLUDED_KEYS = frozenset({"faq", "faqs", "settings"})
+
 
 def _admin_nav_badges():
     pr = Refund.objects.filter(status=Refund.Status.PENDING).count()
@@ -124,6 +127,8 @@ def _build_tree(surface: str, badge_map: dict, user: User | None = None) -> list
         rows = _filter_rows_for_portal_user(rows, user)
     elif user is not None and surface == NavigationItem.Surface.ADMIN:
         rows = _admin_rows_filtered(rows, user)
+    if surface == NavigationItem.Surface.VENDOR:
+        rows = [r for r in rows if r.key not in _VENDOR_NAV_EXCLUDED_KEYS]
     return _build_tree_from_rows(rows, badge_map)
 
 
