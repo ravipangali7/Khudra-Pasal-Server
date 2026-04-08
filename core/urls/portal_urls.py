@@ -67,6 +67,11 @@ urlpatterns = [
     ),
     path("orders/checkout/", portal_views.portal_orders_checkout, name="portal-orders-checkout"),
     path(
+        "orders/checkout-quote/",
+        portal_views.portal_orders_checkout_quote,
+        name="portal-orders-checkout-quote",
+    ),
+    path(
         "orders/payment/complete/",
         portal_views.portal_orders_payment_complete,
         name="portal-orders-payment-complete",

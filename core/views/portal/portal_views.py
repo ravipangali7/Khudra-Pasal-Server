@@ -55,7 +55,6 @@ from core.models import (
     Reel,
     ReelInteraction,
     Refund,
-    ShippingSettings,
     ShippingZone,
     SupportTicket,
     SupportTicketMessage,
@@ -82,7 +81,6 @@ from core.serializers import (
     PortalProductRestrictionUpsertSerializer,
     ReelPublicSerializer,
 )
-from core.services.child_shopping_guard import validate_child_may_purchase_product
 from core.services.portal_checkout_pricing import (
     apply_coupon_split,
     build_orders_plan,
@@ -123,7 +121,6 @@ from core.services.wallet_txn_signed import (
     sum_monthly_spent_from_wallet,
 )
 from core.services.order_service import pay_with_wallet
-from core.services.shipping_quote import compute_shipping_fee
 from core.services import refund_notification_service, support_notification_service, support_ticket_service
 from core.services import refund_service
 from core.views.admin.admin_write_utils import absolute_media_url, validation_error
@@ -3634,6 +3631,89 @@ def _portal_checkout_group_seller_sort_key(sid: int | None) -> tuple[int, int]:
     return (0, sid)
 
 
+def _request_data_dict(request) -> dict:
+    if isinstance(request.data, dict):
+        return request.data
+    return dict(request.data.items())
+
+
+@api_view(["POST"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated, IsPortalShopper])
+def portal_orders_checkout_quote(request):
+    """Read-only totals for checkout UI (pricing, flash, coupon, delivery) — no orders or stock changes."""
+    u = request.user
+    items = request.data.get("items")
+    try:
+        parsed = parse_checkout_items(items)
+    except ValueError as e:
+        return validation_error(str(e), field="items")
+
+    want_delivery = request.data.get("want_delivery", True)
+    if isinstance(want_delivery, str):
+        want_delivery = want_delivery.lower() in ("true", "1", "yes")
+
+    try:
+        resolved = resolve_checkout_lines(
+            parsed, u, select_for_update=False, strict_stock=False
+        )
+    except ValueError as e:
+        return Response({"detail": str(e)}, status=400)
+
+    groups = resolved.groups
+    req_dict = _request_data_dict(request)
+    raw_coupon = request.data.get("coupon_code")
+    if raw_coupon is None:
+        raw_coupon = request.data.get("coupon")
+    coupon_obj, discount_total, coupon_err, seller_discounts, eligible_subtotal = (
+        apply_coupon_split(
+            groups,
+            resolved.flash_overrides,
+            raw_coupon,
+            strict_coupon=False,
+        )
+    )
+
+    delivery_fee_total, delivery_alloc, _checkout_zone, d_err = (
+        compute_delivery_allocation(
+            req_dict, want_delivery, resolved.cart_subtotal, groups
+        )
+    )
+    if d_err:
+        delivery_fee_total = Decimal("0")
+        delivery_alloc = {sid: Decimal("0") for sid in groups}
+
+    seller_subtotals = {
+        sid: sum(lt for *_rest, lt in lines) for sid, lines in groups.items()
+    }
+    _orders_plan, grand_total = build_orders_plan(
+        groups,
+        seller_subtotals,
+        delivery_alloc,
+        seller_discounts,
+        _portal_checkout_group_seller_sort_key,
+    )
+    savings = resolved.list_subtotal - resolved.cart_subtotal
+    if savings < 0:
+        savings = Decimal("0")
+
+    return Response(
+        {
+            "subtotal": float(resolved.cart_subtotal),
+            "list_subtotal": float(resolved.list_subtotal),
+            "savings_vs_list": float(savings),
+            "delivery_fee": float(delivery_fee_total),
+            "coupon_discount": float(discount_total),
+            "eligible_subtotal": float(eligible_subtotal),
+            "total": float(grand_total),
+            "coupon_error": coupon_err,
+            "flash_product_ids": resolved.flash_product_ids,
+            "stock_warnings": resolved.stock_warnings,
+            "delivery_error": d_err,
+        }
+    )
+
+
 @api_view(["POST"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated, IsPortalShopper])
@@ -3660,130 +3740,60 @@ def portal_orders_checkout(request):
         want_delivery = want_delivery.lower() in ("true", "1", "yes")
 
     try:
+        parsed = parse_checkout_items(items)
+    except ValueError as e:
+        return validation_error(str(e), field="items")
+
+    try:
         with transaction.atomic():
-            parsed: list[tuple[int, int]] = []
-            for raw in items:
-                pid = raw.get("product_id")
-                qty = int(raw.get("quantity") or 0)
-                if not pid or qty < 1:
-                    return validation_error(
-                        "each item needs product_id and quantity", field="items"
-                    )
-                parsed.append((int(pid), qty))
-
-            now_ts = timezone.now()
-            flash_overrides = flash_override_prices_for_products(
-                [a for a, _ in parsed], now_ts
-            )
-
-            groups: dict[int | None, list[tuple[Product, int, Decimal, Decimal]]] = (
-                defaultdict(list)
-            )
-            cart_subtotal = Decimal("0")
-
-            for pid, qty in parsed:
-                p = (
-                    Product.objects.select_for_update()
-                    .filter(pk=pid, status=Product.Status.ACTIVE)
-                    .select_related("seller", "category")
-                    .first()
+            try:
+                resolved = resolve_checkout_lines(
+                    parsed, u, select_for_update=True, strict_stock=True
                 )
-                if not p:
-                    return Response(
-                        {"detail": f"Product {pid} not available."},
-                        status=400,
-                    )
-                if p.seller_id is not None and p.seller.status != Vendor.Status.APPROVED:
-                    return Response(
-                        {"detail": f"Product {pid} not available."},
-                        status=400,
-                    )
-                if p.stock < qty:
-                    return Response(
-                        {"detail": f"Insufficient stock for {p.name}."},
-                        status=400,
-                    )
-                try:
-                    validate_child_may_purchase_product(u, p)
-                except ValueError as e:
-                    return Response({"detail": str(e)}, status=400)
-                unit_price = storefront_unit_price(
-                    p, flash_overrides=flash_overrides
-                )
-                line_total = (unit_price * qty).quantize(Decimal("0.01"))
-                cart_subtotal += line_total
-                groups[p.seller_id].append((p, qty, unit_price, line_total))
+            except ValueError as e:
+                return Response({"detail": str(e)}, status=400)
 
-            lines_for_coupon: list[tuple[Product, int, Decimal]] = []
-            for _sid, glines in groups.items():
-                for pr, q, unit, _lt in glines:
-                    lines_for_coupon.append((pr, q, unit))
+            groups = resolved.groups
+            cart_subtotal = resolved.cart_subtotal
+            checkout_zone: ShippingZone | None = None
 
             raw_coupon = request.data.get("coupon_code")
             if raw_coupon is None:
                 raw_coupon = request.data.get("coupon")
-            coupon_obj, discount_total, coupon_err = validate_and_compute_coupon(
-                str(raw_coupon).strip() if raw_coupon is not None else None,
-                lines=lines_for_coupon,
-                flash_overrides=flash_overrides,
+            try:
+                coupon_obj, _discount_total, _coupon_err, seller_discounts, _eligible = (
+                    apply_coupon_split(
+                        groups,
+                        resolved.flash_overrides,
+                        raw_coupon,
+                        strict_coupon=True,
+                    )
+                )
+            except ValueError as e:
+                return Response({"detail": str(e)}, status=400)
+
+            delivery_fee_total, delivery_alloc, checkout_zone, d_err = (
+                compute_delivery_allocation(
+                    _request_data_dict(request),
+                    want_delivery,
+                    cart_subtotal,
+                    groups,
+                )
             )
-            if coupon_err:
-                return Response({"detail": coupon_err}, status=400)
+            if d_err:
+                return Response({"detail": d_err}, status=400)
 
-            seller_eligible: dict[int | None, Decimal] = defaultdict(Decimal)
-            seller_discounts = {sid: Decimal("0") for sid in groups}
-            if coupon_obj is not None:
-                for sid, glines in groups.items():
-                    for pr, q, unit, _lt in glines:
-                        if line_eligible_for_coupon(
-                            coupon_obj, pr, flash_overrides
-                        ):
-                            seller_eligible[sid] += unit * q
-                seller_discounts.update(
-                    split_discount_across_sellers(
-                        discount_total, dict(seller_eligible)
-                    )
-                )
-
-            delivery_fee_total = Decimal("0")
-            checkout_zone: ShippingZone | None = None
-            _ship_raw = request.data.get("delivery")
-            _d = _ship_raw if isinstance(_ship_raw, dict) else {}
-            _top = request.data
-            if want_delivery:
-                sh = ShippingSettings.load()
-                raw_zid = _top.get("shipping_zone_id") or _d.get("shipping_zone_id")
-                if not raw_zid and sh.default_zone_id:
-                    raw_zid = sh.default_zone_id
-                checkout_zone = (
-                    ShippingZone.objects.filter(pk=raw_zid).first() if raw_zid else None
-                )
-                if not checkout_zone or checkout_zone.status != ShippingZone.Status.ACTIVE:
-                    return Response(
-                        {
-                            "detail": "Active shipping_zone_id is required for delivery.",
-                        },
-                        status=400,
-                    )
-                raw_w = _top.get("weight_kg") or _d.get("weight_kg")
-                if raw_w is not None and str(raw_w).strip() != "":
-                    try:
-                        weight_kg = float(raw_w)
-                    except (TypeError, ValueError):
-                        weight_kg = float(sh.default_checkout_weight_kg)
-                else:
-                    weight_kg = float(sh.default_checkout_weight_kg)
-                weight_kg = max(0.0, min(500.0, weight_kg))
-                raw_fee, _ = compute_shipping_fee(
-                    sh,
-                    checkout_zone,
-                    order_total=cart_subtotal,
-                    weight_kg=weight_kg,
-                    method=None,
-                )
-                delivery_fee_total = (
-                    Decimal("0") if sh.seller_pays_shipping else raw_fee
-                )
+            seller_subtotals = {
+                sid: sum(lt for *_rest, lt in lines)
+                for sid, lines in groups.items()
+            }
+            orders_plan, grand_total_plan = build_orders_plan(
+                groups,
+                seller_subtotals,
+                delivery_alloc,
+                seller_discounts,
+                _portal_checkout_group_seller_sort_key,
+            )
 
             raw_pay = request.data.get("payment_method")
             if raw_pay is None or not str(raw_pay).strip():
@@ -3800,58 +3810,7 @@ def portal_orders_checkout(request):
                     field="payment_method",
                 )
 
-            seller_subtotals = {
-                sid: sum(lt for *_rest, lt in lines) for sid, lines in groups.items()
-            }
-            sorted_seller_ids = sorted(
-                seller_subtotals.keys(),
-                key=lambda sid: (-seller_subtotals[sid], 0 if sid is None else sid),
-            )
-            delivery_alloc: dict[int | None, Decimal] = {}
-            acc_delivery = Decimal("0")
-            if delivery_fee_total == 0 or cart_subtotal <= 0:
-                for sid in groups:
-                    delivery_alloc[sid] = Decimal("0")
-            else:
-                for i, sid in enumerate(sorted_seller_ids):
-                    if i == len(sorted_seller_ids) - 1:
-                        delivery_alloc[sid] = (
-                            delivery_fee_total - acc_delivery
-                        ).quantize(Decimal("0.01"))
-                    else:
-                        part = (
-                            seller_subtotals[sid]
-                            / cart_subtotal
-                            * delivery_fee_total
-                        ).quantize(Decimal("0.01"))
-                        delivery_alloc[sid] = part
-                        acc_delivery += part
-
             notes = (request.data.get("notes") or "")[:500]
-            orders_plan: list[
-                tuple[
-                    Vendor | None,
-                    list[tuple[Product, int, Decimal, Decimal]],
-                    Decimal,
-                    Decimal,
-                    Decimal,
-                    Decimal,
-                ]
-            ] = []
-            for seller_id in sorted(
-                groups.keys(), key=_portal_checkout_group_seller_sort_key
-            ):
-                lines = groups[seller_id]
-                v_sub = seller_subtotals[seller_id]
-                v_delivery = delivery_alloc[seller_id]
-                d_amt = seller_discounts.get(seller_id, Decimal("0"))
-                v_total = (v_sub - d_amt + v_delivery).quantize(Decimal("0.01"))
-                if v_total < 0:
-                    v_total = Decimal("0")
-                vendor = None if seller_id is None else Vendor.objects.get(pk=seller_id)
-                orders_plan.append((vendor, lines, v_sub, v_delivery, d_amt, v_total))
-
-            grand_total_plan = sum((p[5] for p in orders_plan), Decimal("0"))
             pay_wallet: Wallet | None = None
             fund_source_label = ""
             if payment_method == Order.PaymentMethod.WALLET:
