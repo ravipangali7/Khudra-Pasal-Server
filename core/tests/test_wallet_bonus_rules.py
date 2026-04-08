@@ -4,6 +4,8 @@ from decimal import Decimal
 
 from django.db import transaction
 from django.test import TestCase
+from rest_framework import status
+from rest_framework.test import APIClient
 
 from core.models import PaymentTransaction, User, WalletBonus, WalletTransaction
 from core.services import wallet_service
@@ -385,3 +387,59 @@ class WalletBonusRulesTests(TestCase):
                 reference_id=str(friend.pk),
             ).exists()
         )
+
+
+class AdminWalletBonusPctValidationTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.pw = "TestPass123!"
+        self.admin = User.objects.create_user(
+            username="wb_pct_admin",
+            password=self.pw,
+            phone="9733333333",
+            name="WB Admin",
+            role=User.Role.SUPER_ADMIN,
+            is_staff=True,
+            is_superuser=True,
+        )
+
+    def _admin_token(self) -> str:
+        r = self.client.post(
+            "/api/admin/auth/login/",
+            {"phone": self.admin.phone, "password": self.pw},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.content)
+        return r.data["token"]
+
+    def test_create_rejects_pct_signup_without_min_topup(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self._admin_token()}")
+        r = self.client.post(
+            "/api/admin/wallet-bonuses/create/",
+            {
+                "title": "Bad pct",
+                "type": "signup",
+                "amount": 10,
+                "is_percentage": True,
+                "min_topup": 0,
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_patch_rejects_pct_referral_when_min_topup_zero(self):
+        row = WalletBonus.objects.create(
+            title="Flat ref",
+            type=WalletBonus.Type.REFERRAL,
+            amount=Decimal("5.00"),
+            is_percentage=False,
+            min_topup=Decimal("0"),
+            status=WalletBonus.Status.ACTIVE,
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self._admin_token()}")
+        r = self.client.patch(
+            f"/api/admin/wallet-bonuses/{row.pk}/",
+            {"is_percentage": True, "min_topup": 0},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)

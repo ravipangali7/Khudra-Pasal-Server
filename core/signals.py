@@ -77,6 +77,18 @@ def user_pre_kyc_cache(sender, instance, **kwargs):
     _cache_previous_char_field(sender, instance, "kyc_status", "_previous_kyc_status")
 
 
+@receiver(pre_save, sender=User)
+def user_pre_referred_by_cache(sender, instance, **kwargs):
+    if instance.pk:
+        try:
+            old = sender.objects.values_list("referred_by_id", flat=True).get(pk=instance.pk)
+            instance._previous_referred_by_id = old
+        except sender.DoesNotExist:
+            instance._previous_referred_by_id = None
+    else:
+        instance._previous_referred_by_id = None
+
+
 @receiver(post_save, sender=User)
 def user_kyc_status_email(sender, instance, created, **kwargs):
     if created:
@@ -95,6 +107,26 @@ def user_signup_bonus(sender, instance, created, **kwargs):
         wallet_service.apply_referral_wallet_bonus(instance)
     if instance.is_staff:
         instance.user_permissions.add(*Permission.objects.all())
+
+
+@receiver(post_save, sender=User)
+def user_deferred_referral_wallet_bonus(sender, instance, created, **kwargs):
+    """When referred_by is set on an existing account, grant referrer bonus once (idempotent)."""
+    if created:
+        return
+    prev = getattr(instance, "_previous_referred_by_id", None)
+    if prev is not None:
+        return
+    if not instance.referred_by_id:
+        return
+    uid = instance.pk
+
+    def _apply():
+        u = User.objects.filter(pk=uid).first()
+        if u:
+            wallet_service.apply_referral_wallet_bonus(u)
+
+    transaction.on_commit(_apply)
 
 
 @receiver(post_save, sender=KYCDocument)

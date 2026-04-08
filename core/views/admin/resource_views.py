@@ -5147,12 +5147,23 @@ def admin_wallet_bonus_create(request):
             expires_d = parse_date(s)
         if expires_d is None:
             return validation_error("invalid expires date", field="expires_at")
+    is_pct = bool(request.data.get("is_percentage"))
+    min_topup = _to_decimal(request.data.get("min_topup") or request.data.get("minTopup"), "0")
+    if (
+        btype in (WalletBonus.Type.SIGNUP, WalletBonus.Type.REFERRAL)
+        and is_pct
+        and min_topup <= 0
+    ):
+        return validation_error(
+            "min_topup must be positive for percentage signup or referral bonuses",
+            field="min_topup",
+        )
     row = WalletBonus.objects.create(
         title=title,
         type=btype,
         amount=amt,
-        is_percentage=bool(request.data.get("is_percentage")),
-        min_topup=_to_decimal(request.data.get("min_topup") or request.data.get("minTopup"), "0"),
+        is_percentage=is_pct,
+        min_topup=min_topup,
         status=request.data.get("status") or WalletBonus.Status.ACTIVE,
         expires_at=expires_d,
     )
@@ -5199,6 +5210,15 @@ def admin_wallet_bonus_detail_write(request, pk):
             row.expires_at = parse_date(str(raw))
         else:
             row.expires_at = None
+    if (
+        row.type in (WalletBonus.Type.SIGNUP, WalletBonus.Type.REFERRAL)
+        and row.is_percentage
+        and row.min_topup <= 0
+    ):
+        return validation_error(
+            "min_topup must be positive for percentage signup or referral bonuses",
+            field="min_topup",
+        )
     row.save()
     return Response({"id": str(row.pk)})
 

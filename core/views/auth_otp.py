@@ -27,6 +27,47 @@ from core.views.unified_auth import (
 )
 
 
+def _resolve_signup_referrer(request_data, signup_phone_norm: str):
+    """Resolve optional referrer for OTP signup. Returns (User|None, Response|None error)."""
+    from rest_framework.response import Response
+
+    from core.phone_auth import normalize_nepal_phone
+
+    rid_raw = request_data.get("referrer_id")
+    kid = (request_data.get("referrer_kid") or "").strip()
+    ref = (request_data.get("ref") or "").strip()
+
+    referrer = None
+
+    if rid_raw is not None and str(rid_raw).strip() != "":
+        try:
+            pk = int(rid_raw)
+        except (TypeError, ValueError):
+            return None, Response({"detail": "Invalid referrer_id."}, status=400)
+        referrer = User.objects.filter(pk=pk).first()
+        if not referrer:
+            return None, Response({"detail": "Invalid referrer."}, status=400)
+    elif kid:
+        referrer = User.objects.filter(KID__iexact=kid).first()
+        if not referrer:
+            return None, Response({"detail": "Invalid referral code."}, status=400)
+    elif ref:
+        if ref.isdigit():
+            referrer = User.objects.filter(pk=int(ref)).first()
+        if not referrer:
+            referrer = User.objects.filter(KID__iexact=ref).first()
+        if not referrer:
+            return None, Response({"detail": "Invalid referral code."}, status=400)
+    else:
+        return None, None
+
+    if not referrer.is_active:
+        return None, Response({"detail": "Invalid referrer."}, status=400)
+    if normalize_nepal_phone(referrer.phone or "") == signup_phone_norm:
+        return None, Response({"detail": "You cannot refer yourself."}, status=400)
+    return referrer, None
+
+
 def _username_from_name(name: str) -> str:
     from django.utils.text import slugify
     import secrets
@@ -234,6 +275,9 @@ def otp_verify(request):
         )
 
     family_name = (request.data.get("family_name") or "").strip()
+    referrer, ref_err = _resolve_signup_referrer(request.data, phone)
+    if ref_err:
+        return ref_err
     try:
         with transaction.atomic():
             user = User(
@@ -241,6 +285,7 @@ def otp_verify(request):
                 phone=phone,
                 username=_username_from_name(signup_name),
                 role=User.Role.NORMAL,
+                referred_by=referrer,
             )
             user.set_unusable_password()
             user.save()
