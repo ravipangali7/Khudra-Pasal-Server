@@ -3706,6 +3706,13 @@ def portal_orders_checkout_quote(request):
         _portal_checkout_group_seller_sort_key,
     )
 
+    coupon_applied = None
+    if coupon_obj is not None and coupon_err is None:
+        coupon_applied = {
+            "type": coupon_obj.type,
+            "value": float(coupon_obj.value),
+        }
+
     return Response(
         {
             "subtotal": float(resolved.cart_subtotal),
@@ -3717,6 +3724,7 @@ def portal_orders_checkout_quote(request):
             "eligible_subtotal": float(eligible_subtotal),
             "total": float(grand_total),
             "coupon_error": coupon_err,
+            "coupon_applied": coupon_applied,
             "flash_product_ids": resolved.flash_product_ids,
             "lines": line_rows,
             "stock_warnings": resolved.stock_warnings,

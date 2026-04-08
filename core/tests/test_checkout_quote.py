@@ -104,6 +104,7 @@ class CheckoutQuoteApiTests(TestCase):
         self.assertEqual(r.data["delivery_fee"], 0.0)
         self.assertEqual(r.data["coupon_discount"], 0.0)
         self.assertIsNone(r.data["coupon_error"])
+        self.assertIsNone(r.data["coupon_applied"])
         self.assertEqual(len(r.data["lines"]), 2)
 
     def test_quote_coupon_stacks_with_flash_lines(self):
@@ -117,6 +118,8 @@ class CheckoutQuoteApiTests(TestCase):
         self.assertEqual(r.data["eligible_subtotal"], 120.0)
         self.assertEqual(r.data["savings_flash"], 20.0)  # (100 list − 80 flash) × 1
         self.assertEqual(r.data["total"], 108.0)
+        self.assertEqual(r.data["coupon_applied"]["type"], Coupon.Type.PERCENTAGE)
+        self.assertEqual(r.data["coupon_applied"]["value"], 10.0)
         self.assertEqual(len(r.data["lines"]), 2)
         line_p1 = next(x for x in r.data["lines"] if x["product_id"] == self.p1.pk)
         self.assertEqual(line_p1["coupon_discount"], 8.0)
@@ -131,6 +134,7 @@ class CheckoutQuoteApiTests(TestCase):
         self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
         self.assertIsNotNone(r.data["coupon_error"])
         self.assertEqual(r.data["coupon_discount"], 0.0)
+        self.assertIsNone(r.data["coupon_applied"])
         self.assertEqual(r.data["total"], 120.0)
 
     def test_quote_stock_warning_without_blocking(self):
