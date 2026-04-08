@@ -93,6 +93,7 @@ class User(AbstractUser):
     social_provider_id = models.CharField(max_length=255, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    fcm_token = models.TextField(blank=True, default="")
 
     first_name = models.CharField(max_length=150, blank=True)
     last_name = models.CharField(max_length=150, blank=True)
@@ -902,6 +903,61 @@ class PayoutAccount(models.Model):
 
     def __str__(self) -> str:
         return f"{self.user_id} — {self.get_type_display()}"
+
+
+class WalletTransferCode(models.Model):
+    """Globally unique transfer ID for cross-portal wallet receive (optional QR image)."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="wallet_transfer_code_row",
+    )
+    code = models.CharField(max_length=32, unique=True, db_index=True)
+    qr_image = models.ImageField(upload_to="wallet_transfer_codes/", blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Wallet transfer code"
+        verbose_name_plural = "Wallet transfer codes"
+
+    def __str__(self) -> str:
+        return f"{self.code} → user {self.user_id}"
+
+
+class WalletTransferIdempotency(models.Model):
+    """Client idempotency key for POST wallet-hub transfer (one logical debit per key)."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    sender = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="wallet_hub_idempotency_rows",
+    )
+    client_key = models.CharField(max_length=128)
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.PENDING
+    )
+    outbound_txn_id = models.CharField(max_length=30, blank=True)
+    cached_response = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sender", "client_key"],
+                name="wallet_hub_idem_sender_client_key",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.sender_id}:{self.client_key[:16]}… ({self.status})"
 
 
 class WalletWithdrawal(models.Model):
@@ -2496,6 +2552,10 @@ class WalletSettings(models.Model):
     vendor_wallet_enabled = models.BooleanField(default=True)
     family_wallet_enabled = models.BooleanField(default=True)
     child_wallet_enabled = models.BooleanField(default=True)
+    cross_portal_transfer_by_code_enabled = models.BooleanField(
+        default=False,
+        help_text="Allow wallet-hub transfers by transfer code across portals (parent/child/personal rules apply).",
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

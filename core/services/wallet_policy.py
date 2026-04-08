@@ -49,6 +49,23 @@ def assert_peer_transfer_individual_allowed(from_w: Wallet, to_w: Wallet) -> Non
             raise ValueError("Personal wallet transfers are disabled by site settings.")
 
 
+def assert_hub_transfer_allowed(from_w: Wallet, to_w: Wallet) -> None:
+    """Cross-portal transfer-by-code: requires site flag; relaxes personal-only ban when family→personal."""
+    ws = _settings()
+    if not ws.cross_portal_transfer_by_code_enabled:
+        raise ValueError("Transfer by transfer ID is disabled.")
+    assert_wallet_type_enabled_for_wallet(from_w)
+    assert_wallet_type_enabled_for_wallet(to_w)
+    if not ws.individual_wallet_enabled:
+        if (
+            from_w.type == Wallet.Type.PERSONAL
+            and to_w.type == Wallet.Type.PERSONAL
+        ):
+            raise ValueError("Personal wallet transfers are disabled by site settings.")
+    else:
+        assert_peer_transfer_individual_allowed(from_w, to_w)
+
+
 def assert_family_transfer_wallets_allowed(from_w: Wallet, to_w: Wallet) -> None:
     """Enforce shared / family / child toggles for both ends of a family-scoped transfer."""
     for w in (from_w, to_w):
@@ -201,4 +218,5 @@ def public_settings_snapshot() -> dict:
         "child_wallet_enabled": ws.child_wallet_enabled,
         "family_wallet_enabled": ws.family_wallet_enabled,
         "vendor_wallet_enabled": ws.vendor_wallet_enabled,
+        "cross_portal_transfer_by_code_enabled": ws.cross_portal_transfer_by_code_enabled,
     }

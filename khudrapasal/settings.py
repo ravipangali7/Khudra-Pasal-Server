@@ -79,6 +79,7 @@ REST_FRAMEWORK = {
         'family_join': '60/hour',
         'otp_send': '20/minute',
         'admin_login': '30/minute',
+        'wallet_hub_lookup': '120/hour',
     },
 }
 CORS_ALLOW_ALL_ORIGINS = True

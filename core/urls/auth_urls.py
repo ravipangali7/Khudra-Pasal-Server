@@ -8,9 +8,11 @@ from core.views.social_oauth import (
     google_oauth_callback,
     google_oauth_start,
 )
+from core.views.device_views import auth_fcm_token
 from core.views.unified_auth import auth_session_home, unified_login
 
 urlpatterns = [
+    path("fcm-token/", auth_fcm_token, name="auth-fcm-token"),
     path("session-home/", auth_session_home, name="auth-session-home"),
     path("login/", unified_login, name="unified-login"),
     path("google/", GoogleCredentialLoginView.as_view(), name="google-credential-login"),

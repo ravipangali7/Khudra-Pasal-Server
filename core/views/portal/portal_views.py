@@ -149,7 +149,7 @@ class IsPortalParent(BasePermission):
 
 
 class IsPortalWalletOtpUser(BasePermission):
-    """Customer or family-portal user (wallet transfer / withdraw OTP)."""
+    """Customer, family-portal, or child user (wallet transfer / withdraw OTP)."""
 
     def has_permission(self, request, view):
         u = request.user
@@ -157,7 +157,17 @@ class IsPortalWalletOtpUser(BasePermission):
             return False
         if u.role == User.Role.NORMAL:
             return True
-        return user_has_family_portal_access(u)
+        if user_has_family_portal_access(u):
+            return True
+        if u.role == User.Role.CHILD:
+            if getattr(settings, "CHILD_PORTAL_REQUIRE_MEMBERSHIP", False):
+                return FamilyMember.objects.filter(
+                    user=u,
+                    role=FamilyMember.Role.CHILD,
+                    status=FamilyMember.Status.ACTIVE,
+                ).exists()
+            return True
+        return False
 
 
 class IsPortalChild(BasePermission):

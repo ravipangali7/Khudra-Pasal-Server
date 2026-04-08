@@ -725,6 +725,23 @@ class PayoutAccountAdmin(admin.ModelAdmin):
     readonly_fields = ("created_at", "updated_at")
 
 
+@admin.register(models.WalletTransferCode)
+class WalletTransferCodeAdmin(admin.ModelAdmin):
+    list_display = ("code", "user", "updated_at")
+    search_fields = ("code", "user__name", "user__phone")
+    autocomplete_fields = ("user",)
+    readonly_fields = ("created_at", "updated_at")
+
+
+@admin.register(models.WalletTransferIdempotency)
+class WalletTransferIdempotencyAdmin(admin.ModelAdmin):
+    list_display = ("id", "sender", "client_key", "status", "outbound_txn_id", "created_at")
+    list_filter = ("status",)
+    search_fields = ("client_key", "outbound_txn_id", "sender__phone")
+    readonly_fields = ("created_at", "updated_at", "cached_response")
+    raw_id_fields = ("sender",)
+
+
 @admin.register(models.WalletWithdrawal)
 class WalletWithdrawalAdmin(admin.ModelAdmin):
     list_display = (

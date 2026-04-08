@@ -5,6 +5,7 @@ from core.views.portal import portal_views
 from core.views.website import home_views
 
 urlpatterns = [
+    path("wallet-hub/", include("core.urls.wallet_hub_urls")),
     path("auth/", include("core.urls.auth_urls")),
     path("reels/dashboard/", home_views.reels_dashboard, name="reels-dashboard"),
     path("reels/vendors/", home_views.reels_vendors_directory, name="reels-vendors-directory"),
