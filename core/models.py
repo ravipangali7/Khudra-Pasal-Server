@@ -127,6 +127,7 @@ class OTPVerification(models.Model):
         WITHDRAW = "withdraw", "Withdraw"
         FREEZE = "freeze", "Freeze"
         FAMILY_INVITE = "family_invite", "Family invite"
+        ADMIN_SENSITIVE = "admin_sensitive", "Admin sensitive"
 
     phone = models.CharField(max_length=15)
     otp = models.CharField(max_length=6)

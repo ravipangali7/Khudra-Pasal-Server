@@ -77,6 +77,8 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_RATES': {
         'family_join': '60/hour',
+        'otp_send': '20/minute',
+        'admin_login': '30/minute',
     },
 }
 CORS_ALLOW_ALL_ORIGINS = True

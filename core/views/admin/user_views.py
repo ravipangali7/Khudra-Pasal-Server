@@ -1,16 +1,22 @@
 import os
 
 from django.conf import settings
-from core.phone_auth import authenticate_user_by_phone, find_user_by_phone_input
+from django.core.cache import cache
 from django.db.models import Q
 from rest_framework.authentication import SessionAuthentication, TokenAuthentication
 from rest_framework.authtoken.models import Token
-from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.decorators import api_view, authentication_classes, permission_classes, throttle_classes
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from core.models import AuditLog, EmployeeProfile, KYCDocument, User, Vendor
+from core.models import AuditLog, EmployeeProfile, KYCDocument, SecuritySettings, User, Vendor
+from core.phone_auth import (
+    authenticate_user_by_phone,
+    find_user_by_phone_input,
+    normalize_nepal_phone,
+)
+from core.throttles import AdminLoginThrottle
 from core.portal_roles import PORTAL_ADMIN, assert_portal_login_allowed, user_allowed_for_admin_portal
 from core.services import audit_service, security_service
 from core.services.kyc_portal import supersede_non_approved_kyc, validate_kyc_upload_file
@@ -46,13 +52,52 @@ class UserPagination(PageNumberPagination):
     max_page_size = 100
 
 
+ADMIN_LOGIN_FAIL_PREFIX = "admin_login_fail:"
+ADMIN_LOGIN_FAIL_TTL = 1800
+ADMIN_LOGIN_FAIL_MAX = int(os.environ.get("ADMIN_LOGIN_FAIL_MAX", "5"))
+
+
+def _admin_login_fail_cache_key(phone_input: str) -> str:
+    n = normalize_nepal_phone(phone_input)
+    ident = n or "".join(c for c in phone_input if c.isdigit())[-12:] or phone_input[:24]
+    return f"{ADMIN_LOGIN_FAIL_PREFIX}{ident}"
+
+
 @api_view(["POST"])
+@throttle_classes([AdminLoginThrottle])
 @permission_classes([AllowAny])
 def admin_login(request):
     phone = request.data.get("phone", "").strip()
     password = request.data.get("password", "")
+    fail_key = _admin_login_fail_cache_key(phone)
     user = authenticate_user_by_phone(request, phone, password)
     ip = client_ip_from_request(request)
+    ss = SecuritySettings.load()
+
+    if user:
+        cache.delete(fail_key)
+    elif (
+        ss.auto_lock_failed_logins
+        and (guessed_user := find_user_by_phone_input(phone))
+        and guessed_user.is_active
+        and not getattr(guessed_user, "is_superuser", False)
+    ):
+        n = int(cache.get(fail_key) or 0) + 1
+        cache.set(fail_key, n, ADMIN_LOGIN_FAIL_TTL)
+        if n >= ADMIN_LOGIN_FAIL_MAX:
+            guessed_user.is_active = False
+            guessed_user.save(update_fields=["is_active"])
+            security_service.flag_and_log_security_event(
+                activity_type="Admin account auto-locked",
+                detail="Repeated failed admin logins; account deactivated.",
+                severity="high",
+                user=guessed_user,
+                ip_address=ip,
+                performed_by=guessed_user,
+                action_kind=AuditLog.ActionKind.UPDATE,
+                module="auth",
+                metadata={"portal": "admin", "failures": n},
+            )
 
     if not user:
         guessed_user = find_user_by_phone_input(phone)

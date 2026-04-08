@@ -3,11 +3,12 @@ from __future__ import annotations
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from core.models import FamilyInvite, OTPVerification, User
+from core.throttles import OtpSendThrottle
 from core.phone_auth import find_user_by_phone_input, normalize_nepal_phone
 from core.services import family_service, otp_service
 from core.services.base import get_or_create_personal_wallet
@@ -50,12 +51,40 @@ def _fallback_portal_key_for_user(user: User) -> str | None:
 
 
 @api_view(["POST"])
+@throttle_classes([OtpSendThrottle])
 @permission_classes([AllowAny])
 def otp_send(request):
-    raw_phone = (request.data.get("phone") or "").strip()
     purpose = (request.data.get("purpose") or "").strip().lower()
     name = (request.data.get("name") or "").strip()
 
+    if purpose == OTPVerification.Purpose.ADMIN_SENSITIVE:
+        if not request.user.is_authenticated:
+            return Response({"detail": "Authentication required."}, status=401)
+        from core.views.admin.admin_access import enforce_admin_api_access
+
+        if err := enforce_admin_api_access(request):
+            return err
+        admin_phone = normalize_nepal_phone(request.user.phone or "")
+        if not admin_phone:
+            return Response(
+                {"detail": "Your account phone must be a valid Nepal mobile."},
+                status=400,
+            )
+        otp_service.create_otp(admin_phone, purpose, signup_name="")
+        payload = {"detail": "OTP sent."}
+        if settings.DEBUG:
+            latest = (
+                OTPVerification.objects.filter(
+                    phone=admin_phone, purpose=purpose, is_used=False
+                )
+                .order_by("-created_at")
+                .first()
+            )
+            if latest:
+                payload["debug_otp"] = latest.otp
+        return Response(payload)
+
+    raw_phone = (request.data.get("phone") or "").strip()
     phone = normalize_nepal_phone(raw_phone)
     if not phone:
         return Response({"detail": "Enter a valid Nepal mobile number."}, status=400)

@@ -2,7 +2,7 @@
 
 from rest_framework.response import Response
 
-from core.models import EmployeeProfile, User
+from core.models import EmployeeProfile, SecuritySettings, User
 from core.portal_roles import user_allowed_for_admin_portal
 
 
@@ -135,7 +135,9 @@ def admin_module_key_from_path(path: str) -> str | None:
         ("purchase-orders/", "settings"),
         ("delivery-men/", "delivery"),
         ("tickets/", "settings"),
-        ("flagged/", "settings"),
+        ("security-settings/", "security"),
+        ("security/", "security"),
+        ("flagged/", "security"),
         ("shipping-methods/", "settings"),
         ("shipping-zones/", "settings"),
         ("weight-rules/", "settings"),
@@ -157,6 +159,8 @@ def enforce_admin_api_access(request):
     """
     if not is_admin_request_user(request.user):
         return Response({"detail": "Admin access required."}, status=403)
+    if not SecuritySettings.load().rbac_enforced:
+        return None
     mk = admin_module_key_from_path(request.path)
     if mk and not user_can_access_admin_module(request.user, mk):
         return Response(

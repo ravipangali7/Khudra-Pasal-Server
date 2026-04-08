@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.models import AuditLog, FlaggedActivity
+from rest_framework.response import Response
+
+from core.models import AuditLog, FlaggedActivity, OTPVerification, SecuritySettings
+from core.phone_auth import normalize_nepal_phone
 from core.services import audit_service
+from core.services.otp_service import OTPError, consume as consume_otp
 
 
 def create_flagged_activity(
@@ -68,6 +72,44 @@ def flag_and_log_security_event(
         metadata=meta,
     )
     return flag
+
+
+def require_sensitive_admin_otp(request) -> Response | None:
+    """
+    When otp_sensitive_crud is enabled, require a fresh OTP sent to the admin user's phone.
+    Expect JSON field sensitive_otp (6-digit code). Returns None if allowed, else a DRF Response.
+    """
+    if not SecuritySettings.load().otp_sensitive_crud:
+        return None
+    user = getattr(request, "user", None)
+    if not user or not user.is_authenticated:
+        return Response({"detail": "Authentication required."}, status=401)
+    phone_raw = (getattr(user, "phone", None) or "").strip()
+    if not phone_raw:
+        return Response(
+            {"detail": "Your account has no phone number; cannot verify OTP for this action."},
+            status=400,
+        )
+    phone = normalize_nepal_phone(phone_raw)
+    if not phone:
+        return Response(
+            {"detail": "Your account phone must be a valid Nepal mobile for OTP step-up."},
+            status=400,
+        )
+    code = (request.data.get("sensitive_otp") or "").strip()
+    if not code:
+        return Response(
+            {
+                "detail": "sensitive_otp is required when OTP for sensitive CRUD is enabled.",
+                "code": "sensitive_otp_required",
+            },
+            status=400,
+        )
+    try:
+        consume_otp(phone, OTPVerification.Purpose.ADMIN_SENSITIVE, code)
+    except OTPError as e:
+        return Response({"detail": str(e)}, status=400)
+    return None
 
 
 def record_resolution(flag: FlaggedActivity) -> None:

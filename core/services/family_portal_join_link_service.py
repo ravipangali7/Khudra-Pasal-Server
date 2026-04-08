@@ -9,6 +9,7 @@ from core.models import (
     FamilyGroup,
     FamilyJoinRequest,
     FamilyPortalJoinLink,
+    SecuritySettings,
     User,
 )
 from core.phone_auth import normalize_nepal_phone
@@ -110,15 +111,16 @@ def submit_join_application(
     if len(nm) > 150:
         raise ValueError("Name is too long.")
 
-    pending = FamilyJoinRequest.objects.filter(
-        group=link.group,
-        phone=normalized,
-        status=FamilyJoinRequest.Status.PENDING,
-    ).exists()
-    if pending:
-        raise ValueError(
-            "A pending join request for this phone number already exists for this family."
-        )
+    if SecuritySettings.load().duplicate_prevention:
+        pending = FamilyJoinRequest.objects.filter(
+            group=link.group,
+            phone=normalized,
+            status=FamilyJoinRequest.Status.PENDING,
+        ).exists()
+        if pending:
+            raise ValueError(
+                "A pending join request for this phone number already exists for this family."
+            )
 
     note = (applicant_note or "").strip()[:2000]
 
