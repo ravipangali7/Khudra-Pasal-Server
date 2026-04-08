@@ -55,6 +55,7 @@ from core.models import (
     Reel,
     ReelInteraction,
     Refund,
+    ShippingSettings,
     ShippingZone,
     SupportTicket,
     SupportTicketMessage,
@@ -3676,7 +3677,7 @@ def portal_orders_checkout_quote(request):
         )
     )
 
-    delivery_fee_total, delivery_alloc, _checkout_zone, d_err = (
+    delivery_fee_total, delivery_alloc, _checkout_zone, d_err, delivery_weight_kg, shipping_method_id_echo = (
         compute_delivery_allocation(
             req_dict, want_delivery, resolved.cart_subtotal, groups
         )
@@ -3713,6 +3714,7 @@ def portal_orders_checkout_quote(request):
             "value": float(coupon_obj.value),
         }
 
+    sh_quote = ShippingSettings.load()
     return Response(
         {
             "subtotal": float(resolved.cart_subtotal),
@@ -3729,6 +3731,9 @@ def portal_orders_checkout_quote(request):
             "lines": line_rows,
             "stock_warnings": resolved.stock_warnings,
             "delivery_error": d_err,
+            "delivery_weight_kg": float(delivery_weight_kg),
+            "shipping_method_id": shipping_method_id_echo,
+            "seller_pays_shipping": sh_quote.seller_pays_shipping,
         }
     )
 
@@ -3790,7 +3795,7 @@ def portal_orders_checkout(request):
             except ValueError as e:
                 return Response({"detail": str(e)}, status=400)
 
-            delivery_fee_total, delivery_alloc, checkout_zone, d_err = (
+            delivery_fee_total, delivery_alloc, checkout_zone, d_err, _dw_kg, _sm_echo = (
                 compute_delivery_allocation(
                     _request_data_dict(request),
                     want_delivery,

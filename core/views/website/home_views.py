@@ -30,6 +30,7 @@ from core.models import (
     Reel,
     ReelComment,
     ReelInteraction,
+    ShippingMethod,
     ShippingSettings,
     ShippingZone,
     SiteSettings,
@@ -43,6 +44,7 @@ from core.services.product_pricing import (
 )
 from core.services.storefront_coupon_hints import coupon_hints_for_product_ids
 from core.services.child_shopping_guard import validate_child_may_purchase_product
+from core.services.portal_checkout_pricing import checkout_items_weight_kg
 from core.services.shipping_quote import compute_shipping_fee
 from core.views.admin.admin_write_utils import absolute_media_url
 from core.serializers import (
@@ -278,6 +280,22 @@ def shipping_zones_list(request):
     )
 
 
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def shipping_methods_list(request):
+    rows = ShippingMethod.objects.filter(status=ShippingMethod.Status.ACTIVE).order_by("name")
+    return Response(
+        [
+            {
+                "id": str(m.pk),
+                "name": m.name,
+                "type": m.type,
+            }
+            for m in rows
+        ]
+    )
+
+
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def shipping_quote(request):
@@ -296,21 +314,42 @@ def shipping_quote(request):
         order_total = Decimal("0")
 
     raw_w = request.data.get("weight_kg")
+    weight_kg: float
     if raw_w is not None and str(raw_w).strip() != "":
         try:
             weight_kg = float(raw_w)
         except (TypeError, ValueError):
-            weight_kg = float(sh.default_checkout_weight_kg)
+            items_w = checkout_items_weight_kg(request.data.get("items"))
+            if items_w > 0:
+                weight_kg = items_w
+            else:
+                weight_kg = float(sh.default_checkout_weight_kg)
     else:
-        weight_kg = float(sh.default_checkout_weight_kg)
+        items_w = checkout_items_weight_kg(request.data.get("items"))
+        if items_w > 0:
+            weight_kg = items_w
+        else:
+            weight_kg = float(sh.default_checkout_weight_kg)
     weight_kg = max(0.0, min(500.0, weight_kg))
+
+    raw_mid = request.data.get("method_id") or request.data.get("shipping_method_id")
+    method: ShippingMethod | None = None
+    if raw_mid is not None and str(raw_mid).strip() != "":
+        method = ShippingMethod.objects.filter(
+            pk=raw_mid, status=ShippingMethod.Status.ACTIVE
+        ).first()
+        if not method:
+            return Response(
+                {"detail": "Invalid or inactive shipping_method_id."},
+                status=400,
+            )
 
     fee, breakdown = compute_shipping_fee(
         sh,
         zone,
         order_total=order_total,
         weight_kg=weight_kg,
-        method=None,
+        method=method,
     )
     customer_fee = Decimal("0") if sh.seller_pays_shipping else fee
     return Response(
@@ -319,6 +358,7 @@ def shipping_quote(request):
             "currency": "NPR",
             "zone": {"id": str(zone.pk), "name": zone.name},
             "weight_kg": weight_kg,
+            "shipping_method_id": str(method.pk) if method else None,
             "breakdown": breakdown,
             "seller_pays_shipping": sh.seller_pays_shipping,
         }

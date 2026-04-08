@@ -9,7 +9,7 @@ from typing import Any
 
 from django.utils import timezone
 
-from core.models import Coupon, Product, ShippingSettings, ShippingZone, Vendor
+from core.models import Coupon, Product, ShippingMethod, ShippingSettings, ShippingZone, Vendor
 from core.services.child_shopping_guard import validate_child_may_purchase_product
 from core.services.coupon_validation import (
     eligible_subtotal_for_coupon,
@@ -174,18 +174,113 @@ def apply_coupon_split(
     return coupon_obj, discount_total, None, seller_discounts, eligible
 
 
+def _parse_optional_weight_kg(raw: Any) -> float | None:
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _unit_weight_kg_from_attributes(attrs: Any) -> float:
+    """Per-unit kg from Product.attributes: weight_kg or weight (numeric)."""
+    if not isinstance(attrs, dict):
+        return 0.0
+    for key in ("weight_kg", "weight"):
+        v = attrs.get(key)
+        if v is None:
+            continue
+        try:
+            w = float(v)
+            if w >= 0:
+                return w
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def cart_weight_kg_from_groups(
+    groups: dict[int | None, list[tuple[Product, int, Decimal, Decimal]]],
+) -> float:
+    """Sum of qty × unit weight from product attributes (0 if no weights set)."""
+    total = 0.0
+    for _sid, glines in groups.items():
+        for pr, qty, _u, _lt in glines:
+            total += _unit_weight_kg_from_attributes(pr.attributes) * qty
+    return total
+
+
+def checkout_items_weight_kg(items: Any) -> float:
+    """Sum qty × unit weight from `[{product_id, quantity}, ...]` for public shipping quotes."""
+    if not isinstance(items, list) or not items:
+        return 0.0
+    parsed: list[tuple[int, int]] = []
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        pid = raw.get("product_id")
+        qty = int(raw.get("quantity") or 0)
+        if pid and qty >= 1:
+            parsed.append((int(pid), qty))
+    if not parsed:
+        return 0.0
+    pids = list({a for a, _ in parsed})
+    by_id = {p.pk: p for p in Product.objects.filter(pk__in=pids)}
+    total = 0.0
+    for pid, qty in parsed:
+        p = by_id.get(pid)
+        if p:
+            total += _unit_weight_kg_from_attributes(p.attributes) * qty
+    return total
+
+
+def resolve_checkout_weight_kg(
+    request_data: dict,
+    groups: dict[int | None, list[tuple[Product, int, Decimal, Decimal]]],
+    sh: ShippingSettings,
+) -> float:
+    """
+    1) Explicit weight_kg (top-level or delivery dict) if valid.
+    2) Else sum from cart product attributes if > 0.
+    3) Else default_checkout_weight_kg.
+    Clamped to [0, 500].
+    """
+    _ship_raw = request_data.get("delivery")
+    _d = _ship_raw if isinstance(_ship_raw, dict) else {}
+    _top = request_data
+    override = _parse_optional_weight_kg(_top.get("weight_kg") or _d.get("weight_kg"))
+    if override is not None:
+        w = override
+    else:
+        cart_w = cart_weight_kg_from_groups(groups)
+        if cart_w > 0:
+            w = cart_w
+        else:
+            w = float(sh.default_checkout_weight_kg)
+    return max(0.0, min(500.0, w))
+
+
 def compute_delivery_allocation(
     request_data: dict,
     want_delivery: bool,
     cart_subtotal: Decimal,
     groups: dict[int | None, list[tuple[Product, int, Decimal, Decimal]]],
-) -> tuple[Decimal, dict[int | None, Decimal], ShippingZone | None, str | None]:
+) -> tuple[
+    Decimal,
+    dict[int | None, Decimal],
+    ShippingZone | None,
+    str | None,
+    float,
+    str | None,
+]:
     """
-    Returns delivery_fee_total, delivery_alloc, checkout_zone, error_message.
+    Returns delivery_fee_total, delivery_alloc, checkout_zone, error_message,
+    delivery_weight_kg (0 if not delivering), shipping_method_id echo (None if zone-only).
     """
     if not want_delivery:
         z = {sid: Decimal("0") for sid in groups}
-        return Decimal("0"), z, None, None
+        return Decimal("0"), z, None, None, 0.0, None
 
     sh = ShippingSettings.load()
     _ship_raw = request_data.get("delivery")
@@ -201,23 +296,40 @@ def compute_delivery_allocation(
             {sid: Decimal("0") for sid in groups},
             None,
             "Active shipping_zone_id is required for delivery.",
+            0.0,
+            None,
         )
 
-    raw_w = _top.get("weight_kg") or _d.get("weight_kg")
-    if raw_w is not None and str(raw_w).strip() != "":
-        try:
-            weight_kg = float(raw_w)
-        except (TypeError, ValueError):
-            weight_kg = float(sh.default_checkout_weight_kg)
-    else:
-        weight_kg = float(sh.default_checkout_weight_kg)
-    weight_kg = max(0.0, min(500.0, weight_kg))
+    raw_mid = (
+        _top.get("shipping_method_id")
+        or _top.get("method_id")
+        or _d.get("shipping_method_id")
+        or _d.get("method_id")
+    )
+    method: ShippingMethod | None = None
+    method_id_echo: str | None = None
+    if raw_mid is not None and str(raw_mid).strip() != "":
+        method = ShippingMethod.objects.filter(
+            pk=raw_mid, status=ShippingMethod.Status.ACTIVE
+        ).first()
+        if not method:
+            return (
+                Decimal("0"),
+                {sid: Decimal("0") for sid in groups},
+                None,
+                "Invalid or inactive shipping_method_id.",
+                0.0,
+                None,
+            )
+        method_id_echo = str(method.pk)
+
+    weight_kg = resolve_checkout_weight_kg(request_data, groups, sh)
     raw_fee, _ = compute_shipping_fee(
         sh,
         checkout_zone,
         order_total=cart_subtotal,
         weight_kg=weight_kg,
-        method=None,
+        method=method,
     )
     delivery_fee_total = Decimal("0") if sh.seller_pays_shipping else raw_fee
 
@@ -246,7 +358,7 @@ def compute_delivery_allocation(
                 delivery_alloc[sid] = part
                 acc_delivery += part
 
-    return delivery_fee_total, delivery_alloc, checkout_zone, None
+    return delivery_fee_total, delivery_alloc, checkout_zone, None, weight_kg, method_id_echo
 
 
 def build_orders_plan(
