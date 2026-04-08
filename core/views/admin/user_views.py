@@ -1,7 +1,7 @@
 import os
 
 from django.conf import settings
-from core.phone_auth import authenticate_user_by_phone
+from core.phone_auth import authenticate_user_by_phone, find_user_by_phone_input
 from django.db.models import Q
 from rest_framework.authentication import SessionAuthentication, TokenAuthentication
 from rest_framework.authtoken.models import Token
@@ -12,7 +12,7 @@ from rest_framework.response import Response
 
 from core.models import AuditLog, EmployeeProfile, KYCDocument, User, Vendor
 from core.portal_roles import PORTAL_ADMIN, assert_portal_login_allowed, user_allowed_for_admin_portal
-from core.services import audit_service
+from core.services import audit_service, security_service
 from core.services.kyc_portal import supersede_non_approved_kyc, validate_kyc_upload_file
 from core.services.kyc_service import sync_user_kyc_status
 from core.serializers import AdminUserSerializer
@@ -52,11 +52,35 @@ def admin_login(request):
     phone = request.data.get("phone", "").strip()
     password = request.data.get("password", "")
     user = authenticate_user_by_phone(request, phone, password)
+    ip = client_ip_from_request(request)
 
     if not user:
+        guessed_user = find_user_by_phone_input(phone)
+        security_service.flag_and_log_security_event(
+            activity_type="Admin login failed",
+            detail="Invalid admin credentials supplied.",
+            severity="medium",
+            user=guessed_user,
+            ip_address=ip,
+            performed_by=guessed_user,
+            action_kind=AuditLog.ActionKind.LOGIN,
+            module="auth",
+            metadata={"portal": "admin", "phone_input": phone[:30]},
+        )
         return Response({"detail": "Invalid credentials."}, status=400)
     denied = assert_portal_login_allowed(user, PORTAL_ADMIN)
     if denied:
+        security_service.flag_and_log_security_event(
+            activity_type="Admin login denied",
+            detail="User authenticated but is not allowed to access admin portal.",
+            severity="high",
+            user=user,
+            ip_address=ip,
+            performed_by=user,
+            action_kind=AuditLog.ActionKind.LOGIN,
+            module="auth",
+            metadata={"portal": "admin", "reason": "wrong_portal_role"},
+        )
         return denied
 
     token, _ = Token.objects.get_or_create(user=user)
@@ -66,7 +90,7 @@ def admin_login(request):
         performed_by=user,
         action_kind=AuditLog.ActionKind.LOGIN,
         module="auth",
-        ip_address=client_ip_from_request(request),
+        ip_address=ip,
         metadata={"portal": "admin"},
     )
     return Response(
@@ -98,9 +122,29 @@ def admin_change_password(request):
         return validation_error("new_password must be at least 6 characters", field="new_password")
     u = request.user
     if not u.check_password(old_p):
+        security_service.flag_and_log_security_event(
+            activity_type="Admin password change failed",
+            detail="Current password mismatch during change-password attempt.",
+            severity="medium",
+            user=u,
+            ip_address=client_ip_from_request(request),
+            performed_by=u,
+            action_kind=AuditLog.ActionKind.UPDATE,
+            module="auth",
+            metadata={"portal": "admin"},
+        )
         return Response({"detail": "Current password is incorrect."}, status=400)
     u.set_password(new_p)
     u.save(update_fields=["password"])
+    audit_service.log(
+        "Admin password changed",
+        log_type=AuditLog.Type.SECURITY,
+        performed_by=u,
+        action_kind=AuditLog.ActionKind.UPDATE,
+        module="auth",
+        ip_address=client_ip_from_request(request),
+        metadata={"portal": "admin"},
+    )
     return Response({"ok": True})
 
 

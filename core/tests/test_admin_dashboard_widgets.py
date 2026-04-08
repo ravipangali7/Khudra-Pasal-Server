@@ -8,7 +8,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from core.models import Category, Order, Product, User, Wallet, WalletTransaction
+from core.models import AuditLog, Category, FlaggedActivity, Order, Product, User, Wallet, WalletTransaction
 from core.services import wallet_service
 
 
@@ -172,3 +172,33 @@ class AdminDashboardWidgetsTests(TestCase):
         ):
             r = self.client.get(path)
             self.assertEqual(r.status_code, status.HTTP_401_UNAUTHORIZED, path)
+
+    def test_security_alert_sources_return_rows_for_super_admin(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self._token(self.super_admin)}")
+        FlaggedActivity.objects.create(
+            user=self.customer,
+            activity_type="Suspicious payout target",
+            detail="Multiple account targets observed.",
+            severity=FlaggedActivity.Severity.HIGH,
+            status=FlaggedActivity.Status.OPEN,
+        )
+        AuditLog.objects.create(
+            action="Admin login failed",
+            type=AuditLog.Type.SECURITY,
+            action_kind=AuditLog.ActionKind.LOGIN,
+            module="auth",
+            performed_by=self.super_admin,
+        )
+
+        flagged = self.client.get("/api/admin/flagged/", {"page_size": 20})
+        self.assertEqual(flagged.status_code, status.HTTP_200_OK, flagged.content)
+        self.assertGreaterEqual(flagged.data["count"], 1)
+        self.assertEqual(flagged.data["results"][0]["type"], "Suspicious payout target")
+
+        audits = self.client.get(
+            "/api/admin/audit-logs/",
+            {"type": "security", "page_size": 20, "ordering": "-created_at"},
+        )
+        self.assertEqual(audits.status_code, status.HTTP_200_OK, audits.content)
+        self.assertGreaterEqual(audits.data["count"], 1)
+        self.assertEqual(audits.data["results"][0]["type"], AuditLog.Type.SECURITY)

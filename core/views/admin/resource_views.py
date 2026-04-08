@@ -80,6 +80,7 @@ from core.services import (
     product_service,
     refund_notification_service,
     refund_service,
+    security_service,
     support_notification_service,
     support_ticket_service,
 )
@@ -2649,6 +2650,7 @@ def admin_flagged_activity_detail_write(request, pk):
     if row.status == FlaggedActivity.Status.RESOLVED:
         row.reviewed_by = request.user
     row.save()
+    security_service.record_resolution(row)
     return Response({"id": str(row.pk), "status": row.status})
 
 
