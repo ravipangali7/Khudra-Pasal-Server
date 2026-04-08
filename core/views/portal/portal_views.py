@@ -2023,6 +2023,7 @@ def _family_wallet_txn_flow_signed(t: WalletTransaction) -> tuple[str, float]:
         WalletTransaction.Type.CREDIT,
         WalletTransaction.Type.TOPUP,
         WalletTransaction.Type.BONUS,
+        WalletTransaction.Type.REFUND_CREDIT,
     ):
         return "in", amt
     if typ in (
