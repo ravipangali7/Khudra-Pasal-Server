@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from decimal import Decimal
 
 from django.conf import settings
@@ -25,9 +26,47 @@ def _fmt_money(amount: Decimal) -> str:
     return f"{amount:,.2f}"
 
 
+def _coalesce_env(env_key: str, db_value: str) -> str:
+    """Non-empty env overrides DB; unset or empty env keeps DB value."""
+    raw = os.environ.get(env_key)
+    if raw is not None:
+        s = raw.strip()
+        if s:
+            return s
+    return (db_value or "").strip()
+
+
+def _effective_smtp_password(site: SiteSettings) -> str | None:
+    if "KP_SMTP_PASSWORD" in os.environ:
+        p = os.environ["KP_SMTP_PASSWORD"].strip()
+        if p:
+            return p
+    raw = (site.smtp_password or "").strip()
+    return raw or None
+
+
+def effective_smtp_host(site: SiteSettings) -> str:
+    return _coalesce_env("KP_SMTP_HOST", site.smtp_host)
+
+
+def smtp_is_configured(site: SiteSettings | None = None) -> bool:
+    site = site or SiteSettings.load()
+    return bool(effective_smtp_host(site))
+
+
+def _effective_smtp_port(site: SiteSettings) -> int:
+    raw = os.environ.get("KP_SMTP_PORT")
+    if raw is not None and raw.strip():
+        return int(raw.strip())
+    return int(site.smtp_port or 587)
+
+
 def _from_email_address(site: SiteSettings) -> str:
-    name = (site.smtp_from_name or "").strip()
-    addr = (site.smtp_from_email or "").strip() or (site.site_email or "").strip()
+    name = _coalesce_env("KP_SMTP_FROM_NAME", site.smtp_from_name or "")
+    addr = _coalesce_env(
+        "KP_SMTP_FROM_EMAIL",
+        (site.smtp_from_email or "").strip() or (site.site_email or "").strip(),
+    )
     if not addr:
         addr = "noreply@example.com"
     if name:
@@ -36,18 +75,20 @@ def _from_email_address(site: SiteSettings) -> str:
 
 
 def _smtp_connection(site: SiteSettings):
-    host = (site.smtp_host or "").strip()
+    host = effective_smtp_host(site)
     if not host:
         return None
-    port = int(site.smtp_port or 587)
+    port = _effective_smtp_port(site)
     use_ssl = port == 465
     use_tls = not use_ssl
+    username = _coalesce_env("KP_SMTP_USERNAME", site.smtp_username) or None
+    password = _effective_smtp_password(site)
     return get_connection(
         backend="django.core.mail.backends.smtp.EmailBackend",
         host=host,
         port=port,
-        username=(site.smtp_username or "").strip() or None,
-        password=(site.smtp_password or "") or None,
+        username=username,
+        password=password,
         use_tls=use_tls,
         use_ssl=use_ssl,
     )
@@ -59,6 +100,7 @@ def send_html_email(
     recipients: list[str],
     *,
     site: SiteSettings | None = None,
+    raise_exceptions: bool = False,
 ) -> None:
     to_list = [e.strip() for e in recipients if e and str(e).strip()]
     if not to_list:
@@ -81,6 +123,8 @@ def send_html_email(
         msg.send()
     except Exception:
         logger.exception("Failed to send email subject=%r to=%r", subject, to_list)
+        if raise_exceptions:
+            raise
 
 
 def _delivery_summary(order: Order) -> str:
@@ -135,7 +179,7 @@ def _order_mail_context(order: Order, site: SiteSettings) -> dict:
 
 def send_order_placed_emails(order_id: int) -> None:
     site = SiteSettings.load()
-    if not (site.smtp_host or "").strip():
+    if not effective_smtp_host(site):
         logger.debug("SMTP host not set; skip order emails id=%s", order_id)
         return
 
@@ -222,7 +266,7 @@ def _kyc_status_copy(status: str) -> tuple[str, str]:
 
 def send_kyc_status_change_email(user_id: int) -> None:
     site = SiteSettings.load()
-    if not (site.smtp_host or "").strip():
+    if not effective_smtp_host(site):
         logger.debug("SMTP host not set; skip KYC email user_id=%s", user_id)
         return
     user = User.objects.filter(pk=user_id).first()

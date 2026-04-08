@@ -1,8 +1,10 @@
 """SMTP-backed mail: skip when unconfigured, order emails after commit, KYC status emails."""
 
+import os
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.core.management import call_command
 from django.db import transaction
 from django.test import TestCase
 
@@ -25,9 +27,44 @@ class MailServiceConfigTests(TestCase):
         site = SiteSettings.load()
         site.smtp_host = ""
         site.save(update_fields=["smtp_host"])
-        with patch("core.services.mail_service.EmailMultiAlternatives.send") as mock_send:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("KP_SMTP_HOST", None)
+            with patch("core.services.mail_service.EmailMultiAlternatives.send") as mock_send:
+                mail_service.send_html_email("Hi", "<p>x</p>", ["a@b.com"], site=site)
+                mock_send.assert_not_called()
+
+    def test_effective_smtp_host_env_overrides_db(self):
+        site = SiteSettings.load()
+        site.smtp_host = "db.example.com"
+        with patch.dict(os.environ, {"KP_SMTP_HOST": "env.example.com"}):
+            self.assertEqual(mail_service.effective_smtp_host(site), "env.example.com")
+        self.assertEqual(mail_service.effective_smtp_host(site), "db.example.com")
+
+    @patch("core.services.mail_service.EmailMultiAlternatives.send")
+    def test_send_html_uses_kp_smtp_host_when_db_empty(self, mock_send):
+        site = SiteSettings.load()
+        site.smtp_host = ""
+        site.smtp_port = 587
+        site.smtp_username = "user@test.local"
+        site.smtp_password = "secret"
+        site.save(
+            update_fields=["smtp_host", "smtp_port", "smtp_username", "smtp_password"]
+        )
+        with patch.dict(os.environ, {"KP_SMTP_HOST": "smtp.override.local"}):
             mail_service.send_html_email("Hi", "<p>x</p>", ["a@b.com"], site=site)
-            mock_send.assert_not_called()
+        mock_send.assert_called_once()
+
+    @patch("core.management.commands.test_smtp.send_html_email")
+    def test_management_test_smtp_command(self, mock_send_html):
+        site = SiteSettings.load()
+        site.smtp_host = "smtp.test.local"
+        site.site_email = "admin-check@test.local"
+        site.save(update_fields=["smtp_host", "site_email"])
+        call_command("test_smtp", verbosity=0)
+        mock_send_html.assert_called_once()
+        _args, kwargs = mock_send_html.call_args
+        self.assertIn("raise_exceptions", kwargs)
+        self.assertTrue(kwargs["raise_exceptions"])
 
 
 class OrderPlacedEmailTests(TestCase):

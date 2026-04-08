@@ -315,7 +315,9 @@ CHILD_PORTAL_REQUIRE_MEMBERSHIP = os.environ.get(
     "CHILD_PORTAL_REQUIRE_MEMBERSHIP", ""
 ).lower() in ("1", "true", "yes")
 
-
+# Optional SMTP overrides (see core.services.mail_service). Non-empty values override SiteSettings.
+# KP_SMTP_HOST, KP_SMTP_PORT, KP_SMTP_USERNAME, KP_SMTP_PASSWORD, KP_SMTP_FROM_EMAIL, KP_SMTP_FROM_NAME
+# Use KP_SMTP_PASSWORD for Gmail App Passwords in production instead of storing them in the database.
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = 100 * 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = 100 * 1024 * 1024

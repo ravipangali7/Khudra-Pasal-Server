@@ -2532,12 +2532,35 @@ class SiteSettings(models.Model):
     new_registrations = models.BooleanField(default=True)
     kyc_required = models.BooleanField(default=True)
     pos_enabled = models.BooleanField(default=True)
-    smtp_host = models.CharField(max_length=255, blank=True)
-    smtp_port = models.PositiveIntegerField(null=True, blank=True)
-    smtp_username = models.CharField(max_length=255, blank=True)
-    smtp_password = models.CharField(max_length=255, blank=True)
-    smtp_from_name = models.CharField(max_length=150, blank=True)
-    smtp_from_email = models.EmailField(blank=True)
+    smtp_host = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="SMTP server hostname. Gmail: smtp.gmail.com. Alternatives: SendGrid, SES, Resend, Mailgun SMTP hosts.",
+    )
+    smtp_port = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="587 with TLS (default) or 465 with SSL. Overridable via KP_SMTP_PORT.",
+    )
+    smtp_username = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="SMTP login user. Gmail: full Google account email. Overridable via KP_SMTP_USERNAME.",
+    )
+    smtp_password = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Gmail/Google: use an App Password (2-Step Verification required), not your normal password. Prefer KP_SMTP_PASSWORD in server environment for production.",
+    )
+    smtp_from_name = models.CharField(
+        max_length=150,
+        blank=True,
+        help_text="Display name for the From header. Overridable via KP_SMTP_FROM_NAME.",
+    )
+    smtp_from_email = models.EmailField(
+        blank=True,
+        help_text="Must be the authenticated mailbox or a verified Send mail as alias for that account. Overridable via KP_SMTP_FROM_EMAIL.",
+    )
     search_placeholders = models.JSONField(
         default=list,
         blank=True,
