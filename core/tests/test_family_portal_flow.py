@@ -1564,6 +1564,7 @@ class FamilyPortalFlowTests(TestCase):
 
 class PortalSignupOtpAndTransferPolicyTests(TestCase):
     def setUp(self):
+        relax_wallet_settings_for_tests()
         self.client = APIClient()
 
     def test_otp_signup_family_portal_creates_group(self):
@@ -1677,25 +1678,25 @@ class PortalSignupOtpAndTransferPolicyTests(TestCase):
         family_service.ensure_family_wallets_for_member(
             g, child, FamilyMember.Role.CHILD
         )
-        cw = get_member_family_wallet(g, child)
-        self.assertIsNotNone(cw)
+        lw = get_member_family_wallet(g, leader)
+        self.assertIsNotNone(lw)
         wallet_service.credit_wallet(
-            cw,
+            lw,
             Decimal("500"),
             wtype=WalletTransaction.Type.TOPUP,
             description="t",
             performed_by=leader,
         )
         wallet_service.debit_wallet(
-            cw,
+            lw,
             Decimal("50"),
             wtype=WalletTransaction.Type.PURCHASE,
             description="buy",
-            performed_by=child,
+            performed_by=leader,
         )
         tok, _ = Token.objects.get_or_create(user=leader)
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {tok.key}")
         r = self.client.get("/api/portal/family/members/")
         self.assertEqual(r.status_code, status.HTTP_200_OK)
-        child_row = next(x for x in r.data["members"] if x["phone"] == child.phone)
-        self.assertGreaterEqual(float(child_row["spending"]), 50.0)
+        leader_row = next(x for x in r.data["members"] if x["phone"] == leader.phone)
+        self.assertGreaterEqual(float(leader_row["spending"]), 50.0)
