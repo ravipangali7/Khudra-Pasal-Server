@@ -241,6 +241,119 @@ class MultiVendorCheckoutCommissionTests(TestCase):
         self.assertEqual(Order.objects.filter(customer=self.customer).count(), 0)
 
 
+class InHousePortalCheckoutTests(TestCase):
+    """In-house products (seller=NULL) can checkout; no vendor commission settlement."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.pw = "TestPass123!"
+        self.cat = Category.objects.create(name="C-inhouse", slug="c-inhouse")
+        self.vu = User.objects.create_user(
+            username="vinhouse", password=self.pw, phone="9831313131", name="VIn"
+        )
+        self.vendor = Vendor.objects.create(
+            user=self.vu,
+            store_name="VendorMix",
+            store_slug="v-inhouse-mix",
+            status=Vendor.Status.APPROVED,
+            commission_rate=Decimal("10.00"),
+        )
+        ensure_vendor_wallet(self.vendor)
+        img = _tiny_png()
+        self.p_vendor = Product.objects.create(
+            name="PVendorMix",
+            slug="p-vendor-mix",
+            sku="SKU-V-MIX",
+            price=Decimal("50.00"),
+            category=self.cat,
+            image=img,
+            type=Product.Type.PHYSICAL,
+            stock=10,
+            seller=self.vendor,
+            status=Product.Status.ACTIVE,
+        )
+        img2 = _tiny_png()
+        self.p_inhouse = Product.objects.create(
+            name="PInHouse",
+            slug="p-inhouse",
+            sku="SKU-INHOUSE",
+            price=Decimal("80.00"),
+            category=self.cat,
+            image=img2,
+            type=Product.Type.PHYSICAL,
+            stock=10,
+            seller=None,
+            status=Product.Status.ACTIVE,
+        )
+        self.customer = User.objects.create_user(
+            username="cust_inhouse",
+            password=self.pw,
+            phone="9841414141",
+            name="CustIn",
+            role=User.Role.NORMAL,
+        )
+        Token.objects.get_or_create(user=self.customer)
+        w = get_or_create_personal_wallet(self.customer)
+        wallet_service.credit_wallet(
+            w,
+            Decimal("10000.00"),
+            wtype=WalletTransaction.Type.CREDIT,
+            description="test float",
+            reference_type="test",
+            reference_id="inhouse-1",
+            performed_by=self.customer,
+        )
+
+    def test_wallet_checkout_in_house_only_no_commission_settlement(self):
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Token {Token.objects.get(user=self.customer).key}"
+        )
+        r = self.client.post(
+            "/api/portal/orders/checkout/",
+            {
+                "items": [{"product_id": self.p_inhouse.pk, "quantity": 1}],
+                "want_delivery": False,
+                "payment_method": "wallet",
+                "placed_portal": Order.PlacedPortal.PORTAL_MAIN,
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
+        self.assertEqual(len(r.data["orders"]), 1)
+        o = Order.objects.get(customer=self.customer)
+        self.assertIsNone(o.seller_id)
+        self.assertEqual(o.payment_status, Order.PaymentStatus.PAID)
+        self.assertEqual(OrderCommissionSettlement.objects.count(), 0)
+
+    def test_wallet_checkout_mixed_vendor_and_in_house_two_orders_one_settlement(self):
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Token {Token.objects.get(user=self.customer).key}"
+        )
+        r = self.client.post(
+            "/api/portal/orders/checkout/",
+            {
+                "items": [
+                    {"product_id": self.p_vendor.pk, "quantity": 1},
+                    {"product_id": self.p_inhouse.pk, "quantity": 1},
+                ],
+                "want_delivery": False,
+                "payment_method": "wallet",
+                "placed_portal": Order.PlacedPortal.PORTAL_MAIN,
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
+        self.assertEqual(len(r.data["orders"]), 2)
+        orders = list(Order.objects.filter(customer=self.customer).order_by("seller_id"))
+        self.assertEqual(len(orders), 2)
+        by_seller = {o.seller_id: o for o in orders}
+        self.assertIn(self.vendor.pk, by_seller)
+        self.assertIn(None, by_seller)
+        self.assertEqual(OrderCommissionSettlement.objects.count(), 1)
+        st = OrderCommissionSettlement.objects.first()
+        self.assertEqual(st.vendor_id, self.vendor.pk)
+
+
 class GatewayPaymentCompleteTests(TestCase):
     """Gateway payment/complete flow (orders may be created outside storefront wallet-only checkout)."""
 

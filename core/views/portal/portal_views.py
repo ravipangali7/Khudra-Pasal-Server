@@ -3621,6 +3621,13 @@ def portal_orders_checkout_wallet(request):
     return Response({"default": default_payload, "payable_wallets": payable})
 
 
+def _portal_checkout_group_seller_sort_key(sid: int | None) -> tuple[int, int]:
+    """Sort checkout seller group keys: vendor PKs ascending, in-house (None) last."""
+    if sid is None:
+        return (1, 0)
+    return (0, sid)
+
+
 @api_view(["POST"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated, IsPortalShopper])
@@ -3648,8 +3655,8 @@ def portal_orders_checkout(request):
 
     try:
         with transaction.atomic():
-            groups: dict[int, list[tuple[Product, int, Decimal, Decimal]]] = defaultdict(
-                list
+            groups: dict[int | None, list[tuple[Product, int, Decimal, Decimal]]] = (
+                defaultdict(list)
             )
             cart_subtotal = Decimal("0")
 
@@ -3662,16 +3669,16 @@ def portal_orders_checkout(request):
                     )
                 p = (
                     Product.objects.select_for_update()
-                    .filter(
-                        pk=pid,
-                        status=Product.Status.ACTIVE,
-                        seller__isnull=False,
-                        seller__status=Vendor.Status.APPROVED,
-                    )
+                    .filter(pk=pid, status=Product.Status.ACTIVE)
                     .select_related("seller")
                     .first()
                 )
                 if not p:
+                    return Response(
+                        {"detail": f"Product {pid} not available."},
+                        status=400,
+                    )
+                if p.seller_id is not None and p.seller.status != Vendor.Status.APPROVED:
                     return Response(
                         {"detail": f"Product {pid} not available."},
                         status=400,
@@ -3749,9 +3756,10 @@ def portal_orders_checkout(request):
                 sid: sum(lt for *_rest, lt in lines) for sid, lines in groups.items()
             }
             sorted_seller_ids = sorted(
-                seller_subtotals.keys(), key=lambda sid: -seller_subtotals[sid]
+                seller_subtotals.keys(),
+                key=lambda sid: (-seller_subtotals[sid], 0 if sid is None else sid),
             )
-            delivery_alloc: dict[int, Decimal] = {}
+            delivery_alloc: dict[int | None, Decimal] = {}
             acc_delivery = Decimal("0")
             if delivery_fee_total == 0 or cart_subtotal <= 0:
                 for sid in groups:
@@ -3773,16 +3781,24 @@ def portal_orders_checkout(request):
 
             notes = (request.data.get("notes") or "")[:500]
             orders_plan: list[
-                tuple[Vendor, list[tuple[Product, int, Decimal, Decimal]], Decimal, Decimal, Decimal]
+                tuple[
+                    Vendor | None,
+                    list[tuple[Product, int, Decimal, Decimal]],
+                    Decimal,
+                    Decimal,
+                    Decimal,
+                ]
             ] = []
-            for seller_id in sorted(groups.keys()):
+            for seller_id in sorted(
+                groups.keys(), key=_portal_checkout_group_seller_sort_key
+            ):
                 lines = groups[seller_id]
                 v_sub = seller_subtotals[seller_id]
                 v_delivery = delivery_alloc[seller_id]
                 v_total = (v_sub + v_delivery).quantize(Decimal("0.01"))
                 if v_total < 0:
                     v_total = Decimal("0")
-                vendor = Vendor.objects.get(pk=seller_id)
+                vendor = None if seller_id is None else Vendor.objects.get(pk=seller_id)
                 orders_plan.append((vendor, lines, v_sub, v_delivery, v_total))
 
             grand_total_plan = sum((p[4] for p in orders_plan), Decimal("0"))
