@@ -7,6 +7,7 @@ from rest_framework.decorators import api_view, authentication_classes, permissi
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from core.models import User
 from core.views.admin.admin_write_utils import validation_error
 
 _FCM_TOKEN_MAX_LEN = 8192
@@ -24,6 +25,5 @@ def auth_fcm_token(request):
     token = raw.strip()
     if len(token) > _FCM_TOKEN_MAX_LEN:
         return validation_error("fcm_token is too long", field="fcm_token")
-    User = request.user.__class__
     User.objects.filter(pk=request.user.pk).update(fcm_token=token)
     return Response({"ok": True})

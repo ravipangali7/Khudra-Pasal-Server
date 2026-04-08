@@ -4092,6 +4092,7 @@ def admin_notification_broadcast(request):
     MAX_ROWS = 2500
     batch = []
     count = 0
+    fcm_tokens: list[str] = []
     for u in qs.iterator(chunk_size=500):
         batch.append(
             Notification(
@@ -4103,6 +4104,9 @@ def admin_notification_broadcast(request):
                 is_read=False,
             )
         )
+        tok = (getattr(u, "fcm_token", "") or "").strip()
+        if tok:
+            fcm_tokens.append(tok)
         count += 1
         if len(batch) >= 400:
             Notification.objects.bulk_create(batch)
@@ -4111,6 +4115,9 @@ def admin_notification_broadcast(request):
             break
     if batch:
         Notification.objects.bulk_create(batch)
+    from core.services.fcm_push_service import send_fcm_to_tokens
+
+    send_fcm_to_tokens(fcm_tokens, title, message)
     return Response({"created": min(count, MAX_ROWS), "capped": count > MAX_ROWS}, status=201)
 
 
