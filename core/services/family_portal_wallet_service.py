@@ -5,7 +5,7 @@ from decimal import Decimal
 from django.db import transaction
 
 from core.models import FamilyGroup, FamilyMember, FamilyWalletCategory, User, Wallet, WalletTransaction
-from core.services import wallet_service
+from core.services import wallet_policy, wallet_service
 
 
 def category_allows_member_role(
@@ -144,6 +144,7 @@ def family_wallet_load(
         w = ensure_default_shared_wallet(group, group.leader)
     else:
         w = ensure_category_shared_wallet(group, category, group.leader)
+    wallet_policy.assert_wallet_type_enabled_for_wallet(w)
     wt = wallet_service.credit_wallet(
         w,
         amount,
@@ -171,12 +172,17 @@ def family_wallet_distribute(
     amount: Decimal,
     performed_by: User,
     category: FamilyWalletCategory | None = None,
+    txn_status: str = WalletTransaction.Status.COMPLETED,
 ) -> tuple[Wallet, Wallet, WalletTransaction, WalletTransaction]:
     if category is None:
         from_w = ensure_default_shared_wallet(group, group.leader)
     else:
         from_w = ensure_category_shared_wallet(group, category, group.leader)
     to_w = _require_active(get_member_family_wallet(group, to_user), "Member")
+    wallet_policy.assert_wallet_type_enabled_for_wallet(from_w)
+    wallet_policy.assert_wallet_type_enabled_for_wallet(to_w)
+    wallet_policy.assert_family_transfer_wallets_allowed(from_w, to_w)
+    wallet_policy.assert_daily_transfer_for_wallet(from_w, amount)
     out_t, in_t = wallet_service.execute_transfer(
         from_w,
         to_w,
@@ -185,6 +191,7 @@ def family_wallet_distribute(
         reference_type="family_distribute",
         reference_id=str(group.pk),
         family_wallet_category=category,
+        txn_status=txn_status,
     )
     from_w.refresh_from_db()
     to_w.refresh_from_db()
@@ -234,6 +241,7 @@ def family_wallet_transfer_group_wallets(
     amount: Decimal,
     performed_by: User,
     category: FamilyWalletCategory | None = None,
+    txn_status: str = WalletTransaction.Status.COMPLETED,
 ) -> tuple[Wallet, Wallet, WalletTransaction, WalletTransaction]:
     from_w = Wallet.objects.filter(pk=from_wallet_id).first()
     to_w = Wallet.objects.filter(pk=to_wallet_id).first()
@@ -253,6 +261,7 @@ def family_wallet_transfer_group_wallets(
         reference_type="family_wallet_transfer",
         reference_id=str(group.pk),
         family_wallet_category=category,
+        txn_status=txn_status,
     )
     from_w.refresh_from_db()
     to_w.refresh_from_db()
@@ -269,6 +278,7 @@ def family_wallet_transfer_members(
     performed_by: User,
     category: FamilyWalletCategory | None = None,
     reference_type: str = "family_member_transfer",
+    txn_status: str = WalletTransaction.Status.COMPLETED,
 ) -> tuple[Wallet, Wallet, WalletTransaction, WalletTransaction]:
     from_w = _require_active(get_member_family_wallet(group, from_user), "Sender")
     to_w = _require_active(get_member_family_wallet(group, to_user), "Recipient")
@@ -282,6 +292,7 @@ def family_wallet_transfer_members(
         reference_type=reference_type or "family_member_transfer",
         reference_id=str(group.pk),
         family_wallet_category=category,
+        txn_status=txn_status,
     )
     from_w.refresh_from_db()
     to_w.refresh_from_db()

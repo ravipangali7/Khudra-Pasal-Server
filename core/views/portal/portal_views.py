@@ -106,6 +106,7 @@ from core.services import (
     family_service,
     otp_service,
     product_service,
+    wallet_policy,
     wallet_service,
 )
 from core.services.nominatim_geocode import (
@@ -145,6 +146,18 @@ class IsPortalParent(BasePermission):
     def has_permission(self, request, view):
         u = request.user
         return bool(u and u.is_authenticated and user_has_family_portal_access(u))
+
+
+class IsPortalWalletOtpUser(BasePermission):
+    """Customer or family-portal user (wallet transfer / withdraw OTP)."""
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not u or not u.is_authenticated:
+            return False
+        if u.role == User.Role.NORMAL:
+            return True
+        return user_has_family_portal_access(u)
 
 
 class IsPortalChild(BasePermission):
@@ -1675,6 +1688,11 @@ def portal_family_wallet_transfer(request):
     amount = _to_decimal(request.data.get("amount"), "0")
     if amount <= 0:
         return validation_error("amount must be positive", field="amount")
+    txn_status = (
+        WalletTransaction.Status.FLAGGED
+        if wallet_policy.transfer_should_auto_flag(amount)
+        else WalletTransaction.Status.COMPLETED
+    )
     category_id = request.data.get("category_id")
     category = None
     if category_id not in (None, ""):
@@ -1724,6 +1742,14 @@ def portal_family_wallet_transfer(request):
                     {"detail": "This category cannot be used for the recipient role."},
                     status=400,
                 )
+        wallet_policy.assert_family_transfer_wallets_allowed(fw, tw)
+        wallet_policy.assert_daily_transfer_for_wallet(fw, amount)
+        if wallet_policy.transfer_requires_otp(amount):
+            otp_resp = _portal_consume_otp_or_error(
+                request, OTPVerification.Purpose.TRANSFER
+            )
+            if otp_resp is not None:
+                return otp_resp
         try:
             fw_o, tw_o, _o, _i = (
                 family_portal_wallet_service.family_wallet_transfer_group_wallets(
@@ -1733,6 +1759,7 @@ def portal_family_wallet_transfer(request):
                     amount=amount,
                     performed_by=request.user,
                     category=category,
+                    txn_status=txn_status,
                 )
             )
         except ValueError as e:
@@ -1776,6 +1803,20 @@ def portal_family_wallet_transfer(request):
                 {"detail": "This category cannot be used for the recipient role."},
                 status=400,
             )
+    fw0 = family_portal_wallet_service.get_member_family_wallet(
+        primary, fm_from.user
+    )
+    tw0 = family_portal_wallet_service.get_member_family_wallet(primary, fm_to.user)
+    if not fw0 or not tw0:
+        return validation_error("invalid member id(s)", field="from_member_id")
+    wallet_policy.assert_family_transfer_wallets_allowed(fw0, tw0)
+    wallet_policy.assert_daily_transfer_for_wallet(fw0, amount)
+    if wallet_policy.transfer_requires_otp(amount):
+        otp_resp = _portal_consume_otp_or_error(
+            request, OTPVerification.Purpose.TRANSFER
+        )
+        if otp_resp is not None:
+            return otp_resp
     try:
         fw, tw, _o, _i = family_portal_wallet_service.family_wallet_transfer_members(
             group=primary,
@@ -1784,6 +1825,7 @@ def portal_family_wallet_transfer(request):
             amount=amount,
             performed_by=request.user,
             category=category,
+            txn_status=txn_status,
         )
     except ValueError as e:
         return Response({"detail": str(e)}, status=400)
@@ -1878,6 +1920,12 @@ def portal_family_wallet_withdrawals(request):
     acct = PayoutAccount.objects.filter(pk=pid, user=request.user).first()
     if not acct:
         return validation_error("Invalid payout account.", field="payout_account_id")
+    if wallet_policy.withdrawal_requires_otp():
+        otp_resp = _portal_consume_otp_or_error(
+            request, OTPVerification.Purpose.WITHDRAW
+        )
+        if otp_resp is not None:
+            return otp_resp
     proof = request.FILES.get("proof_image") or request.FILES.get("proof")
     if proof:
         ct = (getattr(proof, "content_type", "") or "").lower()
@@ -2831,6 +2879,56 @@ def portal_reels_favourites(request):
 # --- Wallet (personal) ---
 
 
+def _portal_wallet_otp_error_response(message: str):
+    return Response({"code": "otp_required", "detail": message}, status=400)
+
+
+def _portal_consume_otp_or_error(request, purpose: str) -> Response | None:
+    code = (request.data.get("otp") or "").strip()
+    if not code:
+        return _portal_wallet_otp_error_response("OTP is required for this action.")
+    phone = (request.user.phone or "").strip()
+    if not phone:
+        return Response(
+            {"detail": "Your account has no phone number on file for OTP verification."},
+            status=400,
+        )
+    try:
+        otp_service.consume(phone, purpose, code)
+    except otp_service.OTPError as e:
+        return Response({"detail": str(e)}, status=400)
+    return None
+
+
+@api_view(["POST"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated, IsPortalWalletOtpUser])
+def portal_wallet_otp_for_transfer(request):
+    phone = (request.user.phone or "").strip()
+    if not phone:
+        return Response({"detail": "No phone number on file."}, status=400)
+    otp_service.create_otp(phone, OTPVerification.Purpose.TRANSFER)
+    return Response({"ok": True})
+
+
+@api_view(["POST"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated, IsPortalWalletOtpUser])
+def portal_wallet_otp_for_withdraw(request):
+    phone = (request.user.phone or "").strip()
+    if not phone:
+        return Response({"detail": "No phone number on file."}, status=400)
+    otp_service.create_otp(phone, OTPVerification.Purpose.WITHDRAW)
+    return Response({"ok": True})
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated, IsPortalShopper])
+def portal_wallet_public_settings(request):
+    return Response(wallet_policy.public_settings_snapshot())
+
+
 def _ensure_active_personal_wallet(user):
     w = get_or_create_personal_wallet(user)
     if w.status != Wallet.Status.ACTIVE:
@@ -2980,11 +3078,30 @@ def portal_wallet_transfer(request):
         return validation_error("Recipient wallet is not active.", field="recipient")
 
     try:
+        wallet_policy.assert_wallet_type_enabled_for_wallet(from_w)
+        wallet_policy.assert_wallet_type_enabled_for_wallet(to_w)
+        wallet_policy.assert_peer_transfer_individual_allowed(from_w, to_w)
+        fee = wallet_policy.compute_peer_transfer_fee(amount)
+        wallet_policy.assert_may_credit_wallet(to_w, amount)
+        wallet_policy.assert_daily_transfer_limit(request.user, amount)
+        if wallet_policy.transfer_requires_otp(amount):
+            otp_resp = _portal_consume_otp_or_error(
+                request, OTPVerification.Purpose.TRANSFER
+            )
+            if otp_resp is not None:
+                return otp_resp
+        txn_status = (
+            WalletTransaction.Status.FLAGGED
+            if wallet_policy.transfer_should_auto_flag(amount)
+            else WalletTransaction.Status.COMPLETED
+        )
         wallet_service.execute_transfer(
             from_w,
             to_w,
             amount,
             performed_by=request.user,
+            platform_fee=fee,
+            txn_status=txn_status,
         )
     except ValueError as e:
         return Response({"detail": str(e)}, status=400)
@@ -3132,6 +3249,12 @@ def portal_wallet_withdraw(request):
     amount = _to_decimal(request.data.get("amount"), "0")
     if amount <= 0:
         return validation_error("amount must be positive", field="amount")
+    if wallet_policy.withdrawal_requires_otp():
+        otp_resp = _portal_consume_otp_or_error(
+            request, OTPVerification.Purpose.WITHDRAW
+        )
+        if otp_resp is not None:
+            return otp_resp
     raw_pid = request.data.get("payout_account_id") or request.data.get("payout_account")
     try:
         pid = int(raw_pid)
@@ -3502,37 +3625,6 @@ def _wallet_user_may_pay_from(user: User, w: Wallet) -> bool:
     return False
 
 
-def _resolve_default_checkout_wallet(user: User) -> Wallet | None:
-    if user.role == User.Role.NORMAL:
-        return get_or_create_personal_wallet(user)
-    if user.role == User.Role.CHILD:
-        fm = (
-            FamilyMember.objects.filter(
-                user=user,
-                role=FamilyMember.Role.CHILD,
-                status=FamilyMember.Status.ACTIVE,
-            )
-            .select_related("group")
-            .first()
-        )
-        if fm and fm.group_id:
-            mw = family_portal_wallet_service.get_member_family_wallet(fm.group, user)
-            if mw:
-                return mw
-        return get_or_create_personal_wallet(user)
-    if user.role == User.Role.PARENT:
-        if user_has_family_portal_access(user):
-            primary = _primary_family_group(user)
-            if primary:
-                mw = family_portal_wallet_service.get_member_family_wallet(
-                    primary, user
-                )
-                if mw:
-                    return mw
-        return get_or_create_personal_wallet(user)
-    return None
-
-
 def _payable_checkout_wallets_for_user(user: User) -> list[Wallet]:
     """Active wallets the user may charge for portal checkout (owner or family member)."""
     member_group_ids = list(
@@ -3551,7 +3643,60 @@ def _payable_checkout_wallets_for_user(user: User) -> list[Wallet]:
         .distinct()
         .order_by("type", "id")
     )
-    return [w for w in qs if _wallet_user_may_pay_from(user, w)]
+    return [
+        w
+        for w in qs
+        if _wallet_user_may_pay_from(user, w)
+        and wallet_policy.wallet_payable_under_settings(w)
+    ]
+
+
+def _resolve_default_checkout_wallet(user: User) -> Wallet | None:
+    def _first_payable(candidates: list[Wallet]) -> Wallet | None:
+        for c in candidates:
+            if c and wallet_policy.wallet_payable_under_settings(c):
+                return c
+        return None
+
+    if user.role == User.Role.NORMAL:
+        w = get_or_create_personal_wallet(user)
+        if wallet_policy.wallet_payable_under_settings(w):
+            return w
+        return _first_payable(_payable_checkout_wallets_for_user(user))
+
+    if user.role == User.Role.CHILD:
+        fm = (
+            FamilyMember.objects.filter(
+                user=user,
+                role=FamilyMember.Role.CHILD,
+                status=FamilyMember.Status.ACTIVE,
+            )
+            .select_related("group")
+            .first()
+        )
+        if fm and fm.group_id:
+            mw = family_portal_wallet_service.get_member_family_wallet(fm.group, user)
+            if mw and wallet_policy.wallet_payable_under_settings(mw):
+                return mw
+        w = get_or_create_personal_wallet(user)
+        if wallet_policy.wallet_payable_under_settings(w):
+            return w
+        return _first_payable(_payable_checkout_wallets_for_user(user))
+
+    if user.role == User.Role.PARENT:
+        if user_has_family_portal_access(user):
+            primary = _primary_family_group(user)
+            if primary:
+                mw = family_portal_wallet_service.get_member_family_wallet(
+                    primary, user
+                )
+                if mw and wallet_policy.wallet_payable_under_settings(mw):
+                    return mw
+        w = get_or_create_personal_wallet(user)
+        if wallet_policy.wallet_payable_under_settings(w):
+            return w
+        return _first_payable(_payable_checkout_wallets_for_user(user))
+    return None
 
 
 def _resolve_checkout_wallet(request) -> tuple[Wallet, str]:
@@ -3567,6 +3712,8 @@ def _resolve_checkout_wallet(request) -> tuple[Wallet, str]:
             raise ValueError("Wallet not found.")
         if not _wallet_user_may_pay_from(u, w):
             raise ValueError("This wallet cannot be used for checkout.")
+        if not wallet_policy.wallet_payable_under_settings(w):
+            raise ValueError("This wallet type is disabled for payments.")
         return w, _fund_source_label_for_wallet(w)
     w = _resolve_default_checkout_wallet(u)
     if not w:

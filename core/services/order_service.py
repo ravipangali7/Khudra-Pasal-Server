@@ -92,6 +92,7 @@ def restore_order_after_cancel(order: Order) -> None:
             reference_id=str(order.pk),
             performed_by=order.customer,
             fund_source=fs,
+            skip_max_balance=True,
         )
         pay_updates["payment_status"] = Order.PaymentStatus.REFUNDED
 

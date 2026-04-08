@@ -38,9 +38,12 @@ from core.services.family_portal_wallet_service import (
 )
 from rest_framework.authtoken.models import Token
 
+from core.tests.wallet_test_settings import relax_wallet_settings_for_tests
+
 
 class FamilyPortalFlowTests(TestCase):
     def setUp(self):
+        relax_wallet_settings_for_tests()
         self.client = APIClient()
         self.pw = "TestPass123!"
         self.leader = User.objects.create_user(

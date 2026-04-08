@@ -22,6 +22,21 @@ urlpatterns = [
         name="portal-wallet-transfer-recipients",
     ),
     path("wallet/transfer/", portal_views.portal_wallet_transfer, name="portal-wallet-transfer"),
+    path(
+        "wallet/otp/transfer/",
+        portal_views.portal_wallet_otp_for_transfer,
+        name="portal-wallet-otp-transfer",
+    ),
+    path(
+        "wallet/otp/withdraw/",
+        portal_views.portal_wallet_otp_for_withdraw,
+        name="portal-wallet-otp-withdraw",
+    ),
+    path(
+        "wallet/settings-public/",
+        portal_views.portal_wallet_public_settings,
+        name="portal-wallet-settings-public",
+    ),
     path("wallet/withdraw/", portal_views.portal_wallet_withdraw, name="portal-wallet-withdraw"),
     path(
         "wallet/withdrawals/",

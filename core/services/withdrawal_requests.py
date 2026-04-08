@@ -9,6 +9,7 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from core.models import PayoutAccount, User, Wallet, WalletWithdrawal
+from core.services import wallet_policy
 
 
 def payout_required_block_payload(user: User) -> dict | None:
@@ -78,6 +79,7 @@ def create_pending_withdrawal(
 ) -> WalletWithdrawal:
     if payout_account.user_id != payout_user.pk:
         raise ValueError("Payout account does not belong to this user.")
+    wallet_policy.validate_withdrawal_against_settings(wallet, amount)
     avail = available_withdrawal_amount(wallet)
     if amount <= 0:
         raise ValueError("Amount must be positive.")

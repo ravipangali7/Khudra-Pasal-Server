@@ -52,6 +52,21 @@ urlpatterns = [
         name="family-portal-wallet-withdrawals",
     ),
     path(
+        "wallet/otp/transfer/",
+        portal_views.portal_wallet_otp_for_transfer,
+        name="family-portal-wallet-otp-transfer",
+    ),
+    path(
+        "wallet/otp/withdraw/",
+        portal_views.portal_wallet_otp_for_withdraw,
+        name="family-portal-wallet-otp-withdraw",
+    ),
+    path(
+        "wallet/settings-public/",
+        portal_views.portal_wallet_public_settings,
+        name="family-portal-wallet-settings-public",
+    ),
+    path(
         "payout-accounts/",
         portal_views.portal_payout_accounts_list_create,
         name="family-portal-payout-accounts",

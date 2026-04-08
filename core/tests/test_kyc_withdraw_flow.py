@@ -20,10 +20,12 @@ from core.models import (
 from core.services.base import get_or_create_personal_wallet
 from core.services import wallet_service
 from core.services.vendor_service import ensure_vendor_wallet
+from core.tests.wallet_test_settings import relax_wallet_settings_for_tests
 
 
 class KycWithdrawFlowTests(TestCase):
     def setUp(self):
+        relax_wallet_settings_for_tests()
         self.client = APIClient()
         self.pw = "TestPass123!"
         self.customer = User.objects.create_user(

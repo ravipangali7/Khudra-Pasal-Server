@@ -7,6 +7,7 @@ from decimal import Decimal
 import re
 from uuid import uuid4
 
+from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import Count, FloatField, Max, Prefetch, Q, Sum
@@ -4871,11 +4872,20 @@ def admin_wallet_settings_singleton(request):
     )
     for f in numeric:
         if f in request.data:
-            setattr(ws, f, _to_decimal(request.data.get(f), str(getattr(ws, f))))
+            v = _to_decimal(request.data.get(f), str(getattr(ws, f)))
+            if v < 0:
+                v = Decimal("0")
+            setattr(ws, f, v)
     if "transaction_fee_type" in request.data:
-        ws.transaction_fee_type = request.data.get("transaction_fee_type")
+        tft = str(request.data.get("transaction_fee_type") or "").strip()
+        if tft not in (
+            WalletSettings.FeeType.FLAT,
+            WalletSettings.FeeType.PERCENTAGE,
+        ):
+            return validation_error("transaction_fee_type must be flat or percentage")
+        ws.transaction_fee_type = tft
     if "vendor_settlement_days" in request.data:
-        ws.vendor_settlement_days = int(request.data.get("vendor_settlement_days") or 0)
+        ws.vendor_settlement_days = max(0, int(request.data.get("vendor_settlement_days") or 0))
     bools = (
         "otp_for_withdrawals",
         "auto_flag_suspicious",
@@ -4889,6 +4899,12 @@ def admin_wallet_settings_singleton(request):
     for f in bools:
         if f in request.data:
             setattr(ws, f, request.data.get(f) in (True, "true", "1", 1))
+    try:
+        ws.full_clean()
+    except ValidationError as e:
+        if getattr(e, "error_dict", None):
+            return Response(e.error_dict, status=400)
+        return Response({"detail": " ".join(e.messages)}, status=400)
     ws.save()
     return Response({"ok": True})
 

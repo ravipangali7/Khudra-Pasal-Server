@@ -23,6 +23,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from core.models import (
+    OTPVerification,
     PayoutAccount,
     Attribute,
     AttributeValue,
@@ -47,7 +48,7 @@ from core.models import (
 )
 from core.serializers import ReelPublicSerializer
 from core.services.product_pricing import effective_unit_price, validate_and_set_product_discount
-from core.services import support_notification_service, support_ticket_service
+from core.services import otp_service, support_notification_service, support_ticket_service, wallet_policy
 from core.services.pos_order_service import create_pos_order, gen_pos_order_number as _gen_order_number
 from core.services.refund_service import breakdown_for_refund
 from core.services.kyc_service import sync_user_kyc_status
@@ -718,9 +719,37 @@ def vendor_withdrawals(request):
     pay_block = payout_required_block_payload(vu)
     if pay_block:
         return Response(pay_block, status=403)
+    if not wallet_policy.vendor_wallet_operations_allowed():
+        return Response(
+            {
+                "code": "vendor_wallet_disabled",
+                "detail": "Vendor wallet withdrawals are disabled in site settings.",
+            },
+            status=403,
+        )
     amount = _to_decimal(request.data.get("amount"), "0")
     if amount <= 0:
         return validation_error("amount must be positive", field="amount")
+    if wallet_policy.withdrawal_requires_otp():
+        code = (request.data.get("otp") or "").strip()
+        if not code:
+            return Response(
+                {
+                    "code": "otp_required",
+                    "detail": "OTP is required for withdrawals.",
+                },
+                status=400,
+            )
+        phone = (vu.phone or "").strip()
+        if not phone:
+            return Response(
+                {"detail": "No phone number on file for OTP verification."},
+                status=400,
+            )
+        try:
+            otp_service.consume(phone, OTPVerification.Purpose.WITHDRAW, code)
+        except otp_service.OTPError as e:
+            return Response({"detail": str(e)}, status=400)
     raw_pid = request.data.get("payout_account_id") or request.data.get("payout_account")
     try:
         pid = int(raw_pid)

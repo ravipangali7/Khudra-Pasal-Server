@@ -16,6 +16,7 @@ from core.models import (
     WalletWithdrawal,
 )
 from core.services.base import get_or_create_personal_wallet, new_wallet_txn_id
+from core.services import wallet_policy
 
 
 @transaction.atomic
@@ -29,7 +30,11 @@ def credit_wallet(
     reference_id: str = "",
     performed_by: User | None = None,
     fund_source: str = "",
+    status: str = WalletTransaction.Status.COMPLETED,
+    skip_max_balance: bool = False,
 ) -> WalletTransaction:
+    if not skip_max_balance:
+        wallet_policy.assert_may_credit_wallet(wallet, amount)
     w = Wallet.objects.select_for_update().get(pk=wallet.pk)
     Wallet.objects.filter(pk=w.pk).update(balance=F("balance") + amount)
     return WalletTransaction.objects.create(
@@ -38,7 +43,7 @@ def credit_wallet(
         type=wtype,
         amount=amount,
         description=description,
-        status=WalletTransaction.Status.COMPLETED,
+        status=status,
         reference_type=reference_type,
         reference_id=reference_id,
         performed_by=performed_by,
@@ -57,6 +62,7 @@ def debit_wallet(
     reference_id: str = "",
     performed_by: User | None = None,
     fund_source: str = "",
+    status: str = WalletTransaction.Status.COMPLETED,
 ) -> WalletTransaction:
     w = Wallet.objects.select_for_update().get(pk=wallet.pk)
     if w.balance < amount:
@@ -68,7 +74,7 @@ def debit_wallet(
         type=wtype,
         amount=amount,
         description=description,
-        status=WalletTransaction.Status.COMPLETED,
+        status=status,
         reference_type=reference_type,
         reference_id=reference_id,
         performed_by=performed_by,
@@ -237,9 +243,12 @@ def execute_transfer(
     reference_type: str = "",
     reference_id: str = "",
     family_wallet_category: FamilyWalletCategory | None = None,
+    txn_status: str = WalletTransaction.Status.COMPLETED,
+    platform_fee: Decimal = Decimal("0"),
 ) -> tuple[WalletTransaction, WalletTransaction]:
     if from_wallet.pk == to_wallet.pk:
         raise ValueError("Cannot transfer to the same wallet")
+    fee = platform_fee if platform_fee > 0 else Decimal("0")
     ref = reference_id or new_wallet_txn_id()
     out_txn = debit_wallet(
         from_wallet,
@@ -249,6 +258,7 @@ def execute_transfer(
         reference_type=reference_type or "transfer_pair",
         reference_id=ref,
         performed_by=performed_by,
+        status=txn_status,
     )
     out_txn.from_wallet = from_wallet
     out_txn.to_wallet = to_wallet
@@ -265,6 +275,8 @@ def execute_transfer(
         reference_type=reference_type or "transfer_pair",
         reference_id=ref,
         performed_by=performed_by,
+        status=txn_status,
+        skip_max_balance=False,
     )
     in_txn.from_wallet = from_wallet
     in_txn.to_wallet = to_wallet
@@ -273,6 +285,29 @@ def execute_transfer(
         in_txn.family_wallet_category = family_wallet_category
         in_fields.append("family_wallet_category")
     in_txn.save(update_fields=in_fields)
+    if fee > 0:
+        debit_wallet(
+            from_wallet,
+            fee,
+            wtype=WalletTransaction.Type.DEBIT,
+            description="Wallet peer transfer fee",
+            reference_type=reference_type or "transfer_pair",
+            reference_id=f"{ref}:fee",
+            performed_by=performed_by,
+            status=txn_status,
+        )
+        platform_w = get_or_create_platform_commission_wallet()
+        credit_wallet(
+            platform_w,
+            fee,
+            wtype=WalletTransaction.Type.COMMISSION_IN,
+            description=f"Peer transfer fee (from wallet #{from_wallet.pk})",
+            reference_type=reference_type or "transfer_pair",
+            reference_id=f"{ref}:fee",
+            performed_by=performed_by,
+            status=txn_status,
+            skip_max_balance=True,
+        )
     return out_txn, in_txn
 
 
