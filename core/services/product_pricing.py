@@ -2,13 +2,78 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.db.models import Case, DecimalField, ExpressionWrapper, F, Q, When
+from django.utils import timezone
 
-from core.models import Product
+from core.models import FlashDeal, FlashDealProduct, Product
 
 _Q2 = Decimal("0.01")
+
+
+def _quantize_price(value: Decimal) -> Decimal:
+    return value.quantize(_Q2, rounding=ROUND_HALF_UP)
+
+
+def flash_override_prices_for_products(
+    product_ids: Iterable[int],
+    now,
+) -> dict[int, Decimal]:
+    """
+    For each product id, the winning active flash override unit price (if any).
+    Picks the FlashDealProduct with highest priority deal, then newest start_at.
+    Respects FlashDeal.vendor: platform-wide (null) or must match product.seller_id.
+    """
+    ids = [int(x) for x in product_ids if x is not None]
+    if not ids:
+        return {}
+    qs = (
+        FlashDealProduct.objects.filter(
+            product_id__in=ids,
+            override_price__isnull=False,
+            flash_deal__status=FlashDeal.Status.ACTIVE,
+            flash_deal__start_at__lte=now,
+            flash_deal__end_at__gte=now,
+        )
+        .select_related("flash_deal", "product")
+        .order_by("-flash_deal__priority", "-flash_deal__start_at", "pk")
+    )
+    out: dict[int, Decimal] = {}
+    for row in qs:
+        pid = row.product_id
+        if pid in out:
+            continue
+        deal = row.flash_deal
+        if deal.vendor_id is not None:
+            sid = row.product.seller_id
+            if sid is None or sid != deal.vendor_id:
+                continue
+        out[pid] = row.override_price
+    return out
+
+
+def storefront_unit_price(
+    product: Product,
+    *,
+    now=None,
+    flash_overrides: dict[int, Decimal] | None = None,
+) -> Decimal:
+    """
+    Storefront / checkout unit price: product discount (effective_unit_price), then
+    flash deal override_price when an active flash deal sets it for this product.
+    """
+    base = effective_unit_price(product)
+    if flash_overrides is not None:
+        if product.pk in flash_overrides:
+            return _quantize_price(flash_overrides[product.pk])
+        return base
+    t = now if now is not None else timezone.now()
+    one = flash_override_prices_for_products([product.pk], t)
+    if product.pk in one:
+        return _quantize_price(one[product.pk])
+    return base
 
 
 def effective_unit_price(product: Product) -> Decimal:

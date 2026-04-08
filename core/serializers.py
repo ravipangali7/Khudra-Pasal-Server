@@ -3,7 +3,7 @@ from decimal import Decimal
 from django.core.validators import MinValueValidator
 from rest_framework import serializers
 
-from core.services.product_pricing import effective_unit_price
+from core.services.product_pricing import effective_unit_price, storefront_unit_price
 
 from core.models import (
     AutoApprovalRule,
@@ -172,13 +172,19 @@ class ProductSerializer(serializers.ModelSerializer):
         ]
 
     def get_price(self, obj):
-        return str(effective_unit_price(obj))
+        fo = self.context.get("flash_overrides")
+        return str(storefront_unit_price(obj, flash_overrides=fo))
 
     def get_original_price(self, obj):
+        fo = self.context.get("flash_overrides")
+        store = storefront_unit_price(obj, flash_overrides=fo)
         eff = effective_unit_price(obj)
-        if eff < obj.price:
-            return str(obj.price)
-        return str(eff)
+        list_p = obj.price
+        if store < list_p:
+            return str(list_p)
+        if eff < list_p:
+            return str(list_p)
+        return str(store)
 
     def get_parent_category_slug(self, obj):
         p = obj.category.parent
@@ -468,7 +474,8 @@ class CartItemSerializer(serializers.ModelSerializer):
         fields = ["id", "product", "quantity", "subtotal", "created_at", "updated_at"]
 
     def get_subtotal(self, obj):
-        unit = effective_unit_price(obj.product)
+        fo = self.context.get("flash_overrides")
+        unit = storefront_unit_price(obj.product, flash_overrides=fo)
         return float(unit * obj.quantity)
 
 
@@ -485,9 +492,10 @@ class CartSerializer(serializers.ModelSerializer):
         return sum(i.quantity for i in obj.items.all())
 
     def get_total_amount(self, obj):
+        fo = self.context.get("flash_overrides")
         total = 0
         for item in obj.items.select_related("product").all():
-            unit = effective_unit_price(item.product)
+            unit = storefront_unit_price(item.product, flash_overrides=fo)
             total += float(unit * item.quantity)
         return total
 

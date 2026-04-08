@@ -3,6 +3,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.db.models import Count, DecimalField, ExpressionWrapper, F, Prefetch, Q
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework.authentication import SessionAuthentication, TokenAuthentication
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
@@ -35,10 +36,12 @@ from core.models import (
     Vendor,
 )
 from core.services import reel_service
-from core.services.product_pricing import product_effective_price_case
+from core.services.product_pricing import (
+    flash_override_prices_for_products,
+    product_effective_price_case,
+)
 from core.services.child_shopping_guard import validate_child_may_purchase_product
 from core.services.shipping_quote import compute_shipping_fee
-from core.views.vendor.common import vendor_or_error
 from core.views.admin.admin_write_utils import absolute_media_url
 from core.serializers import (
     BannerSerializer,
@@ -54,6 +57,13 @@ from core.serializers import (
     ReelCommentSerializer,
     ReelPublicSerializer,
 )
+from core.views.vendor.common import vendor_or_error
+
+
+def _cart_serializer_context(request, cart: Cart) -> dict:
+    ids = list(cart.items.values_list("product_id", flat=True).distinct())
+    fo = flash_override_prices_for_products(ids, timezone.now())
+    return {"request": request, "flash_overrides": fo}
 
 
 class ProductPagination(PageNumberPagination):
@@ -863,7 +873,7 @@ def reel_comments(request, pk):
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 def cart_detail(request):
     cart, _ = Cart.objects.get_or_create(user=request.user)
-    return Response(CartSerializer(cart, context={"request": request}).data)
+    return Response(CartSerializer(cart, context=_cart_serializer_context(request, cart)).data)
 
 
 @api_view(["POST"])
@@ -892,7 +902,10 @@ def cart_item_add(request):
     if not created:
         item.quantity += quantity
         item.save(update_fields=["quantity", "updated_at"])
-    return Response(CartSerializer(cart, context={"request": request}).data, status=201 if created else 200)
+    return Response(
+        CartSerializer(cart, context=_cart_serializer_context(request, cart)).data,
+        status=201 if created else 200,
+    )
 
 
 @api_view(["PATCH", "DELETE"])

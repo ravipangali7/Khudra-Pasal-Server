@@ -83,7 +83,15 @@ from core.serializers import (
     ReelPublicSerializer,
 )
 from core.services.child_shopping_guard import validate_child_may_purchase_product
-from core.services.product_pricing import effective_unit_price
+from core.services.coupon_validation import (
+    line_eligible_for_coupon,
+    split_discount_across_sellers,
+    validate_and_compute_coupon,
+)
+from core.services.product_pricing import (
+    flash_override_prices_for_products,
+    storefront_unit_price,
+)
 from core.services.child_spending_service import (
     child_non_personal_spent_windows,
     validate_child_spending_limits,
@@ -3655,11 +3663,7 @@ def portal_orders_checkout(request):
 
     try:
         with transaction.atomic():
-            groups: dict[int | None, list[tuple[Product, int, Decimal, Decimal]]] = (
-                defaultdict(list)
-            )
-            cart_subtotal = Decimal("0")
-
+            parsed: list[tuple[int, int]] = []
             for raw in items:
                 pid = raw.get("product_id")
                 qty = int(raw.get("quantity") or 0)
@@ -3667,10 +3671,23 @@ def portal_orders_checkout(request):
                     return validation_error(
                         "each item needs product_id and quantity", field="items"
                     )
+                parsed.append((int(pid), qty))
+
+            now_ts = timezone.now()
+            flash_overrides = flash_override_prices_for_products(
+                [a for a, _ in parsed], now_ts
+            )
+
+            groups: dict[int | None, list[tuple[Product, int, Decimal, Decimal]]] = (
+                defaultdict(list)
+            )
+            cart_subtotal = Decimal("0")
+
+            for pid, qty in parsed:
                 p = (
                     Product.objects.select_for_update()
                     .filter(pk=pid, status=Product.Status.ACTIVE)
-                    .select_related("seller")
+                    .select_related("seller", "category")
                     .first()
                 )
                 if not p:
@@ -3692,10 +3709,43 @@ def portal_orders_checkout(request):
                     validate_child_may_purchase_product(u, p)
                 except ValueError as e:
                     return Response({"detail": str(e)}, status=400)
-                unit_price = effective_unit_price(p)
+                unit_price = storefront_unit_price(
+                    p, flash_overrides=flash_overrides
+                )
                 line_total = (unit_price * qty).quantize(Decimal("0.01"))
                 cart_subtotal += line_total
                 groups[p.seller_id].append((p, qty, unit_price, line_total))
+
+            lines_for_coupon: list[tuple[Product, int, Decimal]] = []
+            for _sid, glines in groups.items():
+                for pr, q, unit, _lt in glines:
+                    lines_for_coupon.append((pr, q, unit))
+
+            raw_coupon = request.data.get("coupon_code")
+            if raw_coupon is None:
+                raw_coupon = request.data.get("coupon")
+            coupon_obj, discount_total, coupon_err = validate_and_compute_coupon(
+                str(raw_coupon).strip() if raw_coupon is not None else None,
+                lines=lines_for_coupon,
+                flash_overrides=flash_overrides,
+            )
+            if coupon_err:
+                return Response({"detail": coupon_err}, status=400)
+
+            seller_eligible: dict[int | None, Decimal] = defaultdict(Decimal)
+            seller_discounts = {sid: Decimal("0") for sid in groups}
+            if coupon_obj is not None:
+                for sid, glines in groups.items():
+                    for pr, q, unit, _lt in glines:
+                        if line_eligible_for_coupon(
+                            coupon_obj, pr, flash_overrides
+                        ):
+                            seller_eligible[sid] += unit * q
+                seller_discounts.update(
+                    split_discount_across_sellers(
+                        discount_total, dict(seller_eligible)
+                    )
+                )
 
             delivery_fee_total = Decimal("0")
             checkout_zone: ShippingZone | None = None
@@ -3787,6 +3837,7 @@ def portal_orders_checkout(request):
                     Decimal,
                     Decimal,
                     Decimal,
+                    Decimal,
                 ]
             ] = []
             for seller_id in sorted(
@@ -3795,13 +3846,14 @@ def portal_orders_checkout(request):
                 lines = groups[seller_id]
                 v_sub = seller_subtotals[seller_id]
                 v_delivery = delivery_alloc[seller_id]
-                v_total = (v_sub + v_delivery).quantize(Decimal("0.01"))
+                d_amt = seller_discounts.get(seller_id, Decimal("0"))
+                v_total = (v_sub - d_amt + v_delivery).quantize(Decimal("0.01"))
                 if v_total < 0:
                     v_total = Decimal("0")
                 vendor = None if seller_id is None else Vendor.objects.get(pk=seller_id)
-                orders_plan.append((vendor, lines, v_sub, v_delivery, v_total))
+                orders_plan.append((vendor, lines, v_sub, v_delivery, d_amt, v_total))
 
-            grand_total_plan = sum((p[4] for p in orders_plan), Decimal("0"))
+            grand_total_plan = sum((p[5] for p in orders_plan), Decimal("0"))
             pay_wallet: Wallet | None = None
             fund_source_label = ""
             if payment_method == Order.PaymentMethod.WALLET:
@@ -3814,7 +3866,7 @@ def portal_orders_checkout(request):
                 validate_child_spending_limits(u, pay_wallet, grand_total_plan)
 
             orders_created: list[Order] = []
-            for vendor, lines, v_sub, v_delivery, v_total in orders_plan:
+            for vendor, lines, v_sub, v_delivery, d_amt, v_total in orders_plan:
                 order = Order.objects.create(
                     order_number=_gen_order_number(),
                     customer=u,
@@ -3824,7 +3876,7 @@ def portal_orders_checkout(request):
                     payment_status=Order.PaymentStatus.PENDING,
                     subtotal=v_sub,
                     delivery_fee=v_delivery,
-                    discount_amount=Decimal("0"),
+                    discount_amount=d_amt,
                     total=v_total,
                     want_delivery=bool(want_delivery),
                     notes=notes,
@@ -3889,6 +3941,10 @@ def portal_orders_checkout(request):
                     )
 
                 orders_created.append(order)
+
+            if coupon_obj is not None and orders_created:
+                canonical = min(orders_created, key=lambda o: o.pk)
+                Order.objects.filter(pk=canonical.pk).update(coupon_id=coupon_obj.pk)
 
             if payment_method in PORTAL_GATEWAY_PAYMENT_METHODS:
                 for order in orders_created:
