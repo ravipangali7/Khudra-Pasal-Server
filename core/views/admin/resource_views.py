@@ -1363,6 +1363,11 @@ def admin_refunds_list(request):
                 "order_pk": r.order_id,
                 "customer": r.customer.name,
                 "customer_phone": getattr(r.customer, "phone", "") or "",
+                "customer_avatar": (
+                    absolute_media_url(request, r.customer.avatar)
+                    if getattr(r.customer, "avatar", None)
+                    else ""
+                ),
                 "placed_portal": r.order.placed_portal or "",
                 "amount": float(r.amount),
                 "gross_amount": float(r.amount),
