@@ -48,4 +48,9 @@ def sync_user_kyc_status(user: User) -> None:
         else:
             new_status = User.KYCStatus.PENDING
 
-    User.objects.filter(pk=user.pk).update(kyc_status=new_status)
+    current = User.objects.filter(pk=user.pk).values_list("kyc_status", flat=True).first()
+    if current == new_status:
+        return
+    u = User.objects.get(pk=user.pk)
+    u.kyc_status = new_status
+    u.save(update_fields=["kyc_status"])

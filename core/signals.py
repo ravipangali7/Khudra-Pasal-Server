@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
+from django.db import transaction
 from django.db.models.signals import post_migrate, post_save, pre_save
 from django.dispatch import receiver
 from django.utils import timezone
@@ -41,7 +42,7 @@ from core.services import (
     vendor_service,
     wallet_service,
 )
-from core.services import delivery_service, notification_service
+from core.services import delivery_service, mail_service, notification_service
 
 
 def _grant_all_model_permissions_to_staff_users() -> None:
@@ -71,6 +72,22 @@ def _cache_previous_char_field(sender, instance, field_name: str, cache_attr: st
 
 
 # --- User / KYC / wallet signup ---
+@receiver(pre_save, sender=User)
+def user_pre_kyc_cache(sender, instance, **kwargs):
+    _cache_previous_char_field(sender, instance, "kyc_status", "_previous_kyc_status")
+
+
+@receiver(post_save, sender=User)
+def user_kyc_status_email(sender, instance, created, **kwargs):
+    if created:
+        return
+    prev = getattr(instance, "_previous_kyc_status", None)
+    if prev is None or instance.kyc_status == prev:
+        return
+    uid = instance.pk
+    transaction.on_commit(lambda u=uid: mail_service.send_kyc_status_change_email(u))
+
+
 @receiver(post_save, sender=User)
 def user_signup_bonus(sender, instance, created, **kwargs):
     if created:
@@ -141,6 +158,10 @@ def order_pre(sender, instance, **kwargs):
 
 @receiver(post_save, sender=Order)
 def order_post(sender, instance, created, **kwargs):
+    if created:
+        oid = instance.pk
+        transaction.on_commit(lambda o=oid: mail_service.send_order_placed_emails(o))
+
     prev = getattr(instance, "_previous_order_status", None)
     if instance.status == Order.Status.CANCELLED and prev != Order.Status.CANCELLED:
         order_service.restore_order_after_cancel(instance)
