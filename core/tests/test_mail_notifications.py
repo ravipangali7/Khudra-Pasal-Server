@@ -2,7 +2,7 @@
 
 import os
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.core.management import call_command
 from django.db import transaction
@@ -39,6 +39,27 @@ class MailServiceConfigTests(TestCase):
         with patch.dict(os.environ, {"KP_SMTP_HOST": "env.example.com"}):
             self.assertEqual(mail_service.effective_smtp_host(site), "env.example.com")
         self.assertEqual(mail_service.effective_smtp_host(site), "db.example.com")
+
+    @patch("core.services.mail_service.EmailMultiAlternatives.send")
+    @patch("core.services.mail_service.get_connection")
+    def test_gmail_smtp_password_spaces_removed(self, mock_get_connection, _mock_send):
+        site = SiteSettings.load()
+        site.smtp_host = "smtp.gmail.com"
+        site.smtp_port = 587
+        site.smtp_username = "sender@gmail.com"
+        site.smtp_password = "ab cd ef gh ij kl mn op"
+        site.save(
+            update_fields=[
+                "smtp_host",
+                "smtp_port",
+                "smtp_username",
+                "smtp_password",
+            ]
+        )
+        mock_get_connection.return_value = MagicMock()
+        mail_service.send_html_email("Hi", "<p>x</p>", ["a@b.com"], site=site)
+        _args, kwargs = mock_get_connection.call_args
+        self.assertEqual(kwargs["password"], "abcdefghijklmnop")
 
     @patch("core.services.mail_service.EmailMultiAlternatives.send")
     def test_send_html_uses_kp_smtp_host_when_db_empty(self, mock_send):

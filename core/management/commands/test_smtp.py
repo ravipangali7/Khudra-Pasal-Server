@@ -1,5 +1,7 @@
 """Send a test message using the same SMTP config as transactional mail."""
 
+import smtplib
+
 from django.core.management.base import BaseCommand
 
 from core.models import SiteSettings
@@ -36,11 +38,21 @@ class Command(BaseCommand):
                 self.style.ERROR("No recipient: pass --to=email or set site_email in SiteSettings.")
             )
             return
-        send_html_email(
-            "KhudraPasal SMTP test",
-            "<p>If you received this, SMTP authentication and delivery are working.</p>",
-            [to],
-            site=site,
-            raise_exceptions=True,
-        )
+        try:
+            send_html_email(
+                "KhudraPasal SMTP test",
+                "<p>If you received this, SMTP authentication and delivery are working.</p>",
+                [to],
+                site=site,
+                raise_exceptions=True,
+            )
+        except smtplib.SMTPAuthenticationError:
+            self.stderr.write(
+                self.style.ERROR(
+                    "SMTP login rejected (535). For Gmail/Google Workspace use an App Password "
+                    "(not your account password) and set KP_SMTP_USERNAME + KP_SMTP_PASSWORD on the server. "
+                    "See SiteSettings SMTP help text or run with DEBUG logs."
+                )
+            )
+            raise
         self.stdout.write(self.style.SUCCESS(f"Sent test email to {to}"))

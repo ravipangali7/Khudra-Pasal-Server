@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import smtplib
 from decimal import Decimal
 
 from django.conf import settings
@@ -30,19 +31,42 @@ def _coalesce_env(env_key: str, db_value: str) -> str:
     """Non-empty env overrides DB; unset or empty env keeps DB value."""
     raw = os.environ.get(env_key)
     if raw is not None:
-        s = raw.strip()
+        s = _normalize_smtp_text(raw)
         if s:
             return s
-    return (db_value or "").strip()
+    return _normalize_smtp_text(db_value or "")
+
+
+def _normalize_smtp_text(value: str) -> str:
+    """Strip BOM/newlines and optional outer quotes (common .env / editor issues)."""
+    s = (value or "").strip().strip("\ufeff").strip()
+    if len(s) >= 2 and s[0] == s[-1] == '"' and '"' not in s[1:-1]:
+        s = s[1:-1].strip()
+    return s
+
+
+def _is_google_smtp_host(host: str) -> bool:
+    h = (host or "").lower().strip()
+    return h in ("smtp.gmail.com", "smtp.googlemail.com")
 
 
 def _effective_smtp_password(site: SiteSettings) -> str | None:
     if "KP_SMTP_PASSWORD" in os.environ:
-        p = os.environ["KP_SMTP_PASSWORD"].strip()
+        p = _normalize_smtp_text(os.environ["KP_SMTP_PASSWORD"])
         if p:
-            return p
-    raw = (site.smtp_password or "").strip()
-    return raw or None
+            raw = p
+        else:
+            raw = None
+    else:
+        raw = None
+    if raw is None:
+        raw = _normalize_smtp_text(site.smtp_password or "") or None
+    if not raw:
+        return None
+    host = _coalesce_env("KP_SMTP_HOST", site.smtp_host)
+    if _is_google_smtp_host(host):
+        return raw.replace(" ", "")
+    return raw
 
 
 def effective_smtp_host(site: SiteSettings) -> str:
@@ -121,6 +145,24 @@ def send_html_email(
     msg.attach_alternative(html_body, "text/html")
     try:
         msg.send()
+    except smtplib.SMTPAuthenticationError:
+        logger.exception("Failed to send email subject=%r to=%r", subject, to_list)
+        host = effective_smtp_host(site)
+        if _is_google_smtp_host(host):
+            logger.warning(
+                "Gmail SMTP rejected the login (535). Fix: Google Account → Security → "
+                "2-Step Verification → App passwords → generate a mail app password. "
+                "Set KP_SMTP_USERNAME to the full Google address and KP_SMTP_PASSWORD "
+                "to that 16-character app password on the server (not your normal password). "
+                "KP_SMTP_FROM_EMAIL must be that same address or a verified 'Send mail as' alias."
+            )
+        else:
+            logger.warning(
+                "SMTP authentication failed (535). Verify KP_SMTP_USERNAME / "
+                "KP_SMTP_PASSWORD (or SiteSettings) match your provider."
+            )
+        if raise_exceptions:
+            raise
     except Exception:
         logger.exception("Failed to send email subject=%r to=%r", subject, to_list)
         if raise_exceptions:
