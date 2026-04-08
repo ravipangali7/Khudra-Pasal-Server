@@ -17,7 +17,7 @@ from core.services.coupon_validation import (
     split_discount_across_sellers,
     validate_and_compute_coupon,
 )
-from core.services.product_pricing import flash_override_prices_for_products, storefront_unit_price
+from core.services.product_pricing import flash_pricing_for_products, storefront_unit_price
 from core.services.shipping_quote import compute_shipping_fee
 
 
@@ -25,6 +25,7 @@ from core.services.shipping_quote import compute_shipping_fee
 class ResolvedCheckoutCart:
     groups: dict[int | None, list[tuple[Product, int, Decimal, Decimal]]]
     flash_overrides: dict[int, Decimal]
+    flash_deal_by_product_id: dict[int, int]
     cart_subtotal: Decimal
     list_subtotal: Decimal
     flash_product_ids: list[int]
@@ -52,7 +53,9 @@ def resolve_checkout_lines(
     strict_stock: bool,
 ) -> ResolvedCheckoutCart:
     now_ts = timezone.now()
-    flash_overrides = flash_override_prices_for_products([a for a, _ in parsed], now_ts)
+    flash_rows = flash_pricing_for_products([a for a, _ in parsed], now_ts)
+    flash_overrides = {pid: row.unit for pid, row in flash_rows.items()}
+    flash_deal_by_product_id = {pid: row.flash_deal_id for pid, row in flash_rows.items()}
     groups: dict[int | None, list[tuple[Product, int, Decimal, Decimal]]] = defaultdict(
         list
     )
@@ -94,6 +97,7 @@ def resolve_checkout_lines(
     return ResolvedCheckoutCart(
         groups=dict(groups),
         flash_overrides=flash_overrides,
+        flash_deal_by_product_id=flash_deal_by_product_id,
         cart_subtotal=cart_subtotal,
         list_subtotal=list_subtotal,
         flash_product_ids=flash_product_ids,
@@ -111,21 +115,18 @@ def _lines_for_coupon_from_groups(
     return out
 
 
-def non_flash_storefront_subtotal(
+def storefront_merchandise_subtotal(
     groups: dict[int | None, list[tuple[Product, int, Decimal, Decimal]]],
-    flash_overrides: dict[int, Decimal],
 ) -> Decimal:
     t = Decimal("0")
     for _sid, glines in groups.items():
-        for pr, q, unit, _lt in glines:
-            if pr.pk not in flash_overrides:
-                t += unit * q
+        for _pr, q, unit, _lt in glines:
+            t += unit * q
     return t.quantize(Decimal("0.01"))
 
 
 def apply_coupon_split(
     groups: dict[int | None, list[tuple[Product, int, Decimal, Decimal]]],
-    flash_overrides: dict[int, Decimal],
     raw_coupon: Any,
     *,
     strict_coupon: bool,
@@ -138,7 +139,7 @@ def apply_coupon_split(
 ]:
     """
     Returns coupon_obj, discount_total, coupon_error (if lenient invalid code),
-    seller_discounts, eligible_subtotal (for applied coupon or non-flash base).
+    seller_discounts, eligible_subtotal (merchandise subtotal eligible for coupon, or full cart).
     """
     lines_for_coupon = _lines_for_coupon_from_groups(groups)
     code = (
@@ -149,12 +150,11 @@ def apply_coupon_split(
     coupon_obj, discount_total, coupon_err = validate_and_compute_coupon(
         code,
         lines=lines_for_coupon,
-        flash_overrides=flash_overrides,
     )
     if coupon_err:
         if strict_coupon:
             raise ValueError(coupon_err)
-        base = non_flash_storefront_subtotal(groups, flash_overrides)
+        base = storefront_merchandise_subtotal(groups)
         return None, Decimal("0"), coupon_err, {sid: Decimal("0") for sid in groups}, base
 
     seller_discounts = {sid: Decimal("0") for sid in groups}
@@ -162,16 +162,14 @@ def apply_coupon_split(
         seller_eligible: dict[int | None, Decimal] = defaultdict(Decimal)
         for sid, glines in groups.items():
             for pr, q, unit, _lt in glines:
-                if line_eligible_for_coupon(coupon_obj, pr, flash_overrides):
+                if line_eligible_for_coupon(coupon_obj, pr):
                     seller_eligible[sid] += unit * q
         seller_discounts.update(
             split_discount_across_sellers(discount_total, dict(seller_eligible))
         )
-        eligible = eligible_subtotal_for_coupon(
-            coupon_obj, lines_for_coupon, flash_overrides
-        )
+        eligible = eligible_subtotal_for_coupon(coupon_obj, lines_for_coupon)
     else:
-        eligible = non_flash_storefront_subtotal(groups, flash_overrides)
+        eligible = storefront_merchandise_subtotal(groups)
 
     return coupon_obj, discount_total, None, seller_discounts, eligible
 
@@ -283,3 +281,54 @@ def build_orders_plan(
         orders_plan.append((vendor, lines, v_sub, v_delivery, d_amt, v_total))
     grand_total = sum((p[5] for p in orders_plan), Decimal("0"))
     return orders_plan, grand_total
+
+
+def savings_from_flash_vs_product_sale(
+    groups: dict[int | None, list[tuple[Product, int, Decimal, Decimal]]],
+) -> Decimal:
+    """Merchandise savings from flash vs product-level sale price (per unit, before coupon)."""
+    from core.services.product_pricing import effective_unit_price
+
+    t = Decimal("0")
+    for _sid, glines in groups.items():
+        for p, qty, unit_flash, _lt in glines:
+            eff = effective_unit_price(p)
+            if eff > unit_flash:
+                t += (eff - unit_flash) * qty
+    return t.quantize(Decimal("0.01"))
+
+
+def checkout_quote_line_rows(
+    groups: dict[int | None, list[tuple[Product, int, Decimal, Decimal]]],
+    seller_discounts: dict[int | None, Decimal],
+    flash_deal_by_product_id: dict[int, int],
+    seller_sort_key,
+) -> list[dict[str, Any]]:
+    from core.services.coupon_validation import split_seller_discount_across_lines
+    from core.services.product_pricing import effective_unit_price
+
+    rows: list[dict[str, Any]] = []
+    for sid in sorted(groups.keys(), key=seller_sort_key):
+        glines = groups[sid]
+        disc = seller_discounts.get(sid, Decimal("0"))
+        shares = split_seller_discount_across_lines(glines, disc)
+        for j, (p, qty, unit_flash, line_tot) in enumerate(glines):
+            list_u = p.price
+            eff = effective_unit_price(p)
+            fid = flash_deal_by_product_id.get(p.pk)
+            coup = shares[j]
+            line_final = (line_tot - coup).quantize(Decimal("0.01"))
+            rows.append(
+                {
+                    "product_id": p.pk,
+                    "quantity": qty,
+                    "list_unit": float(list_u),
+                    "unit_after_product_sale": float(eff),
+                    "unit_after_flash": float(unit_flash),
+                    "line_subtotal_after_flash": float(line_tot),
+                    "flash_deal_id": fid,
+                    "coupon_discount": float(coup),
+                    "line_total": float(line_final),
+                }
+            )
+    return rows

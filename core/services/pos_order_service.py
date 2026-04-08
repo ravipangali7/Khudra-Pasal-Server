@@ -97,7 +97,10 @@ def create_pos_order(
             order=order,
             product=p,
             quantity=qty,
+            list_unit_price=p.price,
+            flash_deal_id=None,
             unit_price=unit_price,
+            coupon_discount_amount=Decimal("0"),
             total_price=line_total,
         )
         seen_product_ids.add(p.pk)

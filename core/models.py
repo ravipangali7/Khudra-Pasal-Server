@@ -1376,6 +1376,12 @@ class Coupon(models.Model):
     category = models.ForeignKey(
         Category, null=True, blank=True, on_delete=models.SET_NULL
     )
+    products = models.ManyToManyField(
+        "Product",
+        blank=True,
+        related_name="coupon_targets",
+        help_text="If non-empty, coupon applies only to these products (and vendor/category rules).",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self) -> str:
@@ -1647,8 +1653,36 @@ class OrderItem(models.Model):
     )
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
     quantity = models.PositiveIntegerField()
-    unit_price = models.DecimalField(max_digits=10, decimal_places=2)
-    total_price = models.DecimalField(max_digits=10, decimal_places=2)
+    list_unit_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Product list price at checkout (before product-level sale).",
+    )
+    flash_deal = models.ForeignKey(
+        "FlashDeal",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="order_items",
+    )
+    unit_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Unit price after flash (and product sale); before coupon allocation.",
+    )
+    coupon_discount_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="This line's share of order-level coupon discount.",
+    )
+    total_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Line total after coupon: unit_price × quantity − coupon_discount_amount.",
+    )
 
     def __str__(self) -> str:
         return f"{self.order} — {self.product}"
@@ -2498,6 +2532,12 @@ class SiteSettings(models.Model):
     new_registrations = models.BooleanField(default=True)
     kyc_required = models.BooleanField(default=True)
     pos_enabled = models.BooleanField(default=True)
+    smtp_host = models.CharField(max_length=255, blank=True)
+    smtp_port = models.PositiveIntegerField(null=True, blank=True)
+    smtp_username = models.CharField(max_length=255, blank=True)
+    smtp_password = models.CharField(max_length=255, blank=True)
+    smtp_from_name = models.CharField(max_length=150, blank=True)
+    smtp_from_email = models.EmailField(blank=True)
     search_placeholders = models.JSONField(
         default=list,
         blank=True,

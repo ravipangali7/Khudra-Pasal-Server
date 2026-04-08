@@ -26,19 +26,24 @@ def product_in_coupon_category(product: Product, category_id: int) -> bool:
     return False
 
 
-def line_eligible_for_coupon(
-    coupon: Coupon,
-    product: Product,
-    flash_overrides: dict[int, Decimal],
-) -> bool:
-    """Flash override lines do not stack with coupons; vendor/category scope applies."""
-    if product.pk in flash_overrides:
-        return False
+def _coupon_restricted_product_ids(coupon: Coupon) -> set[int] | None:
+    """Non-empty set means coupon only applies to those products; None = no product whitelist."""
+    ids = set(coupon.products.values_list("pk", flat=True))
+    if not ids:
+        return None
+    return ids
+
+
+def line_eligible_for_coupon(coupon: Coupon, product: Product) -> bool:
     if coupon.vendor_id is not None:
         if product.seller_id is None or product.seller_id != coupon.vendor_id:
             return False
     if coupon.category_id is not None:
         if not product_in_coupon_category(product, coupon.category_id):
+            return False
+    restricted = _coupon_restricted_product_ids(coupon)
+    if restricted is not None:
+        if product.pk not in restricted:
             return False
     return True
 
@@ -46,11 +51,10 @@ def line_eligible_for_coupon(
 def eligible_subtotal_for_coupon(
     coupon: Coupon,
     lines: list[tuple[Product, int, Decimal]],
-    flash_overrides: dict[int, Decimal],
 ) -> Decimal:
     total = Decimal("0")
     for product, qty, unit in lines:
-        if not line_eligible_for_coupon(coupon, product, flash_overrides):
+        if not line_eligible_for_coupon(coupon, product):
             continue
         total += unit * qty
     return _quantize(total)
@@ -74,7 +78,6 @@ def validate_and_compute_coupon(
     code: str | None,
     *,
     lines: list[tuple[Product, int, Decimal]],
-    flash_overrides: dict[int, Decimal],
 ) -> tuple[Coupon | None, Decimal, str | None]:
     """
     Returns (coupon_or_none, discount_amount, error_message).
@@ -83,7 +86,12 @@ def validate_and_compute_coupon(
     if not code or not str(code).strip():
         return None, Decimal("0"), None
     raw = str(code).strip()
-    c = Coupon.objects.select_related("vendor", "category").filter(code__iexact=raw).first()
+    c = (
+        Coupon.objects.select_related("vendor", "category")
+        .prefetch_related("products")
+        .filter(code__iexact=raw)
+        .first()
+    )
     if not c:
         return None, Decimal("0"), "Invalid coupon code."
     if c.status != Coupon.Status.ACTIVE:
@@ -94,7 +102,7 @@ def validate_and_compute_coupon(
     if c.usage_limit is not None and c.used_count >= c.usage_limit:
         return None, Decimal("0"), "This coupon has reached its usage limit."
 
-    eligible = eligible_subtotal_for_coupon(c, lines, flash_overrides)
+    eligible = eligible_subtotal_for_coupon(c, lines)
     if eligible < c.min_order:
         return None, Decimal("0"), (
             f"Minimum order amount for this coupon is Rs. {c.min_order} on eligible items."
@@ -128,4 +136,31 @@ def split_discount_across_sellers(
             part = _quantize(discount_total * el / total_eligible)
             acc += part
         out[sid] = part
+    return out
+
+
+def split_seller_discount_across_lines(
+    lines: list[tuple[Product, int, Decimal, Decimal]],
+    seller_discount: Decimal,
+) -> list[Decimal]:
+    """
+    Proportional coupon share per line within one seller group.
+    lines: (product, qty, unit_price, line_total_before_coupon)
+    Returns one Decimal per line (same order), summing to seller_discount.
+    """
+    if seller_discount <= 0 or not lines:
+        return [Decimal("0")] * len(lines)
+    weights = [unit * qty for _p, qty, unit, _lt in lines]
+    total_w = sum(weights, Decimal("0"))
+    if total_w <= 0:
+        return [Decimal("0")] * len(lines)
+    out: list[Decimal] = []
+    acc = Decimal("0")
+    for i, w in enumerate(weights):
+        if i == len(weights) - 1:
+            out.append(_quantize(seller_discount - acc))
+        else:
+            part = _quantize(seller_discount * w / total_w)
+            acc += part
+            out.append(part)
     return out

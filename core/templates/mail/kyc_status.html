@@ -1,0 +1,11 @@
+{% extends "mail/base.html" %}
+{% block body %}
+<h1 style="margin:0 0 8px;font-size:22px;font-weight:600;color:#0f766e;">KYC verification update</h1>
+<p style="margin:0 0 16px;color:#52525b;">Hi {{ user_name }}, your identity verification status is now:</p>
+<p style="margin:0 0 16px;font-size:18px;font-weight:600;color:#18181b;">{{ status_label }}</p>
+<p style="margin:0 0 16px;color:#52525b;">{{ status_message }}</p>
+{% if rejection_reason %}
+<p style="margin:0 0 16px;padding:12px 14px;background:#fef2f2;border-radius:6px;font-size:14px;color:#991b1b;border-left:4px solid #dc2626;"><strong>Note from review:</strong><br>{{ rejection_reason }}</p>
+{% endif %}
+<p style="margin:24px 0 0;font-size:14px;">View details in your <a href="{{ kyc_url }}" style="color:#0d9488;">KYC section</a>.</p>
+{% endblock %}

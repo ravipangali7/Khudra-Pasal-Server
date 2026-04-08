@@ -84,10 +84,13 @@ from core.serializers import (
 from core.services.portal_checkout_pricing import (
     apply_coupon_split,
     build_orders_plan,
+    checkout_quote_line_rows,
     compute_delivery_allocation,
     parse_checkout_items,
     resolve_checkout_lines,
+    savings_from_flash_vs_product_sale,
 )
+from core.services.coupon_validation import split_seller_discount_across_lines
 from core.services.child_spending_service import (
     child_non_personal_spent_windows,
     validate_child_spending_limits,
@@ -3668,7 +3671,6 @@ def portal_orders_checkout_quote(request):
     coupon_obj, discount_total, coupon_err, seller_discounts, eligible_subtotal = (
         apply_coupon_split(
             groups,
-            resolved.flash_overrides,
             raw_coupon,
             strict_coupon=False,
         )
@@ -3696,18 +3698,27 @@ def portal_orders_checkout_quote(request):
     savings = resolved.list_subtotal - resolved.cart_subtotal
     if savings < 0:
         savings = Decimal("0")
+    flash_save = savings_from_flash_vs_product_sale(groups)
+    line_rows = checkout_quote_line_rows(
+        groups,
+        seller_discounts,
+        resolved.flash_deal_by_product_id,
+        _portal_checkout_group_seller_sort_key,
+    )
 
     return Response(
         {
             "subtotal": float(resolved.cart_subtotal),
             "list_subtotal": float(resolved.list_subtotal),
             "savings_vs_list": float(savings),
+            "savings_flash": float(flash_save),
             "delivery_fee": float(delivery_fee_total),
             "coupon_discount": float(discount_total),
             "eligible_subtotal": float(eligible_subtotal),
             "total": float(grand_total),
             "coupon_error": coupon_err,
             "flash_product_ids": resolved.flash_product_ids,
+            "lines": line_rows,
             "stock_warnings": resolved.stock_warnings,
             "delivery_error": d_err,
         }
@@ -3764,7 +3775,6 @@ def portal_orders_checkout(request):
                 coupon_obj, _discount_total, _coupon_err, seller_discounts, _eligible = (
                     apply_coupon_split(
                         groups,
-                        resolved.flash_overrides,
                         raw_coupon,
                         strict_coupon=True,
                     )
@@ -3847,13 +3857,19 @@ def portal_orders_checkout(request):
                     ),
                 )
 
-                for p, qty, unit_price, line_total in lines:
+                line_coupons = split_seller_discount_across_lines(lines, d_amt)
+                for j, (p, qty, unit_price, line_total) in enumerate(lines):
+                    coup_line = line_coupons[j]
+                    fd_pk = resolved.flash_deal_by_product_id.get(p.pk)
                     OrderItem.objects.create(
                         order=order,
                         product=p,
                         quantity=qty,
+                        list_unit_price=p.price,
+                        flash_deal_id=fd_pk,
                         unit_price=unit_price,
-                        total_price=line_total,
+                        coupon_discount_amount=coup_line,
+                        total_price=(line_total - coup_line).quantize(Decimal("0.01")),
                     )
                     product_service.sync_stock_status(p)
 

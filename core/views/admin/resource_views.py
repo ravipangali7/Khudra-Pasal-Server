@@ -1134,26 +1134,48 @@ def admin_product_approvals_list(request):
 def admin_coupons_list(request):
     if err := _forbidden(request):
         return err
-    qs = Coupon.objects.select_related("vendor", "category").order_by("-created_at")
+    qs = (
+        Coupon.objects.select_related("vendor", "category")
+        .prefetch_related("products")
+        .order_by("-created_at")
+    )
     paginator, page = _paginate(request, qs)
-    rows = [
-        {
-            "id": str(c.pk),
-            "code": c.code,
-            "type": c.type,
-            "value": float(c.value),
-            "minOrder": float(c.min_order),
-            "used": c.used_count,
-            "limit": c.usage_limit,
-            "status": c.status,
-            "expires": c.expires_at.isoformat() if c.expires_at else "",
-            "vendor": c.vendor.store_name if c.vendor_id else "All",
-            "vendor_id": str(c.vendor_id) if c.vendor_id else "",
-            "category": c.category.name if c.category_id else "All",
-            "category_id": str(c.category_id) if c.category_id else "",
-        }
-        for c in page
-    ]
+    rows = []
+    for c in page:
+        deal_prods = list(c.products.all())
+        pids = [str(p.pk) for p in deal_prods]
+        preview_cap = 5
+        products_preview = []
+        for p in deal_prods[:preview_cap]:
+            products_preview.append(
+                {
+                    "id": str(p.pk),
+                    "name": p.name,
+                    "price": float(p.price),
+                    "image_url": absolute_media_url(request, p.image) if p.image else "",
+                }
+            )
+        rows.append(
+            {
+                "id": str(c.pk),
+                "code": c.code,
+                "type": c.type,
+                "value": float(c.value),
+                "minOrder": float(c.min_order),
+                "used": c.used_count,
+                "limit": c.usage_limit,
+                "status": c.status,
+                "expires": c.expires_at.isoformat() if c.expires_at else "",
+                "vendor": c.vendor.store_name if c.vendor_id else "All",
+                "vendor_id": str(c.vendor_id) if c.vendor_id else "",
+                "category": c.category.name if c.category_id else "All",
+                "category_id": str(c.category_id) if c.category_id else "",
+                "products": len(deal_prods),
+                "product_ids": pids,
+                "products_preview": products_preview,
+                "products_preview_more": max(0, len(deal_prods) - preview_cap),
+            }
+        )
     return paginator.get_paginated_response(rows)
 
 
@@ -3843,6 +3865,22 @@ def _flash_deal_set_products(deal: FlashDeal, product_ids) -> None:
             FlashDealProduct.objects.create(flash_deal=deal, product_id=pid)
 
 
+def _coupon_set_products(coupon: Coupon, product_ids) -> None:
+    if product_ids is None:
+        return
+    if not isinstance(product_ids, list):
+        return
+    pids: list[int] = []
+    for raw in product_ids:
+        try:
+            pid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if Product.objects.filter(pk=pid).exists():
+            pids.append(pid)
+    coupon.products.set(pids)
+
+
 def _notification_recipient_qs(target: str):
     if target == Notification.Target.VENDORS:
         return User.objects.filter(vendor_profile__isnull=False).distinct()
@@ -3980,6 +4018,7 @@ def admin_coupon_create(request):
         vendor=vendor,
         category=cat,
     )
+    _coupon_set_products(row, request.data.get("product_ids"))
     return Response({"id": str(row.pk)}, status=201)
 
 
@@ -4026,6 +4065,8 @@ def admin_coupon_detail_write(request, pk):
         cid = request.data.get("category_id")
         row.category = Category.objects.filter(pk=cid).first() if cid else None
     row.save()
+    if "product_ids" in request.data:
+        _coupon_set_products(row, request.data.get("product_ids"))
     return Response({"id": str(row.pk)})
 
 
@@ -4912,6 +4953,12 @@ def admin_site_settings_singleton(request):
                 "pos_enabled": site.pos_enabled,
                 "search_placeholders": site.search_placeholders or [],
                 "admin_extras": site.admin_extras or {},
+                "smtp_host": site.smtp_host or "",
+                "smtp_port": site.smtp_port if site.smtp_port is not None else None,
+                "smtp_username": site.smtp_username or "",
+                "smtp_from_name": site.smtp_from_name or "",
+                "smtp_from_email": site.smtp_from_email or "",
+                "smtp_password_set": bool((site.smtp_password or "").strip()),
             }
         )
     if "site_name" in request.data:
@@ -4945,6 +4992,28 @@ def admin_site_settings_singleton(request):
         sp = request.data.get("search_placeholders")
         if isinstance(sp, list):
             site.search_placeholders = [str(x)[:120] for x in sp][:50]
+    if "smtp_host" in request.data:
+        site.smtp_host = (request.data.get("smtp_host") or "").strip()[:255]
+    if "smtp_port" in request.data:
+        raw_port = request.data.get("smtp_port")
+        if raw_port in (None, ""):
+            site.smtp_port = None
+        else:
+            try:
+                p = int(raw_port)
+                site.smtp_port = max(1, min(p, 65535))
+            except (TypeError, ValueError):
+                pass
+    if "smtp_username" in request.data:
+        site.smtp_username = (request.data.get("smtp_username") or "").strip()[:255]
+    if "smtp_password" in request.data:
+        pw = request.data.get("smtp_password")
+        if pw is not None and str(pw).strip() != "":
+            site.smtp_password = str(pw)[:255]
+    if "smtp_from_name" in request.data:
+        site.smtp_from_name = (request.data.get("smtp_from_name") or "").strip()[:150]
+    if "smtp_from_email" in request.data:
+        site.smtp_from_email = (request.data.get("smtp_from_email") or "").strip()[:254]
     if "admin_extras" in request.data:
         ex = request.data.get("admin_extras")
         if isinstance(ex, dict):

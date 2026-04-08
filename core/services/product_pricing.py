@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.db.models import Case, DecimalField, ExpressionWrapper, F, Q, When
@@ -17,14 +18,27 @@ def _quantize_price(value: Decimal) -> Decimal:
     return value.quantize(_Q2, rounding=ROUND_HALF_UP)
 
 
-def flash_override_prices_for_products(
+@dataclass(frozen=True)
+class FlashPricingRow:
+    """Winning active flash line: final storefront unit and deal id for attribution."""
+
+    unit: Decimal
+    flash_deal_id: int
+
+
+def flash_pricing_for_products(
     product_ids: Iterable[int],
     now,
-) -> dict[int, Decimal]:
+) -> dict[int, FlashPricingRow]:
     """
-    For each product id, the winning active flash override unit price (if any).
-    Picks the FlashDealProduct with highest priority deal, then newest start_at.
+    For each product id, the winning active flash deal line (if any).
+    Picks FlashDealProduct with highest priority deal, then newest start_at.
     Respects FlashDeal.vendor: platform-wide (null) or must match product.seller_id.
+
+    - If override_price is set: use it as the flash unit.
+    - Else: flash_candidate = list_price × (1 − deal.discount_percent/100);
+      charged unit = min(effective_unit_price(product), flash_candidate) so flash
+      never raises the price above an existing product-level sale.
     """
     ids = [int(x) for x in product_ids if x is not None]
     if not ids:
@@ -32,7 +46,6 @@ def flash_override_prices_for_products(
     qs = (
         FlashDealProduct.objects.filter(
             product_id__in=ids,
-            override_price__isnull=False,
             flash_deal__status=FlashDeal.Status.ACTIVE,
             flash_deal__start_at__lte=now,
             flash_deal__end_at__gte=now,
@@ -40,7 +53,7 @@ def flash_override_prices_for_products(
         .select_related("flash_deal", "product")
         .order_by("-flash_deal__priority", "-flash_deal__start_at", "pk")
     )
-    out: dict[int, Decimal] = {}
+    out: dict[int, FlashPricingRow] = {}
     for row in qs:
         pid = row.product_id
         if pid in out:
@@ -50,8 +63,42 @@ def flash_override_prices_for_products(
             sid = row.product.seller_id
             if sid is None or sid != deal.vendor_id:
                 continue
-        out[pid] = row.override_price
+        pr = row.product
+        list_price = pr.price
+        eff = effective_unit_price(pr)
+        if row.override_price is not None:
+            unit = _quantize_price(row.override_price)
+        else:
+            pct = deal.discount_percent
+            if pct is None or pct <= 0:
+                continue
+            if pct >= 100:
+                flash_candidate = Decimal("0.00")
+            else:
+                flash_candidate = list_price * (Decimal(100) - pct) / Decimal(100)
+            flash_candidate = _quantize_price(flash_candidate)
+            unit = min(eff, flash_candidate)
+        out[pid] = FlashPricingRow(
+            unit=_quantize_price(unit),
+            flash_deal_id=deal.pk,
+        )
     return out
+
+
+def flash_override_prices_for_products(
+    product_ids: Iterable[int],
+    now,
+) -> dict[int, Decimal]:
+    """Map product_id → flash storefront unit (compat alias for flash_pricing_for_products)."""
+    return {pid: row.unit for pid, row in flash_pricing_for_products(product_ids, now).items()}
+
+
+def flash_deal_ids_for_products(
+    product_ids: Iterable[int],
+    now,
+) -> dict[int, int]:
+    """Map product_id → winning flash deal pk (subset of products with an active flash line)."""
+    return {pid: row.flash_deal_id for pid, row in flash_pricing_for_products(product_ids, now).items()}
 
 
 def storefront_unit_price(
@@ -70,9 +117,9 @@ def storefront_unit_price(
             return _quantize_price(flash_overrides[product.pk])
         return base
     t = now if now is not None else timezone.now()
-    one = flash_override_prices_for_products([product.pk], t)
+    one = flash_pricing_for_products([product.pk], t)
     if product.pk in one:
-        return _quantize_price(one[product.pk])
+        return one[product.pk].unit
     return base
 
 

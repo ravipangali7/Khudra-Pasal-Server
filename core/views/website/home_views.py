@@ -37,9 +37,11 @@ from core.models import (
 )
 from core.services import reel_service
 from core.services.product_pricing import (
+    flash_deal_ids_for_products,
     flash_override_prices_for_products,
     product_effective_price_case,
 )
+from core.services.storefront_coupon_hints import coupon_hints_for_product_ids
 from core.services.child_shopping_guard import validate_child_may_purchase_product
 from core.services.shipping_quote import compute_shipping_fee
 from core.views.admin.admin_write_utils import absolute_media_url
@@ -60,10 +62,31 @@ from core.serializers import (
 from core.views.vendor.common import vendor_or_error
 
 
+def _storefront_product_list_context(request, product_ids: list[int]) -> dict:
+    now = timezone.now()
+    ids = sorted({int(x) for x in product_ids if x is not None})
+    if not ids:
+        return {
+            "request": request,
+            "flash_overrides": {},
+            "flash_deal_ids": {},
+            "coupon_hints_by_product_id": {},
+        }
+    fo = flash_override_prices_for_products(ids, now)
+    fd = flash_deal_ids_for_products(ids, now)
+    hints = coupon_hints_for_product_ids(ids)
+    return {
+        "request": request,
+        "flash_overrides": fo,
+        "flash_deal_ids": fd,
+        "coupon_hints_by_product_id": hints,
+    }
+
+
 def _cart_serializer_context(request, cart: Cart) -> dict:
     ids = list(cart.items.values_list("product_id", flat=True).distinct())
-    fo = flash_override_prices_for_products(ids, timezone.now())
-    return {"request": request, "flash_overrides": fo}
+    ctx = _storefront_product_list_context(request, ids)
+    return ctx
 
 
 class ProductPagination(PageNumberPagination):
@@ -345,11 +368,13 @@ def catalog_list(request):
         prods = list(base.filter(category_id__in=ids).order_by("-is_featured", "-created_at")[:per_n])
         catalog_map[root.id] = prods
 
-    serializer = CatalogCategorySerializer(
-        roots,
-        many=True,
-        context={"request": request, "catalog_products_by_root_id": catalog_map},
-    )
+    all_pids: list[int] = []
+    for _rid, plist in catalog_map.items():
+        for p in plist:
+            all_pids.append(p.pk)
+    list_ctx = _storefront_product_list_context(request, all_pids)
+    list_ctx["catalog_products_by_root_id"] = catalog_map
+    serializer = CatalogCategorySerializer(roots, many=True, context=list_ctx)
     return Response(serializer.data)
 
 
@@ -374,7 +399,10 @@ def products_list(request):
 
     paginator = ProductPagination()
     page = paginator.paginate_queryset(queryset, request)
-    serializer = ProductSerializer(page, many=True, context={"request": request})
+    pids = [p.pk for p in page] if page is not None else []
+    serializer = ProductSerializer(
+        page, many=True, context=_storefront_product_list_context(request, pids)
+    )
     return paginator.get_paginated_response(serializer.data)
 
 
@@ -391,7 +419,10 @@ def products_all_vendors_list(request):
 
     paginator = ProductPagination()
     page = paginator.paginate_queryset(queryset, request)
-    serializer = ProductSerializer(page, many=True, context={"request": request})
+    pids = [p.pk for p in page] if page is not None else []
+    serializer = ProductSerializer(
+        page, many=True, context=_storefront_product_list_context(request, pids)
+    )
     return paginator.get_paginated_response(serializer.data)
 
 
@@ -422,7 +453,9 @@ def product_detail(request, identifier):
     if not product:
         return Response({"detail": "Product not found."}, status=404)
 
-    serializer = ProductSerializer(product, context={"request": request})
+    serializer = ProductSerializer(
+        product, context=_storefront_product_list_context(request, [product.pk])
+    )
     data = dict(serializer.data)
     if request.user.is_authenticated:
         has_purchase = _user_has_delivered_paid_purchase(request.user, product)
@@ -559,7 +592,12 @@ def deals_list(request):
     queryset = FlashDeal.objects.filter(status=FlashDeal.Status.ACTIVE).prefetch_related(
         "deal_products__product__images"
     ).order_by("-priority", "-start_at")
-    serializer = FlashDealSerializer(queryset, many=True, context={"request": request})
+    pids: list[int] = []
+    for d in queryset:
+        for dp in d.deal_products.all():
+            pids.append(dp.product_id)
+    ctx = _storefront_product_list_context(request, pids)
+    serializer = FlashDealSerializer(queryset, many=True, context=ctx)
     return Response(serializer.data)
 
 
@@ -937,7 +975,7 @@ def cart_item_detail(request, pk):
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 def wishlist_list(request):
-    rows = (
+    rows = list(
         ProductWishlist.objects.filter(user=request.user)
         .select_related(
             "product",
@@ -950,7 +988,9 @@ def wishlist_list(request):
         .prefetch_related(_product_image_prefetch("product__images"))
         .order_by("-created_at")
     )
-    return Response(ProductWishlistSerializer(rows, many=True, context={"request": request}).data)
+    pids = [w.product_id for w in rows]
+    ctx = _storefront_product_list_context(request, pids)
+    return Response(ProductWishlistSerializer(rows, many=True, context=ctx).data)
 
 
 @api_view(["POST"])
@@ -964,7 +1004,8 @@ def wishlist_item_add(request):
     if not product:
         return Response({"detail": "Product not found."}, status=404)
     item, _ = ProductWishlist.objects.get_or_create(user=request.user, product=product)
-    return Response(ProductWishlistSerializer(item, context={"request": request}).data, status=201)
+    ctx = _storefront_product_list_context(request, [product.pk])
+    return Response(ProductWishlistSerializer(item, context=ctx).data, status=201)
 
 
 @api_view(["DELETE"])

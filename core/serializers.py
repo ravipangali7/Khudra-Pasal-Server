@@ -134,6 +134,8 @@ class ProductSerializer(serializers.ModelSerializer):
     list_price = serializers.DecimalField(source="price", max_digits=10, decimal_places=2, read_only=True)
     price = serializers.SerializerMethodField()
     original_price = serializers.SerializerMethodField()
+    flash_deal_id = serializers.SerializerMethodField()
+    coupon_hints = serializers.SerializerMethodField()
     unit_short_name = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
     images = serializers.SerializerMethodField()
@@ -150,6 +152,8 @@ class ProductSerializer(serializers.ModelSerializer):
             "price",
             "list_price",
             "original_price",
+            "flash_deal_id",
+            "coupon_hints",
             "discount_type",
             "discount",
             "category_id",
@@ -185,6 +189,14 @@ class ProductSerializer(serializers.ModelSerializer):
         if eff < list_p:
             return str(list_p)
         return str(store)
+
+    def get_flash_deal_id(self, obj):
+        m = self.context.get("flash_deal_ids") or {}
+        return m.get(obj.pk)
+
+    def get_coupon_hints(self, obj):
+        m = self.context.get("coupon_hints_by_product_id") or {}
+        return m.get(obj.pk) or []
 
     def get_parent_category_slug(self, obj):
         p = obj.category.parent

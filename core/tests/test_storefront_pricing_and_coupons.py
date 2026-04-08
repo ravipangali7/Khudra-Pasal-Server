@@ -14,6 +14,7 @@ from core.services.coupon_validation import (
 from core.services.product_pricing import (
     effective_unit_price,
     flash_override_prices_for_products,
+    flash_pricing_for_products,
     storefront_unit_price,
 )
 
@@ -72,6 +73,56 @@ class StorefrontFlashOverrideTests(TestCase):
             storefront_unit_price(self.product, flash_overrides=m),
             Decimal("50.00"),
         )
+
+
+class FlashPercentOnlyTests(TestCase):
+    """Admin-created deals often have discount_percent only (no override_price)."""
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+
+        User = get_user_model()
+        self.cat = Category.objects.create(name="Fpc", slug="fpc")
+        u = User.objects.create_user(
+            username="fpc_vu", password="x", phone="9811111103", name="FPC"
+        )
+        self.vendor = Vendor.objects.create(
+            user=u,
+            store_name="FPCV",
+            store_slug="fpc-v",
+            status=Vendor.Status.APPROVED,
+        )
+        self.product = Product.objects.create(
+            name="List100",
+            slug="list100",
+            sku="SKU-FPC-1",
+            price=Decimal("100.00"),
+            category=self.cat,
+            seller=self.vendor,
+            stock=5,
+            status=Product.Status.ACTIVE,
+        )
+        now = timezone.now()
+        self.deal = FlashDeal.objects.create(
+            name="PctDeal",
+            discount_percent=Decimal("25.00"),
+            start_at=now - timedelta(days=1),
+            end_at=now + timedelta(days=1),
+            status=FlashDeal.Status.ACTIVE,
+            priority=1,
+            vendor=None,
+        )
+        FlashDealProduct.objects.create(
+            flash_deal=self.deal,
+            product=self.product,
+        )
+
+    def test_percent_applies_when_no_override(self):
+        now = timezone.now()
+        m = flash_override_prices_for_products([self.product.pk], now)
+        self.assertEqual(m[self.product.pk], Decimal("75.00"))
+        row = flash_pricing_for_products([self.product.pk], now)[self.product.pk]
+        self.assertEqual(row.flash_deal_id, self.deal.pk)
 
 
 class CouponEligibleSubtotalTests(TestCase):
@@ -135,24 +186,24 @@ class CouponEligibleSubtotalTests(TestCase):
             status=Coupon.Status.ACTIVE,
         )
 
-    def test_line_eligible_false_for_flash_override(self):
-        self.assertFalse(
-            line_eligible_for_coupon(self.coupon, self.p1, self.flash_map),
-        )
-        self.assertTrue(
-            line_eligible_for_coupon(self.coupon, self.p2, self.flash_map),
-        )
+    def test_line_eligible_includes_flash_products(self):
+        self.assertTrue(line_eligible_for_coupon(self.coupon, self.p1))
+        self.assertTrue(line_eligible_for_coupon(self.coupon, self.p2))
 
-    def test_coupon_discount_only_on_non_flash_lines(self):
+    def test_coupon_discount_stacks_on_flash_and_regular(self):
         u1 = storefront_unit_price(self.p1, flash_overrides=self.flash_map)
         u2 = storefront_unit_price(self.p2, flash_overrides=self.flash_map)
         lines = [(self.p1, 1, u1), (self.p2, 1, u2)]
-        c, disc, err = validate_and_compute_coupon(
-            "SAVE10",
-            lines=lines,
-            flash_overrides=self.flash_map,
-        )
+        c, disc, err = validate_and_compute_coupon("SAVE10", lines=lines)
         self.assertIsNone(err)
         self.assertIsNotNone(c)
-        self.assertEqual(disc, Decimal("4.00"))
+        self.assertEqual(disc, Decimal("12.00"))
 
+    def test_coupon_product_whitelist_restricts_lines(self):
+        self.coupon.products.add(self.p2)
+        u1 = storefront_unit_price(self.p1, flash_overrides=self.flash_map)
+        u2 = storefront_unit_price(self.p2, flash_overrides=self.flash_map)
+        lines = [(self.p1, 1, u1), (self.p2, 1, u2)]
+        c, disc, err = validate_and_compute_coupon("SAVE10", lines=lines)
+        self.assertIsNone(err)
+        self.assertEqual(disc, Decimal("4.00"))

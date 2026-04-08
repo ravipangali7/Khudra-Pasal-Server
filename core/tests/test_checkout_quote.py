@@ -99,21 +99,28 @@ class CheckoutQuoteApiTests(TestCase):
         self.assertEqual(r.data["subtotal"], 120.0)  # 80 + 40
         self.assertEqual(r.data["list_subtotal"], 140.0)
         self.assertEqual(r.data["savings_vs_list"], 20.0)
+        self.assertEqual(r.data["savings_flash"], 20.0)
         self.assertIn(self.p1.pk, r.data["flash_product_ids"])
         self.assertEqual(r.data["delivery_fee"], 0.0)
         self.assertEqual(r.data["coupon_discount"], 0.0)
         self.assertIsNone(r.data["coupon_error"])
+        self.assertEqual(len(r.data["lines"]), 2)
 
-    def test_quote_coupon_only_on_non_flash_line(self):
+    def test_quote_coupon_stacks_with_flash_lines(self):
         r = self.client.post(
             "/api/portal/orders/checkout-quote/",
             self._body(coupon_code="QUOTE10"),
             format="json",
         )
         self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
-        self.assertEqual(r.data["coupon_discount"], 4.0)  # 10% of 40
-        self.assertEqual(r.data["eligible_subtotal"], 40.0)
-        self.assertEqual(r.data["total"], 116.0)
+        self.assertEqual(r.data["coupon_discount"], 12.0)  # 10% of (80 + 40)
+        self.assertEqual(r.data["eligible_subtotal"], 120.0)
+        self.assertEqual(r.data["savings_flash"], 20.0)  # (100 list − 80 flash) × 1
+        self.assertEqual(r.data["total"], 108.0)
+        self.assertEqual(len(r.data["lines"]), 2)
+        line_p1 = next(x for x in r.data["lines"] if x["product_id"] == self.p1.pk)
+        self.assertEqual(line_p1["coupon_discount"], 8.0)
+        self.assertEqual(line_p1["line_total"], 72.0)
 
     def test_quote_invalid_coupon_returns_error_not_400(self):
         r = self.client.post(
