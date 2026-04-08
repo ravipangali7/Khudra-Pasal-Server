@@ -47,7 +47,8 @@ from core.models import (
 )
 from core.serializers import ReelPublicSerializer
 from core.services.product_pricing import effective_unit_price, validate_and_set_product_discount
-from core.services import product_service, support_notification_service, support_ticket_service
+from core.services import support_notification_service, support_ticket_service
+from core.services.pos_order_service import create_pos_order, gen_pos_order_number as _gen_order_number
 from core.services.refund_service import breakdown_for_refund
 from core.services.kyc_service import sync_user_kyc_status
 from core.services.kyc_withdraw import kyc_withdraw_block_payload
@@ -114,14 +115,6 @@ def _paginate(request, queryset):
     paginator = VendorPagination()
     page = paginator.paginate_queryset(queryset, request)
     return paginator, page
-
-
-def _gen_order_number():
-    for _ in range(20):
-        cand = f"KP-{uuid4().hex[:12].upper()}"
-        if len(cand) <= 20 and not Order.objects.filter(order_number=cand).exists():
-            return cand
-    return f"KP-{uuid4().hex[:12].upper()}"[:20]
 
 
 def _gen_ticket_number():
@@ -675,60 +668,15 @@ def vendor_pos_checkout(request):
     discount = _to_decimal(request.data.get("discount"), "0")
 
     try:
-        with transaction.atomic():
-            lines = []
-            subtotal = Decimal("0")
-            for raw in items:
-                pid = raw.get("product_id")
-                qty = int(raw.get("quantity") or 0)
-                if not pid or qty < 1:
-                    return validation_error("each item needs product_id and quantity", field="items")
-                p = Product.objects.select_for_update().filter(pk=pid, seller=vendor).first()
-                if not p:
-                    return Response({"detail": f"Product {pid} not found for this vendor."}, status=400)
-                if p.stock < qty:
-                    return Response(
-                        {"detail": f"Insufficient stock for {p.name}."},
-                        status=400,
-                    )
-                unit_price = effective_unit_price(p)
-                line_total = (unit_price * qty).quantize(Decimal("0.01"))
-                subtotal += line_total
-                lines.append((p, qty, unit_price, line_total))
-
-            tax_amount = (subtotal * tax_percent / Decimal("100")).quantize(Decimal("0.01"))
-            total = (subtotal + tax_amount - discount).quantize(Decimal("0.01"))
-            if total < 0:
-                total = Decimal("0")
-
-            order = Order.objects.create(
-                order_number=_gen_order_number(),
-                customer=customer,
-                seller=vendor,
-                status=Order.Status.DELIVERED,
-                payment_method=payment_method,
-                payment_status=Order.PaymentStatus.PAID,
-                subtotal=subtotal,
-                delivery_fee=Decimal("0"),
-                discount_amount=discount,
-                total=total,
-                want_delivery=False,
-                notes=(request.data.get("notes") or "")[:500],
-                is_pos_order=True,
-            )
-            seen_product_ids: set[int] = set()
-            for p, qty, unit_price, line_total in lines:
-                OrderItem.objects.create(
-                    order=order,
-                    product=p,
-                    quantity=qty,
-                    unit_price=unit_price,
-                    total_price=line_total,
-                )
-                seen_product_ids.add(p.pk)
-            for pid in seen_product_ids:
-                p_sync = Product.objects.get(pk=pid)
-                product_service.sync_stock_status(p_sync)
+        order = create_pos_order(
+            acting_vendor=vendor,
+            customer=customer,
+            items=items,
+            payment_method=payment_method,
+            tax_percent=tax_percent,
+            discount=discount,
+            notes=(request.data.get("notes") or "")[:500],
+        )
     except ValueError as e:
         return Response({"detail": str(e)}, status=400)
 

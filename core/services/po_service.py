@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from django.db import transaction
 
-from core.models import Product, PurchaseOrder
+from core.models import PurchaseOrder
+from core.services import product_service
 
 
 @transaction.atomic
@@ -11,10 +12,4 @@ def complete_purchase_order(po: PurchaseOrder) -> None:
     if po.status != PurchaseOrder.Status.COMPLETED:
         return
     for line in po.lines.select_related("product"):
-        p = line.product
-        if p.type != Product.Type.PHYSICAL:
-            continue
-        if p.stock < line.quantity:
-            continue
-        p.stock -= line.quantity
-        p.save(update_fields=["stock"])
+        product_service.decrease_product_stock(line.product_id, line.quantity)

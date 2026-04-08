@@ -8,6 +8,27 @@ from django.db.models import Avg, Count, F
 from core.models import OrderItem, Product, ProductApproval, ProductReview
 
 
+def decrease_product_stock(product_id: int, quantity: int) -> None:
+    """Atomically decrement stock for physical products; no-op for non-physical.
+
+    Call inside an existing transaction; locks the product row then applies an F() update.
+    Raises ValueError if the product is missing or stock is insufficient.
+    """
+    if quantity < 1:
+        return
+    p = Product.objects.select_for_update().filter(pk=product_id).first()
+    if not p:
+        raise ValueError("Product not found")
+    if p.type == Product.Type.DIGITAL:
+        return
+    updated = Product.objects.filter(
+        pk=product_id,
+        stock__gte=quantity,
+    ).exclude(type=Product.Type.DIGITAL).update(stock=F("stock") - quantity)
+    if not updated:
+        raise ValueError("Insufficient stock for product")
+
+
 @transaction.atomic
 def apply_product_approval(approval: ProductApproval) -> None:
     product = approval.product
@@ -49,12 +70,10 @@ def refresh_product_rating(product: Product) -> None:
 
 @transaction.atomic
 def deduct_line_stock(order_item: OrderItem) -> None:
-    updated = Product.objects.filter(
-        pk=order_item.product_id,
-        stock__gte=order_item.quantity,
-    ).update(stock=F("stock") - order_item.quantity)
-    if not updated:
-        raise ValueError("Insufficient stock for order line")
+    try:
+        decrease_product_stock(order_item.product_id, order_item.quantity)
+    except ValueError as e:
+        raise ValueError("Insufficient stock for order line") from e
 
 
 @transaction.atomic

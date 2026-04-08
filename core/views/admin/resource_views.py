@@ -77,6 +77,7 @@ from core.models import (
 from core.serializers import ReelPublicSerializer
 from core.services import (
     audit_service,
+    po_service,
     product_service,
     refund_notification_service,
     refund_service,
@@ -90,6 +91,7 @@ from core.services.base import new_wallet_txn_id
 from core.services.reel_boost_patch import apply_reel_boost_from_data
 from core.services.kyc_portal import supersede_non_approved_kyc, validate_kyc_upload_file
 from core.services.kyc_service import sync_user_kyc_status
+from core.services.pos_order_service import create_pos_order
 from core.services.vendor_service import ensure_vendor_wallet
 from core.services.withdrawal_notifications import (
     notify_withdrawal_approved,
@@ -99,6 +101,7 @@ from core.views.admin.admin_access import (
     enforce_admin_api_access,
     enforce_audit_log_access,
 )
+from core.views.vendor.common import get_or_create_pos_walkin_user
 from core.views.admin.admin_write_utils import (
     absolute_media_url,
     client_ip_from_request,
@@ -2210,30 +2213,72 @@ def admin_families_list(request):
 def admin_purchase_orders_list(request):
     if err := _forbidden(request):
         return err
-    qs = (
+    merged: list[tuple] = []
+    for po in (
         PurchaseOrder.objects.select_related("customer", "seller")
         .annotate(item_count=Count("lines"))
         .order_by("-created_at")
-    )
-    paginator, page = _paginate(request, qs)
-    rows = [
-        {
-            "id": po.po_number,
-            "pk": po.pk,
-            "customer": po.customer.name if po.customer_id else "Walk-in",
-            "items": po.item_count,
-            "subtotal": float(po.subtotal),
-            "tax": float(po.tax),
-            "discount": float(po.discount),
-            "delivery_fee": float(po.delivery_fee),
-            "total": float(po.total),
-            "status": po.status,
-            "date": po.created_at.date().isoformat(),
-            "seller": po.seller.store_name if po.seller_id else "In-House",
-        }
-        for po in page
-    ]
-    return paginator.get_paginated_response(rows)
+    ):
+        merged.append(
+            (
+                po.created_at,
+                {
+                    "record_type": "purchase_order",
+                    "detail_key": f"po-{po.pk}",
+                    "id": po.po_number,
+                    "pk": po.pk,
+                    "customer": po.customer.name if po.customer_id else "Walk-in",
+                    "items": po.item_count,
+                    "subtotal": float(po.subtotal),
+                    "tax": float(po.tax),
+                    "discount": float(po.discount),
+                    "delivery_fee": float(po.delivery_fee),
+                    "total": float(po.total),
+                    "status": po.status,
+                    "date": po.created_at.date().isoformat(),
+                    "seller": po.seller.store_name if po.seller_id else "Admin",
+                    "vendor_id": str(po.seller_id) if po.seller_id else "",
+                },
+            )
+        )
+    for o in (
+        Order.objects.filter(is_pos_order=True)
+        .select_related("customer", "seller")
+        .annotate(item_count=Count("items"))
+        .order_by("-created_at")
+    ):
+        tax_est = o.total - o.subtotal + o.discount_amount - o.delivery_fee
+        if tax_est < 0:
+            tax_est = Decimal("0")
+        merged.append(
+            (
+                o.created_at,
+                {
+                    "record_type": "pos_order",
+                    "detail_key": f"ord-{o.pk}",
+                    "id": o.order_number,
+                    "pk": o.pk,
+                    "customer": o.customer.name if o.customer_id else "Walk-in",
+                    "items": o.item_count,
+                    "subtotal": float(o.subtotal),
+                    "tax": float(tax_est.quantize(Decimal("0.01"))),
+                    "discount": float(o.discount_amount),
+                    "delivery_fee": float(o.delivery_fee),
+                    "total": float(o.total),
+                    "status": o.status,
+                    "date": o.created_at.date().isoformat(),
+                    "seller": o.seller.store_name if o.seller_id else "Admin",
+                    "vendor_id": str(o.seller_id) if o.seller_id else "",
+                },
+            )
+        )
+    merged.sort(key=lambda x: x[0], reverse=True)
+    flat = [x[1] for x in merged]
+    paginator = AdminPagination()
+    page = paginator.paginate_queryset(flat, request)
+    if page is not None:
+        return paginator.get_paginated_response(page)
+    return Response(flat)
 
 
 @api_view(["GET"])
@@ -3575,6 +3620,56 @@ def admin_purchase_order_detail(request, pk):
     )
 
 
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_pos_order_billing_detail(request, pk):
+    """Invoice-shaped detail for a POS Order (same JSON shape as admin_purchase_order_detail)."""
+    if err := _forbidden(request):
+        return err
+    order = (
+        Order.objects.select_related("customer", "seller")
+        .prefetch_related("items__product")
+        .filter(pk=pk, is_pos_order=True)
+        .first()
+    )
+    if not order:
+        return Response({"detail": "Not found."}, status=404)
+    tax = order.total - order.subtotal + order.discount_amount - order.delivery_fee
+    if tax < 0:
+        tax = Decimal("0")
+    lines = [
+        {
+            "product_id": str(ln.product_id),
+            "name": ln.product.name,
+            "sku": ln.product.sku,
+            "quantity": ln.quantity,
+            "unit_price": float(ln.unit_price),
+            "line_total": float(ln.total_price),
+            "image_url": absolute_media_url(request, ln.product.image),
+        }
+        for ln in order.items.all()
+    ]
+    return Response(
+        {
+            "id": order.order_number,
+            "pk": order.pk,
+            "customer": order.customer.name if order.customer_id else "Walk-in",
+            "customer_id": str(order.customer_id) if order.customer_id else "",
+            "seller": order.seller.store_name if order.seller_id else "Admin",
+            "subtotal": float(order.subtotal),
+            "tax": float(tax.quantize(Decimal("0.01"))),
+            "discount": float(order.discount_amount),
+            "delivery_fee": float(order.delivery_fee),
+            "total": float(order.total),
+            "payment_method": order.payment_method,
+            "status": order.status,
+            "date": order.created_at.date().isoformat(),
+            "lines": lines,
+        }
+    )
+
+
 @api_view(["POST"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
@@ -3638,28 +3733,77 @@ def admin_purchase_order_create(request):
     tax = Decimal("0")
     total = subtotal - discount + delivery_fee
 
-    with transaction.atomic():
-        row = PurchaseOrder.objects.create(
-            po_number=po_number,
-            customer=customer,
-            seller=seller,
-            subtotal=subtotal,
-            tax=tax,
-            discount=discount,
-            delivery_fee=delivery_fee,
-            total=total,
-            payment_method=request.data.get("payment_method") or PurchaseOrder.PaymentMethod.CASH,
-            status=PurchaseOrder.Status.COMPLETED,
-        )
-        for prod, qty, unit_price, line_total in lines_payload:
-            PurchaseOrderLine.objects.create(
-                purchase_order=row,
-                product=prod,
-                quantity=qty,
-                unit_price=unit_price,
-                line_total=line_total,
+    try:
+        with transaction.atomic():
+            row = PurchaseOrder.objects.create(
+                po_number=po_number,
+                customer=customer,
+                seller=seller,
+                subtotal=subtotal,
+                tax=tax,
+                discount=discount,
+                delivery_fee=delivery_fee,
+                total=total,
+                payment_method=request.data.get("payment_method") or PurchaseOrder.PaymentMethod.CASH,
+                status=PurchaseOrder.Status.COMPLETED,
             )
+            for prod, qty, unit_price, line_total in lines_payload:
+                PurchaseOrderLine.objects.create(
+                    purchase_order=row,
+                    product=prod,
+                    quantity=qty,
+                    unit_price=unit_price,
+                    line_total=line_total,
+                )
+            po_service.complete_purchase_order(row)
+    except ValueError as e:
+        return Response({"detail": str(e)}, status=400)
     return Response({"id": row.po_number, "pk": row.pk}, status=201)
+
+
+@api_view(["POST"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_pos_checkout(request):
+    if err := _forbidden(request):
+        return err
+    items = request.data.get("items")
+    if not isinstance(items, list) or not items:
+        return validation_error("items must be a non-empty list", field="items")
+    payment_method = request.data.get("payment_method") or Order.PaymentMethod.CASH
+    if payment_method not in dict(Order.PaymentMethod.choices):
+        return validation_error("invalid payment_method", field="payment_method")
+
+    raw_cid = request.data.get("customer_id")
+    if raw_cid in (None, ""):
+        customer = get_or_create_pos_walkin_user()
+    else:
+        try:
+            customer_pk = int(str(raw_cid).strip())
+        except (TypeError, ValueError):
+            return validation_error("customer_id must be a valid integer", field="customer_id")
+        customer = User.objects.filter(pk=customer_pk).first()
+        if not customer:
+            return validation_error("customer not found", field="customer_id")
+
+    tax_percent = _to_decimal(request.data.get("tax_percent"), "0")
+    discount = _to_decimal(request.data.get("discount"), "0")
+    notes = (request.data.get("notes") or "")[:500]
+
+    try:
+        order = create_pos_order(
+            acting_vendor=None,
+            customer=customer,
+            items=items,
+            payment_method=payment_method,
+            tax_percent=tax_percent,
+            discount=discount,
+            notes=notes,
+        )
+    except ValueError as e:
+        return Response({"detail": str(e)}, status=400)
+
+    return Response({"order_number": order.order_number, "total": float(order.total)}, status=201)
 
 
 def _parse_admin_datetime(val):

@@ -166,7 +166,13 @@ urlpatterns = [
     path("family-members/<int:pk>/", resource_views.admin_family_member_detail_write, name="admin-family-member-write"),
     path("families/", resource_views.admin_families_list, name="admin-families"),
     path("purchase-orders/", resource_views.admin_purchase_orders_list, name="admin-purchase-orders"),
+    path("pos/checkout/", resource_views.admin_pos_checkout, name="admin-pos-checkout"),
     path("purchase-orders/create/", resource_views.admin_purchase_order_create, name="admin-purchase-orders-create"),
+    path(
+        "purchase-orders/pos-orders/<int:pk>/",
+        resource_views.admin_pos_order_billing_detail,
+        name="admin-pos-order-billing-detail",
+    ),
     path(
         "purchase-orders/<int:pk>/",
         resource_views.admin_purchase_order_detail,
