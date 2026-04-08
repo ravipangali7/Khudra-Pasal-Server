@@ -49,6 +49,21 @@ def get_category_shared_wallet(
     )
 
 
+def ensure_default_shared_wallet(group: FamilyGroup, leader: User) -> Wallet:
+    """Return the main family shared pool (no category), creating it if missing (legacy data)."""
+    w = get_default_shared_wallet(group)
+    if w:
+        return w
+    return Wallet.objects.create(
+        owner=leader,
+        type=Wallet.Type.SHARED,
+        label="Family wallet",
+        family_group=group,
+        family_category=None,
+        status=Wallet.Status.ACTIVE,
+    )
+
+
 def ensure_category_shared_wallet(
     group: FamilyGroup, category: FamilyWalletCategory, leader: User
 ) -> Wallet:
@@ -125,7 +140,10 @@ def family_wallet_load(
     category: FamilyWalletCategory | None = None,
     method: str = "topup",
 ) -> tuple[Wallet, WalletTransaction]:
-    w = _require_active(get_category_shared_wallet(group, category), "Shared")
+    if category is None:
+        w = ensure_default_shared_wallet(group, group.leader)
+    else:
+        w = ensure_category_shared_wallet(group, category, group.leader)
     wt = wallet_service.credit_wallet(
         w,
         amount,
@@ -154,7 +172,10 @@ def family_wallet_distribute(
     performed_by: User,
     category: FamilyWalletCategory | None = None,
 ) -> tuple[Wallet, Wallet, WalletTransaction, WalletTransaction]:
-    from_w = _require_active(get_category_shared_wallet(group, category), "Shared")
+    if category is None:
+        from_w = ensure_default_shared_wallet(group, group.leader)
+    else:
+        from_w = ensure_category_shared_wallet(group, category, group.leader)
     to_w = _require_active(get_member_family_wallet(group, to_user), "Member")
     out_t, in_t = wallet_service.execute_transfer(
         from_w,

@@ -339,6 +339,28 @@ class FamilyPortalFlowTests(TestCase):
         )
         self.assertEqual(bad.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_family_wallet_load_creates_shared_wallet_if_missing(self):
+        """Legacy or incomplete groups may lack the main SHARED pool; load should create it."""
+        self._login_leader_with_family()
+        group = FamilyGroup.objects.get(leader=self.leader)
+        shared = get_default_shared_wallet(group)
+        self.assertIsNotNone(shared)
+        old_pk = shared.pk
+        shared.delete()
+        self.assertIsNone(get_default_shared_wallet(group))
+
+        r = self.client.post(
+            "/api/portal/family/wallet/load/",
+            {"amount": "25", "method": "esewa"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertTrue(r.data["ok"])
+        new_shared = get_default_shared_wallet(group)
+        self.assertIsNotNone(new_shared)
+        self.assertNotEqual(new_shared.pk, old_pk)
+        self.assertEqual(new_shared.balance, Decimal("25.00"))
+
     def test_approve_join_request_adds_existing_user(self):
         self._login_leader_with_family()
         spouse = User.objects.create_user(

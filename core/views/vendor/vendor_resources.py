@@ -334,12 +334,20 @@ def vendor_product_detail(request, pk):
                 },
                 status=200,
             )
+    if "status" in request.data:
+        st = (request.data.get("status") or "").strip()
+        if st == Product.Status.ACTIVE:
+            return validation_error(
+                "Products cannot be set to active by vendors; publishing requires admin approval.",
+                field="status",
+            )
+        if st in dict(Product.Status.choices):
+            row.status = st
     for field in (
         "name",
         "description",
         "short_description",
         "sku",
-        "status",
         "seo_title",
         "seo_description",
         "seo_keywords",
@@ -708,16 +716,19 @@ def vendor_pos_checkout(request):
                 notes=(request.data.get("notes") or "")[:500],
                 is_pos_order=True,
             )
+            seen_product_ids: set[int] = set()
             for p, qty, unit_price, line_total in lines:
-                oi = OrderItem.objects.create(
+                OrderItem.objects.create(
                     order=order,
                     product=p,
                     quantity=qty,
                     unit_price=unit_price,
                     total_price=line_total,
                 )
-                product_service.deduct_line_stock(oi)
-                product_service.sync_stock_status(p)
+                seen_product_ids.add(p.pk)
+            for pid in seen_product_ids:
+                p_sync = Product.objects.get(pk=pid)
+                product_service.sync_stock_status(p_sync)
     except ValueError as e:
         return Response({"detail": str(e)}, status=400)
 

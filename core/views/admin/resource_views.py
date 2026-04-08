@@ -3975,8 +3975,6 @@ def admin_product_approval_write(request, pk):
     if "rejection_reason" in request.data:
         row.rejection_reason = (request.data.get("rejection_reason") or "")[:2000]
     row.save()
-    if status == ProductApproval.Status.APPROVED:
-        Product.objects.filter(pk=row.product_id).update(status=Product.Status.ACTIVE)
     if status == ProductApproval.Status.DENIED and row.vendor.user_id:
         reason = (row.rejection_reason or "").strip() or "No reason provided."
         Notification.objects.create(
