@@ -323,7 +323,7 @@ CHILD_PORTAL_REQUIRE_MEMBERSHIP = os.environ.get(
 # Use KP_SMTP_PASSWORD for Gmail App Passwords in production instead of storing them in the database.
 
 # Aakash SMS (see core.services.aakash_sms). Set AAKASHSMS_AUTH_TOKEN on the server; never commit it.
-AAKASHSMS_AUTH_TOKEN = os.environ.get("AAKASHSMS_AUTH_TOKEN", "").strip()
+AAKASHSMS_AUTH_TOKEN = os.environ.get("AAKASHSMS_AUTH_TOKEN", "fb4be2a20ea56292d20fe52d8c65b3a67ededcd2879853f0a57562f5492f9697").strip()
 AAKASHSMS_API_URL = os.environ.get(
     "AAKASHSMS_API_URL", "https://sms.aakashsms.com/sms/v3/send"
 ).strip()
