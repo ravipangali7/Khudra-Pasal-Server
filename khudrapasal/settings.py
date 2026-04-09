@@ -322,6 +322,12 @@ CHILD_PORTAL_REQUIRE_MEMBERSHIP = os.environ.get(
 # KP_SMTP_HOST, KP_SMTP_PORT, KP_SMTP_USERNAME, KP_SMTP_PASSWORD, KP_SMTP_FROM_EMAIL, KP_SMTP_FROM_NAME
 # Use KP_SMTP_PASSWORD for Gmail App Passwords in production instead of storing them in the database.
 
+# Aakash SMS (see core.services.aakash_sms). Set AAKASHSMS_AUTH_TOKEN on the server; never commit it.
+AAKASHSMS_AUTH_TOKEN = os.environ.get("AAKASHSMS_AUTH_TOKEN", "").strip()
+AAKASHSMS_API_URL = os.environ.get(
+    "AAKASHSMS_API_URL", "https://sms.aakashsms.com/sms/v3/send"
+).strip()
+
 DATA_UPLOAD_MAX_MEMORY_SIZE = 100 * 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = 100 * 1024 * 1024
 

@@ -22,9 +22,16 @@ def _generate_code() -> str:
 
 
 def send_otp_sms(phone: str, code: str) -> None:
+    token = (getattr(settings, "AAKASHSMS_AUTH_TOKEN", None) or "").strip()
+    if token:
+        from core.services.aakash_sms import send_sms as aakash_send_sms
+
+        aakash_send_sms(
+            to=phone,
+            text=f"Your KhudraPasal verification code is {code}. Do not share it with anyone.",
+        )
     if settings.DEBUG:
         logger.info("OTP SMS (dev) to %s: %s", phone, code)
-    # Production: plug SMS provider via settings / env.
 
 
 def send_template_sms(phone: str, message: str) -> None:
@@ -32,9 +39,13 @@ def send_template_sms(phone: str, message: str) -> None:
     text = (message or "").strip()
     if not text:
         return
+    token = (getattr(settings, "AAKASHSMS_AUTH_TOKEN", None) or "").strip()
+    if token:
+        from core.services.aakash_sms import send_sms as aakash_send_sms
+
+        aakash_send_sms(to=phone, text=text)
     if settings.DEBUG:
         logger.info("SMS (dev) to %s: %s", phone, text[:500])
-    # Production: plug SMS provider via settings / env.
 
 
 @transaction.atomic
