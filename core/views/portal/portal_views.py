@@ -2867,7 +2867,7 @@ def portal_customer_profile(request):
 
 @api_view(["GET"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
-@permission_classes([IsAuthenticated, IsPortalCustomer])
+@permission_classes([IsAuthenticated, IsPortalSelf])
 def portal_reels_favourites(request):
     qs = (
         Reel.objects.filter(
