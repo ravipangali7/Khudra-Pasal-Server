@@ -212,7 +212,7 @@ class UserAdmin(BaseUserAdmin):
         "username",
         "name",
         "KID_col",
-        "role",
+        "portal_role_display",
         "kyc_badge",
         "is_active",
         "is_staff",
@@ -290,6 +290,24 @@ class UserAdmin(BaseUserAdmin):
             "rejected": "#dc3545",
         }
         return _badge(obj.get_kyc_status_display(), colors.get(obj.kyc_status, "#6c757d"))
+
+    @admin.display(description="Role")
+    def portal_role_display(self, obj):
+        try:
+            obj.vendor_profile
+            return "Vendor"
+        except models.Vendor.DoesNotExist:
+            pass
+        if obj.role in (
+            models.User.Role.NORMAL,
+            models.User.Role.PARENT,
+            models.User.Role.CHILD,
+        ):
+            return "Customer"
+        return obj.get_role_display()
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related("vendor_profile")
 
     @admin.action(description="Activate selected users")
     def activate_users(self, request, queryset):
