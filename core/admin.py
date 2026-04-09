@@ -8,7 +8,7 @@ from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import JSONField
+from django.db.models import JSONField, Prefetch
 from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils.html import format_html
@@ -99,6 +99,15 @@ def _badge(text: str, color: str = "#6c757d") -> str:
         color,
         text,
     )
+
+
+def _short_label(text: str, max_len: int = 28) -> str:
+    text = (text or "").strip()
+    if not text:
+        return ""
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1] + "…"
 
 
 # --- Inlines ------------------------------------------------------------------
@@ -213,6 +222,7 @@ class UserAdmin(BaseUserAdmin):
         "name",
         "KID_col",
         "portal_role_display",
+        "family_group_display",
         "kyc_badge",
         "is_active",
         "is_staff",
@@ -298,16 +308,41 @@ class UserAdmin(BaseUserAdmin):
             return "Vendor"
         except models.Vendor.DoesNotExist:
             pass
-        if obj.role in (
-            models.User.Role.NORMAL,
-            models.User.Role.PARENT,
-            models.User.Role.CHILD,
-        ):
+        if obj.role == models.User.Role.PARENT:
+            return "parent"
+        if obj.role == models.User.Role.CHILD:
+            return "child"
+        if obj.role == models.User.Role.NORMAL:
             return "Customer"
         return obj.get_role_display()
 
+    @admin.display(description="Family group")
+    def family_group_display(self, obj):
+        if obj.role not in (models.User.Role.PARENT, models.User.Role.CHILD):
+            return "—"
+        memberships = list(obj.family_memberships.all())
+        if not memberships:
+            return "—"
+        if len(memberships) == 1:
+            label = _short_label(memberships[0].group.name)
+            return label or "—"
+        # Multiple groups: first name + count of additional memberships
+        first = _short_label(memberships[0].group.name)
+        rest = len(memberships) - 1
+        if not first:
+            return f"(+{rest})" if rest else "—"
+        return f"{first} (+{rest})"
+
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related("vendor_profile")
+        active_fm = models.FamilyMember.objects.filter(
+            status=models.FamilyMember.Status.ACTIVE
+        ).select_related("group")
+        return (
+            super()
+            .get_queryset(request)
+            .select_related("vendor_profile")
+            .prefetch_related(Prefetch("family_memberships", queryset=active_fm))
+        )
 
     @admin.action(description="Activate selected users")
     def activate_users(self, request, queryset):
