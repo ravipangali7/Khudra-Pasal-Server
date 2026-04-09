@@ -230,7 +230,7 @@ class UserAdmin(BaseUserAdmin):
     )
     list_filter = ("role", KYCStatusFilter, "is_active", "is_staff", "is_superuser")
     search_fields = ("phone", "username", "name", "KID", "email")
-    readonly_fields = ("KID", "created_at", "updated_at", "last_login", "date_joined")
+    readonly_fields = ("KID", "fcm_token", "created_at", "updated_at", "last_login", "date_joined")
     inlines = [KYCDocumentInline]
     autocomplete_fields = ()
 
@@ -250,6 +250,13 @@ class UserAdmin(BaseUserAdmin):
                     "social_provider",
                     "social_provider_id",
                 )
+            },
+        ),
+        (
+            "FCM (push)",
+            {
+                "fields": ("fcm_token",),
+                "description": "Web/mobile device token for Firebase Cloud Messaging; updated when the user signs in on a client.",
             },
         ),
         (
