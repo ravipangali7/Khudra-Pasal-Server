@@ -32,10 +32,12 @@ def credit_wallet(
     fund_source: str = "",
     status: str = WalletTransaction.Status.COMPLETED,
     skip_max_balance: bool = False,
+    allow_frozen_target: bool = False,
 ) -> WalletTransaction:
     if not skip_max_balance:
         wallet_policy.assert_may_credit_wallet(wallet, amount)
     w = Wallet.objects.select_for_update().get(pk=wallet.pk)
+    wallet_policy.assert_wallet_may_receive_credit(w, allow_frozen_target=allow_frozen_target)
     Wallet.objects.filter(pk=w.pk).update(balance=F("balance") + amount)
     return WalletTransaction.objects.create(
         txn_id=new_wallet_txn_id(),
@@ -65,6 +67,7 @@ def debit_wallet(
     status: str = WalletTransaction.Status.COMPLETED,
 ) -> WalletTransaction:
     w = Wallet.objects.select_for_update().get(pk=wallet.pk)
+    wallet_policy.assert_wallet_active_for_debit(w)
     if w.balance < amount:
         raise ValueError("Insufficient balance")
     Wallet.objects.filter(pk=w.pk).update(balance=F("balance") - amount)
@@ -277,6 +280,7 @@ def execute_transfer(
         performed_by=performed_by,
         status=txn_status,
         skip_max_balance=False,
+        allow_frozen_target=False,
     )
     in_txn.from_wallet = from_wallet
     in_txn.to_wallet = to_wallet
@@ -307,6 +311,7 @@ def execute_transfer(
             performed_by=performed_by,
             status=txn_status,
             skip_max_balance=True,
+            allow_frozen_target=False,
         )
     return out_txn, in_txn
 
@@ -406,6 +411,7 @@ def credit_wallet_for_refund(
         reference_type=reference_type,
         reference_id=reference_id,
         performed_by=user,
+        allow_frozen_target=True,
     )
 
 

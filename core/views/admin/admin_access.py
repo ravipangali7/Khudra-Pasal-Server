@@ -65,6 +65,11 @@ def user_can_access_super_admin_database_cleanup(user: User) -> bool:
     return user_can_access_audit_logs(user)
 
 
+def user_can_manage_wallet_freeze(user: User) -> bool:
+    """Wallet freeze/unfreeze (PATCH status) — same gate as audit logs."""
+    return user_can_access_audit_logs(user)
+
+
 def enforce_audit_log_access(request):
     """
     Admin portal + super-admin only. Use for audit log list/detail instead of enforce_admin_api_access.

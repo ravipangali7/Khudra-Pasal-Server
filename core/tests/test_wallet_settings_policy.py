@@ -2,16 +2,18 @@
 
 from decimal import Decimal
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from core.models import (
+    EmployeeProfile,
     FamilyGroup,
     FamilyMember,
     OTPVerification,
     PayoutAccount,
+    Role,
     User,
     Vendor,
     Wallet,
@@ -232,3 +234,231 @@ class WalletPolicyAPITests(TestCase):
         ids = {int(x["id"]) for x in rows}
         personal = get_or_create_personal_wallet(parent)
         self.assertNotIn(personal.pk, ids)
+
+
+class WalletFreezeServiceTests(TestCase):
+    def setUp(self):
+        relax_wallet_settings_for_tests()
+
+    def test_debit_wallet_raises_when_frozen(self):
+        u = User.objects.create_user(
+            username="fz_d",
+            password="x",
+            phone="9810500501",
+            name="F",
+            role=User.Role.NORMAL,
+        )
+        w = get_or_create_personal_wallet(u)
+        w.balance = Decimal("100")
+        w.status = Wallet.Status.FROZEN
+        w.save(update_fields=["balance", "status"])
+        with self.assertRaises(ValueError) as ctx:
+            wallet_service.debit_wallet(
+                w,
+                Decimal("10"),
+                wtype=WalletTransaction.Type.DEBIT,
+                description="t",
+                performed_by=u,
+            )
+        self.assertIn("frozen", str(ctx.exception).lower())
+
+    def test_credit_wallet_raises_when_frozen_without_flag(self):
+        u = User.objects.create_user(
+            username="fz_c",
+            password="x",
+            phone="9810500502",
+            name="C",
+            role=User.Role.NORMAL,
+        )
+        w = get_or_create_personal_wallet(u)
+        w.status = Wallet.Status.FROZEN
+        w.save(update_fields=["status"])
+        with self.assertRaises(ValueError) as ctx:
+            wallet_service.credit_wallet(
+                w,
+                Decimal("10"),
+                wtype=WalletTransaction.Type.TOPUP,
+                description="t",
+                performed_by=u,
+            )
+        self.assertIn("frozen", str(ctx.exception).lower())
+
+    def test_credit_wallet_refund_allows_frozen_target(self):
+        u = User.objects.create_user(
+            username="fz_r",
+            password="x",
+            phone="9810500503",
+            name="R",
+            role=User.Role.NORMAL,
+        )
+        w = get_or_create_personal_wallet(u)
+        w.status = Wallet.Status.FROZEN
+        w.balance = Decimal("0")
+        w.save(update_fields=["status", "balance"])
+        wallet_service.credit_wallet(
+            w,
+            Decimal("25"),
+            wtype=WalletTransaction.Type.REFUND_CREDIT,
+            description="refund",
+            performed_by=u,
+            skip_max_balance=True,
+            allow_frozen_target=True,
+        )
+        w.refresh_from_db()
+        self.assertEqual(w.balance, Decimal("25"))
+
+    def test_execute_transfer_raises_when_sender_frozen(self):
+        a = User.objects.create_user(
+            username="fz_ta",
+            password="x",
+            phone="9810500504",
+            name="A",
+            role=User.Role.NORMAL,
+        )
+        b = User.objects.create_user(
+            username="fz_tb",
+            password="x",
+            phone="9810500505",
+            name="B",
+            role=User.Role.NORMAL,
+        )
+        wa = get_or_create_personal_wallet(a)
+        wb = get_or_create_personal_wallet(b)
+        wa.balance = Decimal("100")
+        wa.status = Wallet.Status.FROZEN
+        wa.save(update_fields=["balance", "status"])
+        with self.assertRaises(ValueError) as ctx:
+            wallet_service.execute_transfer(
+                wa,
+                wb,
+                Decimal("10"),
+                performed_by=a,
+                reference_type="t",
+                reference_id="x",
+            )
+        self.assertIn("frozen", str(ctx.exception).lower())
+
+
+@override_settings(
+    CACHES={
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "wallet-freeze-admin-tests",
+        }
+    }
+)
+class WalletFreezeAdminAPITests(TestCase):
+    def setUp(self):
+        relax_wallet_settings_for_tests()
+        from core.models import SecuritySettings
+
+        ss = SecuritySettings.load()
+        ss.rbac_enforced = True
+        ss.otp_sensitive_crud = False
+        ss.save()
+
+        self.client = APIClient()
+        self.pw = "WfAdm123!"
+        self.super_admin = User.objects.create_user(
+            username="wf_sa",
+            password=self.pw,
+            phone="9810600601",
+            name="SA",
+            role=User.Role.SUPER_ADMIN,
+            is_staff=True,
+            is_superuser=True,
+        )
+        self.staff_wm = User.objects.create_user(
+            username="wf_st",
+            password=self.pw,
+            phone="9810600602",
+            name="St",
+            role=User.Role.STAFF,
+            is_staff=True,
+            is_superuser=False,
+        )
+        role = Role.objects.create(
+            name="Wallet mod",
+            permissions={"wallet-master": True},
+            status=Role.Status.ACTIVE,
+        )
+        EmployeeProfile.objects.create(
+            user=self.staff_wm,
+            role=role,
+            modules_access=["dashboard", "wallet-master"],
+            status=EmployeeProfile.Status.ACTIVE,
+        )
+        owner = User.objects.create_user(
+            username="wf_own",
+            password=self.pw,
+            phone="9810600603",
+            name="Own",
+            role=User.Role.NORMAL,
+        )
+        self.wallet = Wallet.objects.create(
+            owner=owner,
+            type=Wallet.Type.PERSONAL,
+            status=Wallet.Status.ACTIVE,
+            balance=Decimal("0"),
+        )
+
+    def _token(self, user: User) -> str:
+        tok, _ = Token.objects.get_or_create(user=user)
+        return tok.key
+
+    def test_staff_patch_wallet_status_forbidden(self):
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Token {self._token(self.staff_wm)}"
+        )
+        r = self.client.patch(
+            f"/api/admin/wallets/{self.wallet.pk}/",
+            {"status": "frozen"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.status, Wallet.Status.ACTIVE)
+
+    def test_super_admin_patch_wallet_status_ok(self):
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Token {self._token(self.super_admin)}"
+        )
+        r = self.client.patch(
+            f"/api/admin/wallets/{self.wallet.pk}/",
+            {"status": "frozen"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.status, Wallet.Status.FROZEN)
+
+    def test_get_wallet_detail_ok_for_staff(self):
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Token {self._token(self.staff_wm)}"
+        )
+        r = self.client.get(f"/api/admin/wallets/{self.wallet.pk}/")
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
+        self.assertEqual(r.data.get("id"), str(self.wallet.pk))
+        self.assertEqual(r.data.get("status"), Wallet.Status.ACTIVE)
+
+    def test_family_only_filter_on_wallets_list(self):
+        g = FamilyGroup.objects.create(
+            name="FamOnly",
+            leader=self.super_admin,
+            status=FamilyGroup.Status.ACTIVE,
+        )
+        w2 = Wallet.objects.create(
+            owner=self.super_admin,
+            type=Wallet.Type.PARENT,
+            family_group=g,
+            status=Wallet.Status.ACTIVE,
+            balance=Decimal("0"),
+        )
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Token {self._token(self.staff_wm)}"
+        )
+        r = self.client.get("/api/admin/wallets/", {"family_only": "true", "page_size": 500})
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        ids = {x["id"] for x in (r.data.get("results") or [])}
+        self.assertIn(str(w2.pk), ids)
+        self.assertNotIn(str(self.wallet.pk), ids)

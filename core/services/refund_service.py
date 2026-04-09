@@ -226,6 +226,7 @@ def execute_refund(refund: Refund) -> None:
         performed_by=order.customer,
         fund_source=fund_source,
         skip_max_balance=True,
+        allow_frozen_target=True,
     )
 
     total_approved = (

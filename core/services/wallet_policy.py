@@ -118,6 +118,20 @@ def assert_daily_transfer_limit(user: User, additional_amount: Decimal) -> None:
         )
 
 
+def assert_wallet_active_for_debit(wallet: Wallet) -> None:
+    """Block balance decreases on frozen wallets (all wallet types)."""
+    if wallet.status != Wallet.Status.ACTIVE:
+        raise ValueError("Wallet is frozen.")
+
+
+def assert_wallet_may_receive_credit(wallet: Wallet, *, allow_frozen_target: bool) -> None:
+    """Block routine credits to frozen wallets; allow refunds/cancellations when flagged."""
+    if allow_frozen_target:
+        return
+    if wallet.status != Wallet.Status.ACTIVE:
+        raise ValueError("Wallet is frozen.")
+
+
 def assert_may_credit_wallet(wallet: Wallet, amount: Decimal) -> None:
     if wallet.type == Wallet.Type.PLATFORM:
         return

@@ -101,6 +101,7 @@ from core.services.withdrawal_notifications import (
 from core.views.admin.admin_access import (
     enforce_admin_api_access,
     enforce_audit_log_access,
+    user_can_manage_wallet_freeze,
 )
 from core.views.vendor.common import get_or_create_pos_walkin_user
 from core.views.admin.admin_write_utils import (
@@ -2082,6 +2083,9 @@ def admin_wallets_list(request):
             except (ValueError, OverflowError):
                 pass
         qs = qs.filter(wq)
+    family_only = (request.query_params.get("family_only") or "").strip().lower()
+    if family_only in ("true", "1", "yes"):
+        qs = qs.filter(family_group_id__isnull=False)
     paginator, page = _paginate(request, qs)
     rows = []
     for w in page:
@@ -2116,6 +2120,9 @@ def admin_wallet_transactions_list(request):
     qs = WalletTransaction.objects.select_related("wallet", "wallet__owner", "wallet__vendor").order_by(
         "-created_at"
     )
+    raw_wid = (request.query_params.get("wallet_id") or "").strip()
+    if raw_wid.isdigit():
+        qs = qs.filter(wallet_id=int(raw_wid))
     df = request.query_params.get("date_from")
     dt = request.query_params.get("date_to")
     if df:
@@ -4766,6 +4773,7 @@ def admin_wallet_adjust(request):
         return err
     if otp_err := security_service.require_sensitive_admin_otp(request):
         return otp_err
+    # Intentionally does not use wallet_service: allows balance correction while wallet is frozen.
     wid = request.data.get("wallet_id")
     w = Wallet.objects.filter(pk=wid).first()
     if not w:
@@ -4813,22 +4821,72 @@ def admin_wallet_adjust(request):
     return Response({"ok": True, "balance": float(w.balance)})
 
 
-@api_view(["PATCH"])
+def _admin_wallet_detail_dict(row: Wallet) -> dict:
+    label = "—"
+    fam = "—"
+    family_group_id: int | None = None
+    if row.vendor_id:
+        label = row.vendor.store_name
+    elif row.owner_id:
+        label = row.owner.name
+    if row.family_group_id:
+        fam = row.family_group.name
+        family_group_id = row.family_group.pk
+    return {
+        "id": str(row.pk),
+        "owner": label,
+        "type": row.type,
+        "label": row.label or "",
+        "balance": float(row.balance),
+        "currency": row.currency,
+        "status": row.status,
+        "family": fam,
+        "family_group_id": family_group_id,
+        "lastActivity": row.updated_at.isoformat(),
+    }
+
+
+@api_view(["GET", "PATCH"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
 def admin_wallet_detail_write(request, pk):
     if err := _forbidden(request):
         return err
-    row = Wallet.objects.filter(pk=pk).first()
+    row = (
+        Wallet.objects.filter(pk=pk)
+        .select_related("owner", "vendor", "family_group")
+        .first()
+    )
     if not row:
         return Response({"detail": "Not found."}, status=404)
-    if "status" in request.data:
-        row.status = request.data.get("status")
-    if "label" in request.data:
-        row.label = (request.data.get("label") or "")[:100]
-    row.save()
+    if request.method == "GET":
+        return Response(_admin_wallet_detail_dict(row))
+
+    data = request.data
+    update_fields: list[str] = []
+    if "status" in data:
+        if not user_can_manage_wallet_freeze(request.user):
+            return Response(
+                {
+                    "detail": "Freezing or unfreezing wallets requires super admin privileges.",
+                },
+                status=403,
+            )
+        new_status = data.get("status")
+        if new_status not in (Wallet.Status.ACTIVE, Wallet.Status.FROZEN):
+            return validation_error("status must be active or frozen", field="status")
+        row.status = new_status
+        update_fields.append("status")
+    if "label" in data:
+        row.label = (data.get("label") or "")[:100]
+        update_fields.append("label")
+    if not update_fields:
+        return Response({"id": str(row.pk)})
+    row.updated_at = timezone.now()
+    update_fields.append("updated_at")
+    row.save(update_fields=update_fields)
     audit_service.log(
-        f"Updated wallet id={row.pk} (status/label)",
+        f"Updated wallet id={row.pk} ({', '.join(update_fields)})",
         log_type=AuditLog.Type.WALLET,
         performed_by=request.user,
         object_type="Wallet",
