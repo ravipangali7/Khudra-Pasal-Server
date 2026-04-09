@@ -209,7 +209,11 @@ def order_post(sender, instance, created, **kwargs):
 
 @receiver(post_save, sender=OrderItem)
 def order_item_created(sender, instance, created, **kwargs):
-    if created and instance.order.status not in (
+    if not created:
+        return
+    if instance.order.is_pos_order:
+        return
+    if instance.order.status not in (
         Order.Status.CANCELLED,
         Order.Status.REFUNDED,
     ):
