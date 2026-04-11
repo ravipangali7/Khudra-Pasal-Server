@@ -107,6 +107,9 @@ def _admin_rows_filtered(rows: list, user: User | None) -> list:
                 if pk:
                     expanded.add(pk)
                 cur = pk or None
+        # Vendor procurement lives next to Sellers; inherit for roles that only list coarse keys.
+        if "sellers" in expanded:
+            expanded.add("stock-purchases")
         result = [r for r in rows if r.key in expanded]
     return [
         r

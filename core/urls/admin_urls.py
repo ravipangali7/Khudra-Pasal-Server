@@ -1,6 +1,13 @@
 from django.urls import path
 
-from core.views.admin import dashboard_views, kyc_submissions_views, resource_views, system_cleanup_views, user_views
+from core.views.admin import (
+    admin_vendor_inventory_views,
+    dashboard_views,
+    kyc_submissions_views,
+    resource_views,
+    system_cleanup_views,
+    user_views,
+)
 from core.views import navigation_views
 
 urlpatterns = [
@@ -64,6 +71,21 @@ urlpatterns = [
     path("products/create/", resource_views.admin_product_create, name="admin-products-create"),
     path("products/<int:pk>/", resource_views.admin_product_detail_write, name="admin-products-write"),
     path("vendors/create/", resource_views.admin_vendor_create, name="admin-vendors-create"),
+    path(
+        "vendors/<int:vendor_pk>/suppliers/",
+        admin_vendor_inventory_views.admin_vendor_suppliers_list,
+        name="admin-vendor-suppliers",
+    ),
+    path(
+        "vendors/<int:vendor_pk>/stock-purchases/<int:pk>/post/",
+        admin_vendor_inventory_views.admin_vendor_stock_purchase_post,
+        name="admin-vendor-stock-purchase-post",
+    ),
+    path(
+        "vendors/<int:vendor_pk>/stock-purchases/",
+        admin_vendor_inventory_views.admin_vendor_stock_purchases,
+        name="admin-vendor-stock-purchases",
+    ),
     path("vendors/<int:pk>/", resource_views.admin_vendor_detail_write, name="admin-vendors-write"),
     path("vendors/", resource_views.admin_vendors_list, name="admin-vendors"),
     path("reels/create/", resource_views.admin_reel_create, name="admin-reels-create"),

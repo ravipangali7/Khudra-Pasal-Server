@@ -23,6 +23,70 @@ from core.services.commission_service import settle_order_commission
 from core.views.vendor.vendor_resources import _gen_order_number
 
 
+class AdminVendorStockPurchaseApiTests(TestCase):
+    """Super-admin stock purchase APIs mirror vendor behavior for a chosen vendor."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create_user(
+            username="admstk",
+            password="x",
+            phone="9855555699",
+            name="Super",
+            role=User.Role.SUPER_ADMIN,
+            is_staff=True,
+            is_superuser=True,
+        )
+        self.admin_token = Token.objects.create(user=self.admin)
+        self.vendor_user = User.objects.create_user(
+            username="vadmstk",
+            password="x",
+            phone="9855555698",
+            name="Seller",
+            role=User.Role.NORMAL,
+        )
+        self.vendor = Vendor.objects.create(
+            user=self.vendor_user,
+            store_name="Adm Stk Store",
+            store_slug="adm-stk-store",
+            status=Vendor.Status.APPROVED,
+            commission_rate=Decimal("10.00"),
+        )
+        self.cat = Category.objects.create(name="AdmCat", slug="adm-cat-stk")
+        self.product = Product.objects.create(
+            name="AdmStkProd",
+            sku="SKU-ADM-STK",
+            category=self.cat,
+            seller=self.vendor,
+            price=Decimal("100.00"),
+            stock=50,
+            status=Product.Status.ACTIVE,
+            type=Product.Type.PHYSICAL,
+        )
+        self.supplier = Supplier.objects.create(vendor=self.vendor, name="Adm Supplier")
+
+    def test_admin_post_purchase_increases_stock(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.admin_token.key}")
+        base = f"/api/admin/vendors/{self.vendor.pk}/stock-purchases"
+        r = self.client.post(
+            f"{base}/",
+            {
+                "supplier_id": self.supplier.pk,
+                "tax": "0",
+                "lines": [
+                    {"product_id": self.product.pk, "quantity": 2, "unit_cost": "15.00"},
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED)
+        pid = r.data["id"]
+        before = Product.objects.get(pk=self.product.pk).stock
+        r2 = self.client.post(f"{base}/{pid}/post/", {}, format="json")
+        self.assertEqual(r2.status_code, status.HTTP_200_OK)
+        self.assertEqual(Product.objects.get(pk=self.product.pk).stock, before + 2)
+
+
 class VendorInventoryApiTests(TestCase):
     def setUp(self):
         self.client = APIClient()
