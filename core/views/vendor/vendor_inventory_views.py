@@ -328,31 +328,71 @@ def vendor_stock_purchase_post(request, pk: int):
     return Response(_purchase_payload(p))
 
 
-@api_view(["GET"])
+def _vendor_ledger_row(e: VendorLedgerEntry) -> dict:
+    return {
+        "id": str(e.pk),
+        "entry_type": e.entry_type,
+        "amount": float(e.amount),
+        "description": e.description,
+        "reference_type": e.reference_type or "",
+        "reference_id": e.reference_id or "",
+        "created_at": e.created_at.isoformat(),
+    }
+
+
+@api_view(["GET", "POST"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
 def vendor_ledger(request):
     vendor, err = vendor_or_error(request)
     if err:
         return err
+    if request.method == "POST":
+        return _vendor_ledger_create(request, vendor)
+
     qs = VendorLedgerEntry.objects.filter(vendor=vendor).order_by("-created_at")
     et = (request.query_params.get("entry_type") or "").strip()
     if et:
         qs = qs.filter(entry_type=et)
     paginator, page = _paginate(request, qs)
-    rows = [
-        {
-            "id": str(e.pk),
-            "entry_type": e.entry_type,
-            "amount": float(e.amount),
-            "description": e.description,
-            "reference_type": e.reference_type or "",
-            "reference_id": e.reference_id or "",
-            "created_at": e.created_at.isoformat(),
-        }
-        for e in page
-    ]
+    rows = [_vendor_ledger_row(e) for e in page]
     return paginator.get_paginated_response(rows)
+
+
+def _vendor_ledger_create(request, vendor):
+    """Manual adjustment line (signed amount: credit positive, debit negative)."""
+    description = (request.data.get("description") or "").strip()
+    if not description:
+        return validation_error("description is required")
+    if len(description) > 255:
+        return validation_error("description too long")
+
+    direction = (request.data.get("direction") or "credit").lower()
+    if direction not in ("credit", "debit"):
+        return validation_error("direction must be credit or debit")
+
+    raw_amt = request.data.get("amount")
+    try:
+        amt = Decimal(str(raw_amt))
+    except Exception:
+        return validation_error("invalid amount")
+    amt = abs(amt).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if amt <= 0:
+        return validation_error("amount must be positive")
+
+    signed = amt if direction == "credit" else -amt
+
+    with transaction.atomic():
+        e = VendorLedgerEntry.objects.create(
+            vendor=vendor,
+            entry_type=VendorLedgerEntry.EntryType.ADJUSTMENT,
+            amount=signed,
+            reference_type="Manual",
+            reference_id="",
+            description=description,
+            created_by_id=request.user.pk,
+        )
+    return Response(_vendor_ledger_row(e), status=201)
 
 
 @api_view(["GET"])

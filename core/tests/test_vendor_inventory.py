@@ -152,3 +152,33 @@ class VendorInventoryApiTests(TestCase):
             reference_id=str(order.pk),
         )
         self.assertEqual(le.count(), 1)
+
+    def test_vendor_ledger_manual_adjustment_post(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
+        r = self.client.post(
+            "/api/vendor/ledger/",
+            {"amount": "25.50", "description": "Opening balance fix", "direction": "credit"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(r.data["entry_type"], "adjustment")
+        self.assertEqual(float(r.data["amount"]), 25.5)
+        le = VendorLedgerEntry.objects.filter(
+            vendor=self.vendor,
+            entry_type=VendorLedgerEntry.EntryType.ADJUSTMENT,
+        )
+        self.assertEqual(le.count(), 1)
+
+        r2 = self.client.get("/api/vendor/ledger/", format="json")
+        self.assertEqual(r2.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(len(r2.data.get("results", r2.data)), 1)
+
+    def test_vendor_ledger_post_debit_negative_amount(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
+        r = self.client.post(
+            "/api/vendor/ledger/",
+            {"amount": "10", "description": "Fee", "direction": "debit"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(float(r.data["amount"]), -10.0)
