@@ -55,6 +55,31 @@ class VendorPosCheckoutStockTests(TestCase):
         self.product.refresh_from_db()
         self.assertEqual(self.product.stock, initial - qty)
 
+    def test_pos_checkout_deducts_digital_stock(self):
+        digital = Product.objects.create(
+            name="POS Digital",
+            sku="SKU-POS-DIG-1",
+            category=self.cat,
+            seller=self.vendor,
+            price=Decimal("15.00"),
+            stock=20,
+            type=Product.Type.DIGITAL,
+            status=Product.Status.ACTIVE,
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
+        qty = 4
+        r = self.client.post(
+            "/api/vendor/pos/checkout/",
+            {
+                "items": [{"product_id": digital.pk, "quantity": qty}],
+                "payment_method": "cash",
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.content)
+        digital.refresh_from_db()
+        self.assertEqual(digital.stock, 20 - qty)
+
 
 class VendorProductPatchStatusTests(TestCase):
     def setUp(self):

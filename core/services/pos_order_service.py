@@ -1,4 +1,4 @@
-"""Shared POS checkout: Order + OrderItem creation with explicit physical stock deduction."""
+"""Shared POS checkout: Order + OrderItem creation with explicit stock deduction."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def create_pos_order(
     discount: Decimal,
     notes: str,
 ) -> Order:
-    """Create a paid, delivered POS order, line items, and decrement physical stock (atomic)."""
+    """Create a paid, delivered POS order, line items, and decrement stock (atomic)."""
     if not items:
         raise ValueError("items must be a non-empty list")
 
@@ -59,7 +59,7 @@ def create_pos_order(
                 + (f" for this vendor." if acting_vendor is not None else ".")
             )
 
-        if p.type != Product.Type.DIGITAL and p.stock < qty:
+        if p.stock < qty:
             raise ValueError(f"Insufficient stock for {p.name}.")
 
         up_raw = raw.get("unit_price")
@@ -103,7 +103,7 @@ def create_pos_order(
             coupon_discount_amount=Decimal("0"),
             total_price=line_total,
         )
-        product_service.decrease_product_stock(p.pk, qty)
+        product_service.decrease_product_stock_for_pos(p.pk, qty)
         seen_product_ids.add(p.pk)
     for pid in seen_product_ids:
         p_sync = Product.objects.get(pk=pid)

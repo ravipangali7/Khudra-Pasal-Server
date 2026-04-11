@@ -43,6 +43,25 @@ def decrease_product_stock(product_id: int, quantity: int) -> None:
         raise ValueError("Insufficient stock for product")
 
 
+def decrease_product_stock_for_pos(product_id: int, quantity: int) -> None:
+    """Decrement stock for POS sales for any product type (including digital).
+
+    Normal checkout uses ``decrease_product_stock``, which skips digital goods. POS
+    displays the same ``stock`` field for all sellable items, so we always apply the
+    quantity delta when inventory is sufficient.
+    """
+    if quantity < 1:
+        return
+    p = Product.objects.select_for_update().filter(pk=product_id).first()
+    if not p:
+        raise ValueError("Product not found")
+    updated = Product.objects.filter(pk=product_id, stock__gte=quantity).update(
+        stock=F("stock") - quantity
+    )
+    if not updated:
+        raise ValueError("Insufficient stock for product")
+
+
 @transaction.atomic
 def apply_product_approval(approval: ProductApproval) -> None:
     product = approval.product

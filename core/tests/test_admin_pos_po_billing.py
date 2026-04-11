@@ -77,6 +77,39 @@ class AdminPosCheckoutStockTests(TestCase):
         self.product.refresh_from_db()
         self.assertEqual(self.product.stock, 10 - qty)
 
+    def test_admin_pos_checkout_deducts_digital_stock(self):
+        digital = Product.objects.create(
+            name="Admin POS Digital",
+            sku="SKU-ADMIN-POS-DIG-1",
+            category=self.cat,
+            image=_png(),
+            price=Decimal("12.00"),
+            type=Product.Type.DIGITAL,
+            stock=8,
+            status=Product.Status.ACTIVE,
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self._token()}")
+        qty = 2
+        r = self.client.post(
+            "/api/admin/pos/checkout/",
+            {
+                "items": [
+                    {
+                        "product_id": digital.pk,
+                        "quantity": qty,
+                        "unit_price": "12.00",
+                    }
+                ],
+                "payment_method": "cash",
+                "discount": 0,
+                "tax_percent": 0,
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.content)
+        digital.refresh_from_db()
+        self.assertEqual(digital.stock, 8 - qty)
+
 
 class AdminPurchaseOrdersMergedListTests(TestCase):
     def setUp(self):
