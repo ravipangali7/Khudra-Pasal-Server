@@ -107,12 +107,12 @@ def _admin_rows_filtered(rows: list, user: User | None) -> list:
                 if pk:
                     expanded.add(pk)
                 cur = pk or None
-        # Vendor procurement lives next to Sellers; inherit for roles that only list coarse keys.
+        # Vendor procurement (inventory): coarse sellers key unlocks all procurement screens.
+        inv_children = frozenset({"suppliers", "stock-purchases", "ledger"})
         if "sellers" in expanded:
-            expanded.add("stock-purchases")
-        # Stock purchases is nested under Purchase in admin nav; include the parent when the leaf is allowed.
-        if "stock-purchases" in expanded:
-            expanded.add("purchase")
+            expanded.update(inv_children)
+        if expanded & inv_children:
+            expanded.add("inventory")
         result = [r for r in rows if r.key in expanded]
     return [
         r

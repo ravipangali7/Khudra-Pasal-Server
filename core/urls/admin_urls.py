@@ -72,9 +72,24 @@ urlpatterns = [
     path("products/<int:pk>/", resource_views.admin_product_detail_write, name="admin-products-write"),
     path("vendors/create/", resource_views.admin_vendor_create, name="admin-vendors-create"),
     path(
+        "vendors/<int:vendor_pk>/suppliers/<int:sp_pk>/ledger/",
+        admin_vendor_inventory_views.admin_vendor_supplier_ledger,
+        name="admin-vendor-supplier-ledger",
+    ),
+    path(
+        "vendors/<int:vendor_pk>/suppliers/<int:pk>/",
+        admin_vendor_inventory_views.admin_vendor_supplier_detail,
+        name="admin-vendor-supplier-detail",
+    ),
+    path(
         "vendors/<int:vendor_pk>/suppliers/",
-        admin_vendor_inventory_views.admin_vendor_suppliers_list,
+        admin_vendor_inventory_views.admin_vendor_suppliers,
         name="admin-vendor-suppliers",
+    ),
+    path(
+        "vendors/<int:vendor_pk>/ledger/",
+        admin_vendor_inventory_views.admin_vendor_ledger,
+        name="admin-vendor-ledger",
     ),
     path(
         "vendors/<int:vendor_pk>/stock-purchases/<int:pk>/post/",

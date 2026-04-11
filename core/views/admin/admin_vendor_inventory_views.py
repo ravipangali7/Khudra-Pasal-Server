@@ -11,7 +11,7 @@ from rest_framework.decorators import api_view, authentication_classes, permissi
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from core.models import Product, Supplier, Vendor, VendorStockPurchase, VendorStockPurchaseLine
+from core.models import Product, Supplier, Vendor, VendorLedgerEntry, VendorStockPurchase, VendorStockPurchaseLine
 from core.services.stock_purchase_service import (
     generate_purchase_reference,
     post_stock_purchase,
@@ -24,6 +24,8 @@ from core.views.vendor.vendor_inventory_views import (
     _purchase_payload,
     _supplier_payload,
     _supplier_queryset_with_ledger,
+    _vendor_ledger_create,
+    _vendor_ledger_row,
 )
 
 
@@ -34,22 +36,147 @@ def _vendor_or_404(vendor_pk: int) -> tuple[Vendor | None, Response | None]:
     return v, None
 
 
-@api_view(["GET"])
+@api_view(["GET", "POST"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
-def admin_vendor_suppliers_list(request, vendor_pk: int):
+def admin_vendor_suppliers(request, vendor_pk: int):
     if err := _forbidden(request):
         return err
     vendor, not_found = _vendor_or_404(vendor_pk)
     if not_found:
         return not_found
-    q = (request.query_params.get("q") or "").strip()
-    qs = _supplier_queryset_with_ledger(vendor).order_by("name")
-    if q:
-        qs = qs.filter(Q(name__icontains=q) | Q(phone__icontains=q))
+    if request.method == "GET":
+        q = (request.query_params.get("q") or "").strip()
+        qs = _supplier_queryset_with_ledger(vendor).order_by("name")
+        if q:
+            qs = qs.filter(Q(name__icontains=q) | Q(phone__icontains=q))
+        paginator, page = _paginate(request, qs)
+        rows = [_supplier_payload(s) for s in page]
+        return paginator.get_paginated_response(rows)
+    name = (request.data.get("name") or "").strip()
+    if not name:
+        return validation_error("name is required", field="name")
+    s = Supplier.objects.create(
+        vendor=vendor,
+        name=name[:200],
+        supplier_code="",
+        phone=(request.data.get("phone") or "").strip()[:20],
+        email=(request.data.get("email") or "").strip()[:254],
+        address=(request.data.get("address") or "")[:2000],
+        notes=(request.data.get("notes") or "")[:2000],
+        is_active=bool(request.data.get("is_active", True)),
+    )
+    return Response(_supplier_payload(s), status=201)
+
+
+@api_view(["GET", "PATCH", "DELETE"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_vendor_supplier_detail(request, vendor_pk: int, pk: int):
+    if err := _forbidden(request):
+        return err
+    vendor, not_found = _vendor_or_404(vendor_pk)
+    if not_found:
+        return not_found
+    s = _supplier_queryset_with_ledger(vendor).filter(pk=pk).first()
+    if not s:
+        return Response({"detail": "Not found."}, status=404)
+    if request.method == "GET":
+        return Response(_supplier_payload(s))
+    if request.method == "DELETE":
+        if s.stock_purchases.exists():
+            return Response(
+                {"detail": "Cannot delete supplier with purchase history."},
+                status=400,
+            )
+        s.delete()
+        return Response({"ok": True})
+    if "name" in request.data:
+        s.name = (request.data.get("name") or "").strip()[:200]
+    if "phone" in request.data:
+        s.phone = (request.data.get("phone") or "").strip()[:20]
+    if "email" in request.data:
+        s.email = (request.data.get("email") or "").strip()[:254]
+    if "address" in request.data:
+        s.address = (request.data.get("address") or "")[:2000]
+    if "notes" in request.data:
+        s.notes = (request.data.get("notes") or "")[:2000]
+    if "is_active" in request.data:
+        s.is_active = bool(request.data.get("is_active"))
+    s.save()
+    return Response(_supplier_payload(s))
+
+
+@api_view(["GET", "POST"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_vendor_ledger(request, vendor_pk: int):
+    if err := _forbidden(request):
+        return err
+    vendor, not_found = _vendor_or_404(vendor_pk)
+    if not_found:
+        return not_found
+    if request.method == "POST":
+        return _vendor_ledger_create(request, vendor)
+
+    qs = VendorLedgerEntry.objects.filter(vendor=vendor).order_by("-created_at")
+    et = (request.query_params.get("entry_type") or "").strip()
+    if et:
+        qs = qs.filter(entry_type=et)
     paginator, page = _paginate(request, qs)
-    rows = [_supplier_payload(s) for s in page]
+    rows = [_vendor_ledger_row(e) for e in page]
     return paginator.get_paginated_response(rows)
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_vendor_supplier_ledger(request, vendor_pk: int, sp_pk: int):
+    """Posted stock purchases for one supplier (same payload as vendor portal)."""
+    if err := _forbidden(request):
+        return err
+    vendor, not_found = _vendor_or_404(vendor_pk)
+    if not_found:
+        return not_found
+    s = Supplier.objects.filter(pk=sp_pk, vendor=vendor).first()
+    if not s:
+        return Response({"detail": "Not found."}, status=404)
+    purchases = (
+        VendorStockPurchase.objects.filter(
+            supplier=s, vendor=vendor, status=VendorStockPurchase.Status.POSTED
+        )
+        .order_by("posted_at", "created_at", "pk")
+    )
+    rows: list[dict] = []
+    balance = Decimal("0")
+    total_credit = Decimal("0")
+    for p in purchases:
+        credit = p.total
+        debit = Decimal("0")
+        total_credit += credit
+        balance = balance + credit - debit
+        ts = p.posted_at or p.created_at
+        rows.append(
+            {
+                "date": ts.isoformat(),
+                "reference": p.reference,
+                "description": f"Stock purchase {p.reference}",
+                "debit": float(debit),
+                "credit": float(credit),
+                "balance": float(balance),
+            }
+        )
+    return Response(
+        {
+            "supplier": {"id": str(s.pk), "name": s.name},
+            "rows": rows,
+            "totals": {
+                "debit": 0.0,
+                "credit": float(total_credit),
+                "balance": float(balance),
+            },
+        }
+    )
 
 
 @api_view(["GET", "POST"])
