@@ -11,10 +11,42 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
 from pathlib import Path
+import json
 import os
+
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Optional server/.env for GOOGLE_OAUTH_* and other secrets (see server/.env.example).
+load_dotenv(BASE_DIR / ".env")
+
+
+def _resolve_google_oauth_credentials() -> tuple[str, str]:
+    """Prefer env; optionally load Web client id/secret from a Google credentials JSON file."""
+    cid = (os.environ.get("GOOGLE_OAUTH_CLIENT_ID") or "").strip()
+    sec = (os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET") or "").strip()
+    if cid and sec:
+        return cid, sec
+    path = (os.environ.get("GOOGLE_OAUTH_CREDENTIALS_JSON") or "").strip()
+    if not path:
+        candidate = BASE_DIR.parent / "continue_with_google.json"
+        if candidate.is_file():
+            path = str(candidate)
+    if not path:
+        return cid, sec
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        web = data.get("web") or {}
+        if not cid:
+            cid = (web.get("client_id") or "").strip()
+        if not sec:
+            sec = (web.get("client_secret") or "").strip()
+    except (OSError, json.JSONDecodeError, TypeError, AttributeError):
+        pass
+    return cid, sec
 
 
 # Quick-start development settings - unsuitable for production
@@ -108,9 +140,8 @@ FRONTEND_URL = (
 # Public origin of this API for OAuth redirect_uri (e.g. https://api.example.com). Defaults to request host.
 OAUTH_REDIRECT_BASE = os.environ.get("OAUTH_REDIRECT_BASE", "").rstrip("/") or None
 
-GOOGLE_OAUTH_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
-GOOGLE_OAUTH_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
-GOOGLE_ID_TOKEN_AUDIENCE = os.environ.get("GOOGLE_ID_TOKEN_AUDIENCE", GOOGLE_OAUTH_CLIENT_ID)
+GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET = _resolve_google_oauth_credentials()
+GOOGLE_ID_TOKEN_AUDIENCE = (os.environ.get("GOOGLE_ID_TOKEN_AUDIENCE") or "").strip() or GOOGLE_OAUTH_CLIENT_ID
 FACEBOOK_APP_ID = os.environ.get("FACEBOOK_APP_ID", "")
 FACEBOOK_APP_SECRET = os.environ.get("FACEBOOK_APP_SECRET", "")
 

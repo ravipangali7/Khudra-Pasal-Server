@@ -18,7 +18,13 @@ from django.views.decorators.csrf import csrf_exempt
 from rest_framework.response import Response
 
 from core.models import User
-from core.portal_roles import PORTAL_FAMILY, infer_portal_key_from_frontend_path
+from core.portal_roles import (
+    PORTAL_FAMILY,
+    PORTAL_MAIN,
+    assert_portal_login_allowed,
+    infer_portal_key_from_frontend_path,
+    primary_spa_redirect,
+)
 from core.services import family_service
 from core.services.base import get_or_create_personal_wallet
 from core.views.unified_auth import build_auth_response_for_portal
@@ -39,13 +45,56 @@ def _public_api_base(request) -> str:
     return request.build_absolute_uri("/")[:-1]
 
 
-def _sign_state(provider: str, next_path: str) -> str:
-    return signing.dumps({"p": provider, "n": (next_path or "")[:500]}, salt=OAUTH_STATE_SALT)
+def _normalize_error_return_path(raw: str | None, default: str = "/login") -> str:
+    p = (raw or default or "/login").strip() or default
+    if not p.startswith("/") or p.startswith("//"):
+        return default
+    return p[:200]
 
 
-def _read_state(state: str) -> tuple[str, str]:
+def _sign_state(
+    provider: str,
+    next_path: str,
+    error_return: str = "/login",
+    flow: str = "login",
+) -> str:
+    er = _normalize_error_return_path(error_return, "/login")
+    fw = flow if flow in ("login", "register") else "login"
+    return signing.dumps(
+        {
+            "p": provider,
+            "n": (next_path or "")[:500],
+            "e": er,
+            "f": fw,
+        },
+        salt=OAUTH_STATE_SALT,
+    )
+
+
+def _read_state(state: str) -> tuple[str, str, str, str]:
     data = signing.loads(state, max_age=900, salt=OAUTH_STATE_SALT)
-    return str(data.get("p", "")), str(data.get("n", ""))
+    er = _normalize_error_return_path(str(data.get("e") or ""), "/login")
+    fw = str(data.get("f") or "login")
+    if fw not in ("login", "register"):
+        fw = "login"
+    return str(data.get("p", "")), str(data.get("n", "")), er, fw
+
+
+def _effective_portal_key_for_oauth(user: User, next_path: str) -> str:
+    """
+    Prefer the portal implied by `next`, but if the user opened Google from the generic
+    customer login/signup (main portal) and their role does not match, use their primary SPA home.
+    """
+    portal_key = infer_portal_key_from_frontend_path(next_path)
+    if assert_portal_login_allowed(user, portal_key) is None:
+        return portal_key
+    if portal_key != PORTAL_MAIN:
+        return portal_key
+    alt_path = primary_spa_redirect(user)
+    alt_key = infer_portal_key_from_frontend_path(alt_path)
+    if assert_portal_login_allowed(user, alt_key) is None:
+        return alt_key
+    return portal_key
 
 
 def _allocate_placeholder_phone() -> str:
@@ -56,9 +105,10 @@ def _allocate_placeholder_phone() -> str:
     raise RuntimeError("Could not allocate unique placeholder phone")
 
 
-def _redirect_to_frontend(query: dict) -> HttpResponseRedirect:
+def _redirect_to_frontend(query: dict, return_path: str = "/login") -> HttpResponseRedirect:
+    rp = _normalize_error_return_path(return_path, "/login")
     q = urllib.parse.urlencode({k: v for k, v in query.items() if v is not None})
-    return HttpResponseRedirect(f"{_frontend_base()}/login?{q}")
+    return HttpResponseRedirect(f"{_frontend_base()}{rp}?{q}")
 
 
 def _get_or_create_social_user(
@@ -152,11 +202,17 @@ def _http_get_json(url: str) -> dict:
 
 @csrf_exempt
 def google_oauth_start(request):
+    next_path = (request.GET.get("next") or "").strip() or "/portal"
+    error_return = _normalize_error_return_path(request.GET.get("return_error"), "/login")
+    flow = (request.GET.get("flow") or "login").strip().lower()
+    if flow not in ("login", "register"):
+        flow = "login"
     cid = getattr(settings, "GOOGLE_OAUTH_CLIENT_ID", "") or ""
     if not cid:
-        return _redirect_to_frontend({"oauth_error": "Google OAuth is not configured."})
-    next_path = (request.GET.get("next") or "").strip() or "/portal"
-    state = _sign_state("google", next_path)
+        return _redirect_to_frontend(
+            {"oauth_error": "Google OAuth is not configured."}, error_return
+        )
+    state = _sign_state("google", next_path, error_return, flow)
     redirect_uri = f"{_public_api_base(request)}{reverse('oauth-google-callback')}"
     params = {
         "client_id": cid,
@@ -175,13 +231,15 @@ def google_oauth_start(request):
 def google_oauth_callback(request):
     error = request.GET.get("error")
     if error:
-        return _redirect_to_frontend({"oauth_error": request.GET.get("error_description") or error})
+        return _redirect_to_frontend(
+            {"oauth_error": request.GET.get("error_description") or error}
+        )
     code = request.GET.get("code")
     state = request.GET.get("state")
     if not code or not state:
         return _redirect_to_frontend({"oauth_error": "Missing OAuth code."})
     try:
-        provider, next_path = _read_state(state)
+        provider, next_path, error_return, _oauth_flow = _read_state(state)
         if provider != "google":
             raise signing.BadSignature("state")
     except signing.BadSignature:
@@ -190,7 +248,9 @@ def google_oauth_callback(request):
     secret = getattr(settings, "GOOGLE_OAUTH_CLIENT_SECRET", "") or ""
     cid = getattr(settings, "GOOGLE_OAUTH_CLIENT_ID", "") or ""
     if not secret or not cid:
-        return _redirect_to_frontend({"oauth_error": "Google OAuth is not configured."})
+        return _redirect_to_frontend(
+            {"oauth_error": "Google OAuth is not configured."}, error_return
+        )
 
     redirect_uri = f"{_public_api_base(request)}{reverse('oauth-google-callback')}"
     try:
@@ -206,11 +266,15 @@ def google_oauth_callback(request):
         )
     except (urllib.error.URLError, json.JSONDecodeError, KeyError) as e:
         logger.exception("Google token exchange failed")
-        return _redirect_to_frontend({"oauth_error": "Token exchange failed."})
+        return _redirect_to_frontend(
+            {"oauth_error": "Token exchange failed."}, error_return
+        )
 
     access = token_payload.get("access_token")
     if not access:
-        return _redirect_to_frontend({"oauth_error": "No access token from Google."})
+        return _redirect_to_frontend(
+            {"oauth_error": "No access token from Google."}, error_return
+        )
 
     try:
         req = urllib.request.Request("https://www.googleapis.com/oauth2/v2/userinfo")
@@ -220,48 +284,64 @@ def google_oauth_callback(request):
         profile = json.loads(raw) if raw else {}
     except (urllib.error.URLError, json.JSONDecodeError) as e:
         logger.exception("Google userinfo failed")
-        return _redirect_to_frontend({"oauth_error": "Could not load Google profile."})
+        return _redirect_to_frontend(
+            {"oauth_error": "Could not load Google profile."}, error_return
+        )
 
     gid = str(profile.get("id") or "")
     if not gid:
-        return _redirect_to_frontend({"oauth_error": "Invalid Google profile."})
+        return _redirect_to_frontend(
+            {"oauth_error": "Invalid Google profile."}, error_return
+        )
 
     name = (profile.get("name") or profile.get("email") or "")[:150]
     email = (profile.get("email") or "")[:254]
     user, created_new = _get_or_create_social_user("google", gid, name, email)
     if not user.is_active:
-        return _redirect_to_frontend({"oauth_error": "Account disabled."})
+        return _redirect_to_frontend({"oauth_error": "Account disabled."}, error_return)
     if created_new:
         err = _maybe_provision_family_for_new_oauth_user(user, next_path)
         if err:
-            return _redirect_to_frontend({"oauth_error": err})
+            return _redirect_to_frontend({"oauth_error": err}, error_return)
         get_or_create_personal_wallet(user)
 
-    portal_key = infer_portal_key_from_frontend_path(next_path)
+    requested_portal = infer_portal_key_from_frontend_path(next_path)
+    portal_key = _effective_portal_key_for_oauth(user, next_path)
     data = build_auth_response_for_portal(user, portal_key)
     if isinstance(data, Response):
         detail = getattr(data, "data", None) or {}
         msg = detail.get("detail", "Sign-in not allowed for this portal.")
-        return _redirect_to_frontend({"oauth_error": str(msg)})
+        return _redirect_to_frontend({"oauth_error": str(msg)}, error_return)
     redirect_final = data["redirect"]
-    if next_path.startswith("/") and not next_path.startswith("//"):
+    if (
+        portal_key == requested_portal
+        and next_path.startswith("/")
+        and not next_path.startswith("//")
+    ):
         redirect_final = next_path
     return _redirect_to_frontend(
         {
             "token": data["token"],
             "surface": data["surface"],
             "redirect": redirect_final,
-        }
+        },
+        "/login",
     )
 
 
 @csrf_exempt
 def facebook_oauth_start(request):
+    next_path = (request.GET.get("next") or "").strip() or "/portal"
+    error_return = _normalize_error_return_path(request.GET.get("return_error"), "/login")
+    flow = (request.GET.get("flow") or "login").strip().lower()
+    if flow not in ("login", "register"):
+        flow = "login"
     app_id = getattr(settings, "FACEBOOK_APP_ID", "") or ""
     if not app_id:
-        return _redirect_to_frontend({"oauth_error": "Facebook OAuth is not configured."})
-    next_path = (request.GET.get("next") or "").strip() or "/portal"
-    state = _sign_state("facebook", next_path)
+        return _redirect_to_frontend(
+            {"oauth_error": "Facebook OAuth is not configured."}, error_return
+        )
+    state = _sign_state("facebook", next_path, error_return, flow)
     redirect_uri = f"{_public_api_base(request)}{reverse('oauth-facebook-callback')}"
     params = {
         "client_id": app_id,
@@ -283,7 +363,7 @@ def facebook_oauth_callback(request):
     if not code or not state:
         return _redirect_to_frontend({"oauth_error": "Missing OAuth code."})
     try:
-        provider, next_path = _read_state(state)
+        provider, next_path, error_return, _oauth_flow = _read_state(state)
         if provider != "facebook":
             raise signing.BadSignature("state")
     except signing.BadSignature:
@@ -292,7 +372,9 @@ def facebook_oauth_callback(request):
     app_id = getattr(settings, "FACEBOOK_APP_ID", "") or ""
     app_secret = getattr(settings, "FACEBOOK_APP_SECRET", "") or ""
     if not app_id or not app_secret:
-        return _redirect_to_frontend({"oauth_error": "Facebook OAuth is not configured."})
+        return _redirect_to_frontend(
+            {"oauth_error": "Facebook OAuth is not configured."}, error_return
+        )
 
     redirect_uri = f"{_public_api_base(request)}{reverse('oauth-facebook-callback')}"
     token_url = (
@@ -310,11 +392,15 @@ def facebook_oauth_callback(request):
         token_payload = _http_get_json(token_url)
     except (urllib.error.URLError, json.JSONDecodeError) as e:
         logger.exception("Facebook token exchange failed")
-        return _redirect_to_frontend({"oauth_error": "Token exchange failed."})
+        return _redirect_to_frontend(
+            {"oauth_error": "Token exchange failed."}, error_return
+        )
 
     access = token_payload.get("access_token")
     if not access:
-        return _redirect_to_frontend({"oauth_error": "No access token from Facebook."})
+        return _redirect_to_frontend(
+            {"oauth_error": "No access token from Facebook."}, error_return
+        )
 
     me_url = (
         "https://graph.facebook.com/me?"
@@ -326,36 +412,46 @@ def facebook_oauth_callback(request):
         profile = _http_get_json(me_url)
     except (urllib.error.URLError, json.JSONDecodeError) as e:
         logger.exception("Facebook me failed")
-        return _redirect_to_frontend({"oauth_error": "Could not load Facebook profile."})
+        return _redirect_to_frontend(
+            {"oauth_error": "Could not load Facebook profile."}, error_return
+        )
 
     fid = str(profile.get("id") or "")
     if not fid:
-        return _redirect_to_frontend({"oauth_error": "Invalid Facebook profile."})
+        return _redirect_to_frontend(
+            {"oauth_error": "Invalid Facebook profile."}, error_return
+        )
 
     name = (profile.get("name") or profile.get("email") or "")[:150]
     email = (profile.get("email") or "")[:254]
     user, created_new = _get_or_create_social_user("facebook", fid, name, email)
     if not user.is_active:
-        return _redirect_to_frontend({"oauth_error": "Account disabled."})
+        return _redirect_to_frontend({"oauth_error": "Account disabled."}, error_return)
     if created_new:
         err = _maybe_provision_family_for_new_oauth_user(user, next_path)
         if err:
-            return _redirect_to_frontend({"oauth_error": err})
+            return _redirect_to_frontend({"oauth_error": err}, error_return)
         get_or_create_personal_wallet(user)
 
-    portal_key = infer_portal_key_from_frontend_path(next_path)
+    requested_portal = infer_portal_key_from_frontend_path(next_path)
+    portal_key = _effective_portal_key_for_oauth(user, next_path)
     data = build_auth_response_for_portal(user, portal_key)
     if isinstance(data, Response):
         detail = getattr(data, "data", None) or {}
         msg = detail.get("detail", "Sign-in not allowed for this portal.")
-        return _redirect_to_frontend({"oauth_error": str(msg)})
+        return _redirect_to_frontend({"oauth_error": str(msg)}, error_return)
     redirect_final = data["redirect"]
-    if next_path.startswith("/") and not next_path.startswith("//"):
+    if (
+        portal_key == requested_portal
+        and next_path.startswith("/")
+        and not next_path.startswith("//")
+    ):
         redirect_final = next_path
     return _redirect_to_frontend(
         {
             "token": data["token"],
             "surface": data["surface"],
             "redirect": redirect_final,
-        }
+        },
+        "/login",
     )
