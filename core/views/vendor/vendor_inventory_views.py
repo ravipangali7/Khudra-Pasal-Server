@@ -5,7 +5,8 @@ from __future__ import annotations
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import DecimalField, Q, Sum, Value
+from django.db.models.functions import Coalesce
 from rest_framework.authentication import SessionAuthentication, TokenAuthentication
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -21,10 +22,9 @@ from core.views.admin.admin_write_utils import validation_error
 from core.views.vendor.common import vendor_or_error
 from core.views.vendor.vendor_resources import _paginate
 def _supplier_payload(s: Supplier) -> dict:
-    return {
+    row: dict = {
         "id": str(s.pk),
         "name": s.name,
-        "supplier_code": s.supplier_code or "",
         "phone": s.phone or "",
         "email": s.email or "",
         "address": s.address or "",
@@ -32,6 +32,13 @@ def _supplier_payload(s: Supplier) -> dict:
         "is_active": s.is_active,
         "created_at": s.created_at.isoformat(),
     }
+    if hasattr(s, "ledger_credit"):
+        credit = getattr(s, "ledger_credit") or Decimal("0")
+        debit = Decimal("0")
+        row["ledger_credit"] = float(credit)
+        row["ledger_debit"] = float(debit)
+        row["ledger_balance"] = float(credit - debit)
+    return row
 
 
 def _line_payload(line: VendorStockPurchaseLine) -> dict:
@@ -103,13 +110,9 @@ def vendor_suppliers(request):
         return err
     if request.method == "GET":
         q = (request.query_params.get("q") or "").strip()
-        qs = Supplier.objects.filter(vendor=vendor).order_by("name")
+        qs = _supplier_queryset_with_ledger(vendor).order_by("name")
         if q:
-            qs = qs.filter(
-                Q(name__icontains=q)
-                | Q(phone__icontains=q)
-                | Q(supplier_code__icontains=q)
-            )
+            qs = qs.filter(Q(name__icontains=q) | Q(phone__icontains=q))
         paginator, page = _paginate(request, qs)
         rows = [_supplier_payload(s) for s in page]
         return paginator.get_paginated_response(rows)
@@ -119,7 +122,7 @@ def vendor_suppliers(request):
     s = Supplier.objects.create(
         vendor=vendor,
         name=name[:200],
-        supplier_code=(request.data.get("supplier_code") or "").strip()[:50],
+        supplier_code="",
         phone=(request.data.get("phone") or "").strip()[:20],
         email=(request.data.get("email") or "").strip()[:254],
         address=(request.data.get("address") or "")[:2000],
@@ -132,11 +135,21 @@ def vendor_suppliers(request):
 @api_view(["GET", "PATCH", "DELETE"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
+def _supplier_queryset_with_ledger(vendor):
+    posted_filter = Q(stock_purchases__status=VendorStockPurchase.Status.POSTED)
+    return Supplier.objects.filter(vendor=vendor).annotate(
+        ledger_credit=Coalesce(
+            Sum("stock_purchases__total", filter=posted_filter),
+            Value(Decimal("0"), output_field=DecimalField(max_digits=12, decimal_places=2)),
+        ),
+    )
+
+
 def vendor_supplier_detail(request, pk: int):
     vendor, err = vendor_or_error(request)
     if err:
         return err
-    s = Supplier.objects.filter(pk=pk, vendor=vendor).first()
+    s = _supplier_queryset_with_ledger(vendor).filter(pk=pk).first()
     if not s:
         return Response({"detail": "Not found."}, status=404)
     if request.method == "GET":
@@ -151,8 +164,6 @@ def vendor_supplier_detail(request, pk: int):
         return Response({"ok": True})
     if "name" in request.data:
         s.name = (request.data.get("name") or "").strip()[:200]
-    if "supplier_code" in request.data:
-        s.supplier_code = (request.data.get("supplier_code") or "").strip()[:50]
     if "phone" in request.data:
         s.phone = (request.data.get("phone") or "").strip()[:20]
     if "email" in request.data:
@@ -342,3 +353,52 @@ def vendor_ledger(request):
         for e in page
     ]
     return paginator.get_paginated_response(rows)
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def vendor_supplier_ledger(request, pk: int):
+    """Posted stock purchases for one supplier: debit/credit columns and running balance (payables)."""
+    vendor, err = vendor_or_error(request)
+    if err:
+        return err
+    s = Supplier.objects.filter(pk=pk, vendor=vendor).first()
+    if not s:
+        return Response({"detail": "Not found."}, status=404)
+    purchases = (
+        VendorStockPurchase.objects.filter(
+            supplier=s, vendor=vendor, status=VendorStockPurchase.Status.POSTED
+        )
+        .order_by("posted_at", "created_at", "pk")
+    )
+    rows: list[dict] = []
+    balance = Decimal("0")
+    total_credit = Decimal("0")
+    for p in purchases:
+        credit = p.total
+        debit = Decimal("0")
+        total_credit += credit
+        balance = balance + credit - debit
+        ts = p.posted_at or p.created_at
+        rows.append(
+            {
+                "date": ts.isoformat(),
+                "reference": p.reference,
+                "description": f"Stock purchase {p.reference}",
+                "debit": float(debit),
+                "credit": float(credit),
+                "balance": float(balance),
+            }
+        )
+    return Response(
+        {
+            "supplier": {"id": str(s.pk), "name": s.name},
+            "rows": rows,
+            "totals": {
+                "debit": 0.0,
+                "credit": float(total_credit),
+                "balance": float(balance),
+            },
+        }
+    )

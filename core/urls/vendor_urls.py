@@ -81,6 +81,11 @@ urlpatterns = [
     path("products/", vendor_views.vendor_products_list, name="vendor-products"),
     path("suppliers/", vendor_inventory_views.vendor_suppliers, name="vendor-suppliers"),
     path(
+        "suppliers/<int:pk>/ledger/",
+        vendor_inventory_views.vendor_supplier_ledger,
+        name="vendor-supplier-ledger",
+    ),
+    path(
         "suppliers/<int:pk>/",
         vendor_inventory_views.vendor_supplier_detail,
         name="vendor-supplier-detail",
