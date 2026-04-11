@@ -110,6 +110,9 @@ def _admin_rows_filtered(rows: list, user: User | None) -> list:
         # Vendor procurement lives next to Sellers; inherit for roles that only list coarse keys.
         if "sellers" in expanded:
             expanded.add("stock-purchases")
+        # Stock purchases is nested under Purchase in admin nav; include the parent when the leaf is allowed.
+        if "stock-purchases" in expanded:
+            expanded.add("purchase")
         result = [r for r in rows if r.key in expanded]
     return [
         r
