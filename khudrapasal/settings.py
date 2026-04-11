@@ -86,8 +86,9 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
-    'django.middleware.security.SecurityMiddleware',
+    # Must be first: every response (including OPTIONS preflight) must pass through here for CORS headers.
     'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -114,7 +115,29 @@ REST_FRAMEWORK = {
         'wallet_hub_lookup': '120/hour',
     },
 }
-CORS_ALLOW_ALL_ORIGINS = True
+# SPA on another host (e.g. khudrapasal.360winx.com → API on khudrapasalserver.360winx.com) requires CORS.
+# Set DJANGO_CORS_ALLOW_ALL=false in production if you want to rely only on CORS_ALLOWED_ORIGINS.
+CORS_ALLOW_ALL_ORIGINS = os.environ.get("DJANGO_CORS_ALLOW_ALL", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "",
+)
+_default_cors_origins = [
+    "https://khudrapasal.360winx.com",
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+_extra_cors = os.environ.get("CORS_ALLOWED_ORIGINS", "").replace(";", ",")
+CORS_ALLOWED_ORIGINS = list(_default_cors_origins)
+for _part in _extra_cors.split(","):
+    _o = _part.strip()
+    if _o and _o not in CORS_ALLOWED_ORIGINS:
+        CORS_ALLOWED_ORIGINS.append(_o)
+if not CORS_ALLOW_ALL_ORIGINS and not CORS_ALLOWED_ORIGINS:
+    CORS_ALLOW_ALL_ORIGINS = True
 # Keep these explicit so large multipart admin uploads are controlled by env,
 # instead of failing with default low request-body limits.
 DATA_UPLOAD_MAX_MEMORY_SIZE = int(
@@ -137,6 +160,17 @@ FRONTEND_URL = (
     or os.environ.get("BASE_URL", "").strip()
     or "http://localhost:8080"
 )
+_frontend_origin = FRONTEND_URL.rstrip("/")
+if _frontend_origin and _frontend_origin not in CORS_ALLOWED_ORIGINS:
+    CORS_ALLOWED_ORIGINS.append(_frontend_origin)
+
+CSRF_TRUSTED_ORIGINS = list(CORS_ALLOWED_ORIGINS)
+_extra_csrf = os.environ.get("CSRF_TRUSTED_ORIGINS", "").replace(";", ",")
+for _part in _extra_csrf.split(","):
+    _o = _part.strip()
+    if _o and _o not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(_o)
+
 # Public origin of this API for OAuth redirect_uri (e.g. https://api.example.com). Defaults to request host.
 OAUTH_REDIRECT_BASE = os.environ.get("OAUTH_REDIRECT_BASE", "").rstrip("/") or None
 

@@ -8,6 +8,20 @@ from django.db.models import Avg, Count, F
 from core.models import OrderItem, Product, ProductApproval, ProductReview
 
 
+def increase_product_stock(product_id: int, quantity: int) -> None:
+    """Increase stock for physical products; no-op for digital. Use for procurement receipts."""
+    if quantity < 1:
+        return
+    p = Product.objects.select_for_update().filter(pk=product_id).first()
+    if not p:
+        raise ValueError("Product not found")
+    if p.type == Product.Type.DIGITAL:
+        return
+    Product.objects.filter(pk=product_id).exclude(type=Product.Type.DIGITAL).update(
+        stock=F("stock") + quantity
+    )
+
+
 def decrease_product_stock(product_id: int, quantity: int) -> None:
     """Atomically decrement stock for physical products; no-op for non-physical.
 

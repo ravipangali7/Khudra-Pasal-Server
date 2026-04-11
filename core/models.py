@@ -1906,6 +1906,151 @@ class PurchaseOrderLine(models.Model):
         return f"{self.purchase_order.po_number} — {self.product_id}"
 
 
+class Supplier(models.Model):
+    """Wholesaler / supplier contact, scoped to a vendor store."""
+
+    vendor = models.ForeignKey(
+        Vendor, on_delete=models.CASCADE, related_name="suppliers", db_index=True
+    )
+    name = models.CharField(max_length=200)
+    supplier_code = models.CharField(max_length=50, blank=True)
+    phone = models.CharField(max_length=20, blank=True)
+    email = models.EmailField(blank=True)
+    address = models.TextField(blank=True)
+    notes = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["vendor", "supplier_code"],
+                name="supplier_unique_code_per_vendor",
+                condition=models.Q(supplier_code__gt=""),
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.vendor_id})"
+
+
+class VendorStockPurchase(models.Model):
+    """Procurement from a supplier (increases product stock when posted). Not the legacy POS PurchaseOrder."""
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        POSTED = "posted", "Posted"
+
+    vendor = models.ForeignKey(
+        Vendor, on_delete=models.CASCADE, related_name="stock_purchases", db_index=True
+    )
+    supplier = models.ForeignKey(
+        Supplier, on_delete=models.PROTECT, related_name="stock_purchases"
+    )
+    reference = models.CharField(max_length=40, unique=True)
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.DRAFT
+    )
+    subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
+    tax = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
+    total = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    posted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return self.reference
+
+
+class VendorStockPurchaseLine(models.Model):
+    purchase = models.ForeignKey(
+        VendorStockPurchase, on_delete=models.CASCADE, related_name="lines"
+    )
+    product = models.ForeignKey(Product, on_delete=models.PROTECT)
+    quantity = models.PositiveIntegerField()
+    unit_cost = models.DecimalField(max_digits=12, decimal_places=2)
+    line_total = models.DecimalField(max_digits=12, decimal_places=2)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self) -> str:
+        return f"{self.purchase.reference} — {self.product_id}"
+
+
+class VendorLedgerEntry(models.Model):
+    """Per-vendor accounting-style trail (complements WalletTransaction)."""
+
+    class EntryType(models.TextChoices):
+        SALE_SETTLEMENT = "sale_settlement", "Sale settlement"
+        SALE_REVERSAL = "sale_reversal", "Sale reversal"
+        PURCHASE_COST = "purchase_cost", "Stock purchase"
+        ADJUSTMENT = "adjustment", "Adjustment"
+
+    vendor = models.ForeignKey(
+        Vendor, on_delete=models.CASCADE, related_name="ledger_entries", db_index=True
+    )
+    entry_type = models.CharField(max_length=30, choices=EntryType.choices)
+    amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        help_text="Signed: positive credits vendor book, negative is cost/outflow.",
+    )
+    reference_type = models.CharField(max_length=50, blank=True)
+    reference_id = models.CharField(max_length=50, blank=True)
+    wallet_transaction = models.ForeignKey(
+        WalletTransaction,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="vendor_ledger_entries",
+    )
+    description = models.CharField(max_length=255)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["vendor", "-created_at"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["vendor", "entry_type", "reference_type", "reference_id"],
+                name="uniq_vendor_ledger_sale_settlement_order",
+                condition=models.Q(entry_type="sale_settlement")
+                & models.Q(reference_type="Order")
+                & ~models.Q(reference_id=""),
+            ),
+            models.UniqueConstraint(
+                fields=["vendor", "entry_type", "reference_type", "reference_id"],
+                name="uniq_vendor_ledger_sale_reversal_order",
+                condition=models.Q(entry_type="sale_reversal")
+                & models.Q(reference_type="Order")
+                & ~models.Q(reference_id=""),
+            ),
+            models.UniqueConstraint(
+                fields=["vendor", "entry_type", "reference_type", "reference_id"],
+                name="uniq_vendor_ledger_purchase_doc",
+                condition=models.Q(entry_type="purchase_cost")
+                & models.Q(reference_type="VendorStockPurchase")
+                & ~models.Q(reference_id=""),
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.vendor_id} {self.entry_type} {self.amount}"
+
+
 class PaymentTransaction(models.Model):
     class Method(models.TextChoices):
         ESEWA = "esewa", "eSewa"

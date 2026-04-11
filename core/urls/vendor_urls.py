@@ -2,7 +2,7 @@ from django.urls import path
 
 from core.views import navigation_views
 from core.views.portal import portal_views
-from core.views.vendor import vendor_resources, vendor_views
+from core.views.vendor import vendor_inventory_views, vendor_resources, vendor_views
 
 urlpatterns = [
     path("navigation/", navigation_views.vendor_navigation, name="vendor-navigation"),
@@ -79,4 +79,26 @@ urlpatterns = [
     path("reels/favourites/", vendor_resources.vendor_reels_favourites, name="vendor-reels-favourites"),
     path("reels/<int:pk>/", vendor_resources.vendor_reel_detail, name="vendor-reel-detail"),
     path("products/", vendor_views.vendor_products_list, name="vendor-products"),
+    path("suppliers/", vendor_inventory_views.vendor_suppliers, name="vendor-suppliers"),
+    path(
+        "suppliers/<int:pk>/",
+        vendor_inventory_views.vendor_supplier_detail,
+        name="vendor-supplier-detail",
+    ),
+    path(
+        "stock-purchases/",
+        vendor_inventory_views.vendor_stock_purchases,
+        name="vendor-stock-purchases",
+    ),
+    path(
+        "stock-purchases/<int:pk>/",
+        vendor_inventory_views.vendor_stock_purchase_detail,
+        name="vendor-stock-purchase-detail",
+    ),
+    path(
+        "stock-purchases/<int:pk>/post/",
+        vendor_inventory_views.vendor_stock_purchase_post,
+        name="vendor-stock-purchase-post",
+    ),
+    path("ledger/", vendor_inventory_views.vendor_ledger, name="vendor-ledger"),
 ]

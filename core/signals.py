@@ -34,6 +34,7 @@ from core.services import (
     coupon_service,
     family_service,
     kyc_service,
+    ledger_service,
     order_service,
     po_service,
     product_service,
@@ -205,6 +206,7 @@ def order_post(sender, instance, created, **kwargs):
     if instance.payment_status == paid and (created or prev_pay != paid):
         coupon_service.apply_coupon_use_on_payment_confirmed(instance)
         commission_service.settle_order_commission(instance)
+        ledger_service.record_sale_on_payment(instance)
 
 
 @receiver(post_save, sender=OrderItem)

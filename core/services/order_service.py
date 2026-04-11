@@ -102,6 +102,11 @@ def restore_order_after_cancel(order: Order) -> None:
             used_count=F("used_count") - 1
         )
 
+    if was_paid and order.seller_id:
+        from core.services import ledger_service
+
+        ledger_service.reverse_sale_settlement_on_cancel(order)
+
     if pay_updates:
         pay_updates["updated_at"] = timezone.now()
         Order.objects.filter(pk=order.pk).update(**pay_updates)
