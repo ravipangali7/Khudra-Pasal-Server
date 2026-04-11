@@ -132,9 +132,6 @@ def vendor_suppliers(request):
     return Response(_supplier_payload(s), status=201)
 
 
-@api_view(["GET", "PATCH", "DELETE"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
-@permission_classes([IsAuthenticated])
 def _supplier_queryset_with_ledger(vendor):
     posted_filter = Q(stock_purchases__status=VendorStockPurchase.Status.POSTED)
     return Supplier.objects.filter(vendor=vendor).annotate(
@@ -145,6 +142,9 @@ def _supplier_queryset_with_ledger(vendor):
     )
 
 
+@api_view(["GET", "PATCH", "DELETE"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def vendor_supplier_detail(request, pk: int):
     vendor, err = vendor_or_error(request)
     if err:
