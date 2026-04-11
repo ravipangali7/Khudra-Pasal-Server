@@ -160,6 +160,8 @@ FRONTEND_URL = (
     or os.environ.get("BASE_URL", "").strip()
     or "http://localhost:8080"
 )
+# Relative SPA path used when OAuth `next` is omitted (must match customer home from primary_spa_redirect).
+REDIRECT_AFTER_LOGIN = (os.environ.get("REDIRECT_AFTER_LOGIN", "/portal").strip() or "/portal")
 _frontend_origin = FRONTEND_URL.rstrip("/")
 if _frontend_origin and _frontend_origin not in CORS_ALLOWED_ORIGINS:
     CORS_ALLOWED_ORIGINS.append(_frontend_origin)

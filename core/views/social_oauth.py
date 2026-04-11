@@ -200,9 +200,13 @@ def _http_get_json(url: str) -> dict:
     return json.loads(raw) if raw else {}
 
 
+def _default_oauth_next_path() -> str:
+    return getattr(settings, "REDIRECT_AFTER_LOGIN", "/portal").strip() or "/portal"
+
+
 @csrf_exempt
 def google_oauth_start(request):
-    next_path = (request.GET.get("next") or "").strip() or "/portal"
+    next_path = (request.GET.get("next") or "").strip() or _default_oauth_next_path()
     error_return = _normalize_error_return_path(request.GET.get("return_error"), "/login")
     flow = (request.GET.get("flow") or "login").strip().lower()
     if flow not in ("login", "register"):
@@ -313,12 +317,12 @@ def google_oauth_callback(request):
         msg = detail.get("detail", "Sign-in not allowed for this portal.")
         return _redirect_to_frontend({"oauth_error": str(msg)}, error_return)
     redirect_final = data["redirect"]
-    if (
-        portal_key == requested_portal
-        and next_path.startswith("/")
-        and not next_path.startswith("//")
-    ):
-        redirect_final = next_path
+    if portal_key == requested_portal and next_path.startswith("/") and not next_path.startswith("//"):
+        # Prefer server canonical `/portal` over legacy hardcoded `/portal/dashboard` when equivalent.
+        legacy_dashboard = next_path.strip() == "/portal/dashboard"
+        canonical = str(redirect_final or "").rstrip("/") == "/portal"
+        if not (legacy_dashboard and canonical):
+            redirect_final = next_path
     return _redirect_to_frontend(
         {
             "token": data["token"],
@@ -331,7 +335,7 @@ def google_oauth_callback(request):
 
 @csrf_exempt
 def facebook_oauth_start(request):
-    next_path = (request.GET.get("next") or "").strip() or "/portal"
+    next_path = (request.GET.get("next") or "").strip() or _default_oauth_next_path()
     error_return = _normalize_error_return_path(request.GET.get("return_error"), "/login")
     flow = (request.GET.get("flow") or "login").strip().lower()
     if flow not in ("login", "register"):
@@ -441,12 +445,11 @@ def facebook_oauth_callback(request):
         msg = detail.get("detail", "Sign-in not allowed for this portal.")
         return _redirect_to_frontend({"oauth_error": str(msg)}, error_return)
     redirect_final = data["redirect"]
-    if (
-        portal_key == requested_portal
-        and next_path.startswith("/")
-        and not next_path.startswith("//")
-    ):
-        redirect_final = next_path
+    if portal_key == requested_portal and next_path.startswith("/") and not next_path.startswith("//"):
+        legacy_dashboard = next_path.strip() == "/portal/dashboard"
+        canonical = str(redirect_final or "").rstrip("/") == "/portal"
+        if not (legacy_dashboard and canonical):
+            redirect_final = next_path
     return _redirect_to_frontend(
         {
             "token": data["token"],
