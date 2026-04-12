@@ -4124,8 +4124,22 @@ def admin_notification_broadcast(request):
         Notification.objects.bulk_create(batch)
     from core.services.fcm_push_service import send_fcm_to_tokens
 
-    send_fcm_to_tokens(fcm_tokens, title, message)
-    return Response({"created": min(count, MAX_ROWS), "capped": count > MAX_ROWS}, status=201)
+    push = send_fcm_to_tokens(fcm_tokens, title, message)
+    return Response(
+        {
+            "created": min(count, MAX_ROWS),
+            "capped": count > MAX_ROWS,
+            "push": {
+                "firebase_configured": push.firebase_configured,
+                "device_tokens": push.unique_tokens,
+                "delivered": push.success_count,
+                "failed": push.failure_count,
+                "skip_reason": push.skip_reason,
+                "first_error": push.first_error,
+            },
+        },
+        status=201,
+    )
 
 
 @api_view(["PATCH", "DELETE"])
