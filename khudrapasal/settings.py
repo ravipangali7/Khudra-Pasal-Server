@@ -400,7 +400,4 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 100 * 1024 * 1024
 
 # Firebase Admin SDK JSON for FCM server push (optional). Override with FIREBASE_CREDENTIALS_PATH.
 _default_fb = BASE_DIR.parent / "firebase-service.json"
-FIREBASE_CREDENTIALS_PATH = os.environ.get(
-    "FIREBASE_CREDENTIALS_PATH",
-    str(_default_fb) if _default_fb.is_file() else "",
-)
+FIREBASE_CREDENTIALS_PATH = 'firebase-service.json'
