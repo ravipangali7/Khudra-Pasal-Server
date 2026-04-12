@@ -8,7 +8,7 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from core.models import Order, OrderCommissionSettlement, Refund, Wallet, WalletTransaction
-from core.services import commission_service, vendor_service, wallet_service
+from core.services import commission_service, notification_service, vendor_service, wallet_service
 from core.services.base import get_or_create_personal_wallet
 
 Q2 = Decimal("0.01")
@@ -235,11 +235,22 @@ def execute_refund(refund: Refund) -> None:
         ).aggregate(s=Sum("amount"))["s"]
         or Decimal("0")
     )
+    status_before = order.status
     order_updates: dict = {"updated_at": timezone.now()}
     if total_approved + Decimal("0.01") >= Decimal(order.total):
         order_updates["status"] = Order.Status.REFUNDED
         order_updates["payment_status"] = Order.PaymentStatus.REFUNDED
     Order.objects.filter(pk=order.pk).update(**order_updates)
+    if order_updates.get("status") == Order.Status.REFUNDED and status_before != Order.Status.REFUNDED:
+        oid = order.pk
+        ps = status_before
+
+        def _notify_refunded():
+            notification_service.notify_order_status_fcm_customer(
+                oid, ps, Order.Status.REFUNDED
+            )
+
+        transaction.on_commit(_notify_refunded)
 
     Refund.objects.filter(pk=rf.pk).update(
         processed_at=timezone.now(),

@@ -100,6 +100,30 @@ def notify_child_purchase_approval_decision(par: PurchaseApprovalRequest) -> Not
     )
 
 
+def notify_order_status_fcm_customer(
+    order_id: int,
+    previous_status: str,
+    new_status: str,
+) -> None:
+    """Send an FCM push to the customer when order status changes (vendor/admin/save paths)."""
+    if previous_status == new_status:
+        return
+    order = Order.objects.select_related("customer").filter(pk=order_id).first()
+    if not order:
+        return
+    cust = order.customer
+    token = (getattr(cust, "fcm_token", "") or "").strip()
+    if not token:
+        return
+    from core.services.fcm_push_service import send_fcm_to_tokens
+
+    labels = dict(Order.Status.choices)
+    new_label = labels.get(new_status, new_status)
+    title = "Order update"
+    body = f"{order.order_number} is now {new_label}."
+    send_fcm_to_tokens([token], title, body)
+
+
 def notify_new_review(review: ProductReview) -> Optional[Notification]:
     vendor_user = None
     if review.product.seller_id:

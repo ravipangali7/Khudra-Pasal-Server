@@ -418,17 +418,23 @@ class OrderAdmin(admin.ModelAdmin):
 
     @admin.action(description="Mark as processing")
     def mark_processing(self, request, queryset):
-        queryset.update(status=models.Order.Status.PROCESSING)
+        for order in queryset:
+            order.status = models.Order.Status.PROCESSING
+            order.save()
         self.message_user(request, "Updated to processing.", messages.SUCCESS)
 
     @admin.action(description="Mark as shipped")
     def mark_shipped(self, request, queryset):
-        queryset.update(status=models.Order.Status.SHIPPED)
+        for order in queryset:
+            order.status = models.Order.Status.SHIPPED
+            order.save()
         self.message_user(request, "Updated to shipped.", messages.SUCCESS)
 
     @admin.action(description="Mark as delivered")
     def mark_delivered(self, request, queryset):
-        queryset.update(status=models.Order.Status.DELIVERED)
+        for order in queryset:
+            order.status = models.Order.Status.DELIVERED
+            order.save()
         self.message_user(request, "Updated to delivered.", messages.SUCCESS)
 
     actions = ["mark_processing", "mark_shipped", "mark_delivered"]

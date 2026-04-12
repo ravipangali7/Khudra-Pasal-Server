@@ -196,6 +196,16 @@ def order_post(sender, instance, created, **kwargs):
         transaction.on_commit(lambda o=oid: mail_service.send_order_placed_emails(o))
 
     prev = getattr(instance, "_previous_order_status", None)
+    if prev is not None and prev != instance.status:
+        oid = instance.pk
+        p = prev
+        s = instance.status
+        transaction.on_commit(
+            lambda i=oid, a=p, b=s: notification_service.notify_order_status_fcm_customer(
+                i, a, b
+            )
+        )
+
     if instance.status == Order.Status.CANCELLED and prev != Order.Status.CANCELLED:
         order_service.restore_order_after_cancel(instance)
     if instance.status == Order.Status.DELIVERED and prev != Order.Status.DELIVERED:
