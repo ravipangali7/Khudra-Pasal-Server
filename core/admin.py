@@ -1066,7 +1066,7 @@ class ReelAdmin(admin.ModelAdmin):
     )
     list_filter = ("status", "platform", "is_sponsored")
     search_fields = ("caption", "video_url", "vendor__store_name")
-    readonly_fields = ("views", "likes", "shares", "cart_adds", "created_at")
+    readonly_fields = ("views", "likes", "shares", "bookmarks", "cart_adds", "created_at")
     inlines = [ReelInteractionInline]
     autocomplete_fields = ("vendor", "product")
 

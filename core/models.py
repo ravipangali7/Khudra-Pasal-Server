@@ -2280,6 +2280,7 @@ class Reel(models.Model):
     views = models.PositiveIntegerField(default=0)
     likes = models.PositiveIntegerField(default=0)
     shares = models.PositiveIntegerField(default=0)
+    bookmarks = models.PositiveIntegerField(default=0)
     cart_adds = models.PositiveIntegerField(default=0)
     rejection_reason = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

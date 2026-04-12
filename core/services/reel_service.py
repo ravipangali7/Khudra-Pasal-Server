@@ -24,6 +24,7 @@ def record_interaction(interaction: ReelInteraction) -> None:
     field_map = {
         ReelInteraction.Type.LIKE: "likes",
         ReelInteraction.Type.SHARE: "shares",
+        ReelInteraction.Type.BOOKMARK: "bookmarks",
         ReelInteraction.Type.CART_ADD: "cart_adds",
     }
     field = field_map.get(interaction.type)
@@ -37,6 +38,7 @@ def remove_interaction_counter(reel: Reel, interaction_type: str) -> None:
     field_map = {
         ReelInteraction.Type.LIKE: "likes",
         ReelInteraction.Type.SHARE: "shares",
+        ReelInteraction.Type.BOOKMARK: "bookmarks",
         ReelInteraction.Type.CART_ADD: "cart_adds",
     }
     field = field_map.get(interaction_type)

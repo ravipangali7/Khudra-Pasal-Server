@@ -366,6 +366,7 @@ class ReelPublicSerializer(serializers.ModelSerializer):
             "views",
             "likes",
             "shares",
+            "bookmarks",
             "cart_adds",
             "comments_count",
             "created_at",
