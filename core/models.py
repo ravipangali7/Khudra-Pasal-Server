@@ -91,6 +91,11 @@ class User(AbstractUser):
         max_length=20, choices=SocialProvider.choices, blank=True
     )
     social_provider_id = models.CharField(max_length=255, blank=True)
+    oauth_phone_completed = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text="False until OAuth sign-up completes phone verification (OTP).",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     fcm_token = models.TextField(blank=True, default="")
@@ -124,6 +129,7 @@ class OTPVerification(models.Model):
     class Purpose(models.TextChoices):
         LOGIN = "login", "Login"
         SIGNUP = "signup", "Signup"
+        OAUTH_PHONE = "oauth_phone", "OAuth phone"
         TRANSFER = "transfer", "Transfer"
         WITHDRAW = "withdraw", "Withdraw"
         FREEZE = "freeze", "Freeze"

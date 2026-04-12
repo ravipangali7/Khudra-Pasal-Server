@@ -32,6 +32,7 @@ from core.views.unified_auth import build_auth_response_for_portal
 logger = logging.getLogger(__name__)
 
 OAUTH_STATE_SALT = "khudrapasal-oauth-state"
+OAUTH_PENDING_SALT = "khudrapasal-oauth-pending-phone"
 
 
 def _frontend_base() -> str:
@@ -106,9 +107,35 @@ def _allocate_placeholder_phone() -> str:
 
 
 def _redirect_to_frontend(query: dict, return_path: str = "/login") -> HttpResponseRedirect:
+    """Merge `query` into the SPA return path (supports `return_path` that already includes `?`)."""
     rp = _normalize_error_return_path(return_path, "/login")
-    q = urllib.parse.urlencode({k: v for k, v in query.items() if v is not None})
-    return HttpResponseRedirect(f"{_frontend_base()}{rp}?{q}")
+    base = _frontend_base()
+    merged: dict[str, str] = {}
+    if "?" in rp:
+        path_only, _, qs = rp.partition("?")
+        merged.update(dict(urllib.parse.parse_qsl(qs, keep_blank_values=True)))
+    else:
+        path_only = rp
+    for k, v in query.items():
+        if v is not None and v != "":
+            merged[k] = str(v)
+    q = urllib.parse.urlencode(merged)
+    url = f"{base}{path_only}"
+    if q:
+        url = f"{url}?{q}"
+    return HttpResponseRedirect(url)
+
+
+def sign_oauth_pending_token(user_id: int, next_path: str) -> str:
+    return signing.dumps(
+        {"uid": int(user_id), "n": (next_path or "")[:500]},
+        salt=OAUTH_PENDING_SALT,
+    )
+
+
+def read_oauth_pending_token(token: str, max_age: int = 1800) -> tuple[int, str]:
+    data = signing.loads(token, max_age=max_age, salt=OAUTH_PENDING_SALT)
+    return int(data["uid"]), str(data.get("n") or "")
 
 
 def _get_or_create_social_user(
@@ -161,6 +188,7 @@ def _get_or_create_social_user(
         social_provider=sp,
         social_provider_id=provider_user_id,
         role=User.Role.NORMAL,
+        oauth_phone_completed=False,
     )
     user.set_unusable_password()
     user.save()
@@ -309,6 +337,10 @@ def google_oauth_callback(request):
             return _redirect_to_frontend({"oauth_error": err}, error_return)
         get_or_create_personal_wallet(user)
 
+    if not user.oauth_phone_completed:
+        pending = sign_oauth_pending_token(user.pk, next_path)
+        return _redirect_to_frontend({"oauth_pending": pending}, error_return)
+
     requested_portal = infer_portal_key_from_frontend_path(next_path)
     portal_key = _effective_portal_key_for_oauth(user, next_path)
     data = build_auth_response_for_portal(user, portal_key)
@@ -329,7 +361,7 @@ def google_oauth_callback(request):
             "surface": data["surface"],
             "redirect": redirect_final,
         },
-        "/login",
+        error_return,
     )
 
 
@@ -437,6 +469,10 @@ def facebook_oauth_callback(request):
             return _redirect_to_frontend({"oauth_error": err}, error_return)
         get_or_create_personal_wallet(user)
 
+    if not user.oauth_phone_completed:
+        pending = sign_oauth_pending_token(user.pk, next_path)
+        return _redirect_to_frontend({"oauth_pending": pending}, error_return)
+
     requested_portal = infer_portal_key_from_frontend_path(next_path)
     portal_key = _effective_portal_key_for_oauth(user, next_path)
     data = build_auth_response_for_portal(user, portal_key)
@@ -456,5 +492,5 @@ def facebook_oauth_callback(request):
             "surface": data["surface"],
             "redirect": redirect_final,
         },
-        "/login",
+        error_return,
     )

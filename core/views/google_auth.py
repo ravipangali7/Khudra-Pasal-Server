@@ -12,7 +12,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from core.services.base import get_or_create_personal_wallet
-from core.views.social_oauth import _get_or_create_social_user
+from core.views.social_oauth import _get_or_create_social_user, sign_oauth_pending_token
 
 
 class GoogleCredentialLoginView(APIView):
@@ -69,6 +69,16 @@ class GoogleCredentialLoginView(APIView):
             return Response(
                 {"detail": "Account disabled."},
                 status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not user.oauth_phone_completed:
+            next_path = (getattr(settings, "REDIRECT_AFTER_LOGIN", "/portal") or "/portal").strip() or "/portal"
+            return Response(
+                {
+                    "requires_oauth_phone": True,
+                    "pending_token": sign_oauth_pending_token(user.pk, next_path),
+                },
+                status=status.HTTP_200_OK,
             )
 
         user.last_login = timezone.now()

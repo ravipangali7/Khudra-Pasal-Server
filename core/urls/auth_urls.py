@@ -2,6 +2,7 @@ from django.urls import path
 
 from core.views.google_auth import GoogleCredentialLoginView
 from core.views.auth_otp import otp_send, otp_verify
+from core.views.oauth_phone_completion import oauth_phone_send, oauth_phone_verify
 from core.views.social_oauth import (
     facebook_oauth_callback,
     facebook_oauth_start,
@@ -22,4 +23,6 @@ urlpatterns = [
     path("social/google/callback/", google_oauth_callback, name="oauth-google-callback"),
     path("social/facebook/start/", facebook_oauth_start, name="oauth-facebook-start"),
     path("social/facebook/callback/", facebook_oauth_callback, name="oauth-facebook-callback"),
+    path("social/oauth-phone/send/", oauth_phone_send, name="oauth-phone-send"),
+    path("social/oauth-phone/verify/", oauth_phone_verify, name="oauth-phone-verify"),
 ]
