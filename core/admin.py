@@ -238,7 +238,7 @@ class UserAdmin(BaseUserAdmin):
         (None, {"fields": ("phone", "password")}),
         (
             "Profile",
-            {"fields": ("username", "name", "email", "avatar")},
+            {"fields": ("username", "name", "email", "avatar", "social_avatar_url")},
         ),
         (
             "KhudraPasal",

@@ -318,12 +318,12 @@ class AdminUserSerializer(serializers.ModelSerializer):
         return absolute_media_url(request, obj.customer_document)
 
     def get_avatar(self, obj):
-        from core.views.admin.admin_write_utils import absolute_media_url
+        from core.views.admin.admin_write_utils import user_public_avatar_url
 
         request = self.context.get("request")
-        if not request or not getattr(obj, "avatar", None):
+        if not request:
             return ""
-        return absolute_media_url(request, obj.avatar)
+        return user_public_avatar_url(request, obj) or ""
 
 
 class RecentOrderSerializer(serializers.ModelSerializer):

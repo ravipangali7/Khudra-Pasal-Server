@@ -31,6 +31,12 @@ from core.views.unified_auth import build_auth_response_for_portal
 
 logger = logging.getLogger(__name__)
 
+# Shown when GOOGLE_OAUTH_CLIENT_ID / SECRET are missing from server/.env (or credentials JSON).
+_GOOGLE_OAUTH_NOT_CONFIGURED = (
+    "Google OAuth is not configured. Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET "
+    "in server/.env (see server/.env.example), then restart Django."
+)
+
 OAUTH_STATE_SALT = "khudrapasal-oauth-state"
 OAUTH_PENDING_SALT = "khudrapasal-oauth-pending-phone"
 
@@ -138,20 +144,42 @@ def read_oauth_pending_token(token: str, max_age: int = 1800) -> tuple[int, str]
     return int(data["uid"]), str(data.get("n") or "")
 
 
+def _normalize_oauth_avatar_url(raw: str | None) -> str:
+    """Google `picture` is an HTTPS URL; cap length for URLField(512)."""
+    s = (raw or "").strip()
+    if not s.startswith("http"):
+        return ""
+    return s[:512]
+
+
 def _get_or_create_social_user(
     provider: str,
     provider_user_id: str,
     name: str,
     email: str,
+    *,
+    avatar_url: str = "",
 ) -> tuple[User, bool]:
     """
     Returns (user, created_new_account).
     created_new_account is True only when a brand-new User row was inserted (not social/email link).
+    Persists provider profile image on ``User.social_avatar_url`` when supplied.
     """
     sp = User.SocialProvider.GOOGLE if provider == "google" else User.SocialProvider.FACEBOOK
+    pic = _normalize_oauth_avatar_url(avatar_url)
 
     existing = User.objects.filter(social_provider=sp, social_provider_id=provider_user_id).first()
     if existing:
+        # Refresh display name / picture from the provider on each successful OAuth login.
+        update_fields: list[str] = []
+        if name and existing.name != name[:150]:
+            existing.name = name[:150]
+            update_fields.append("name")
+        if pic and existing.social_avatar_url != pic:
+            existing.social_avatar_url = pic
+            update_fields.append("social_avatar_url")
+        if update_fields:
+            existing.save(update_fields=update_fields)
         return existing, False
 
     if email:
@@ -161,11 +189,15 @@ def _get_or_create_social_user(
             by_email.social_provider_id = provider_user_id
             if name and (not by_email.name or by_email.name == by_email.phone):
                 by_email.name = name[:150]
-            by_email.save(
-                update_fields=["social_provider", "social_provider_id", "name"]
-                if name
-                else ["social_provider", "social_provider_id"]
-            )
+            if pic:
+                by_email.social_avatar_url = pic
+            # Mirror legacy behaviour: include ``name`` whenever the provider sent a non-empty name.
+            uf: list[str] = ["social_provider", "social_provider_id"]
+            if name:
+                uf.append("name")
+            if pic:
+                uf.append("social_avatar_url")
+            by_email.save(update_fields=uf)
             return by_email, False
 
     phone = _allocate_placeholder_phone()
@@ -187,6 +219,7 @@ def _get_or_create_social_user(
         email=email[:254] if email else "",
         social_provider=sp,
         social_provider_id=provider_user_id,
+        social_avatar_url=pic,
         role=User.Role.NORMAL,
         oauth_phone_completed=False,
     )
@@ -241,9 +274,7 @@ def google_oauth_start(request):
         flow = "login"
     cid = getattr(settings, "GOOGLE_OAUTH_CLIENT_ID", "") or ""
     if not cid:
-        return _redirect_to_frontend(
-            {"oauth_error": "Google OAuth is not configured."}, error_return
-        )
+        return _redirect_to_frontend({"oauth_error": _GOOGLE_OAUTH_NOT_CONFIGURED}, error_return)
     state = _sign_state("google", next_path, error_return, flow)
     redirect_uri = f"{_public_api_base(request)}{reverse('oauth-google-callback')}"
     params = {
@@ -280,9 +311,7 @@ def google_oauth_callback(request):
     secret = getattr(settings, "GOOGLE_OAUTH_CLIENT_SECRET", "") or ""
     cid = getattr(settings, "GOOGLE_OAUTH_CLIENT_ID", "") or ""
     if not secret or not cid:
-        return _redirect_to_frontend(
-            {"oauth_error": "Google OAuth is not configured."}, error_return
-        )
+        return _redirect_to_frontend({"oauth_error": _GOOGLE_OAUTH_NOT_CONFIGURED}, error_return)
 
     redirect_uri = f"{_public_api_base(request)}{reverse('oauth-google-callback')}"
     try:
@@ -328,7 +357,10 @@ def google_oauth_callback(request):
 
     name = (profile.get("name") or profile.get("email") or "")[:150]
     email = (profile.get("email") or "")[:254]
-    user, created_new = _get_or_create_social_user("google", gid, name, email)
+    picture = profile.get("picture") or ""
+    user, created_new = _get_or_create_social_user(
+        "google", gid, name, email, avatar_url=str(picture) if picture else ""
+    )
     if not user.is_active:
         return _redirect_to_frontend({"oauth_error": "Account disabled."}, error_return)
     if created_new:

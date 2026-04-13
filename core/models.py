@@ -72,6 +72,8 @@ class User(AbstractUser):
         related_name="referrals",
     )
     avatar = models.ImageField(upload_to="avatars/", blank=True)
+    # HTTPS URL from Google userinfo `picture` (or other OAuth providers); used when no uploaded avatar.
+    social_avatar_url = models.URLField(max_length=512, blank=True, default="")
     profile_cover = models.ImageField(upload_to="customers/covers/", blank=True)
     profile_description = models.TextField(blank=True)
     address = models.TextField(blank=True)

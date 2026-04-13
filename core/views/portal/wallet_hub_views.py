@@ -37,7 +37,7 @@ from core.services.wallet_transfer_code_service import (
     resolve_sender_wallet_for_hub_transfer,
 )
 from core.throttles import WalletHubTransferCodeLookupThrottle
-from core.views.admin.admin_write_utils import absolute_media_url, validation_error
+from core.views.admin.admin_write_utils import absolute_media_url, user_public_avatar_url, validation_error
 from core.views.admin.resource_views import _to_decimal
 from core.views.portal.portal_views import _portal_consume_otp_or_error
 
@@ -129,9 +129,8 @@ def wallet_hub_transfer_id_lookup(request, code: str):
     if not row:
         return Response({"detail": "Transfer ID not found."}, status=404)
     u = row.user
-    avatar_url = ""
-    if u.avatar:
-        avatar_url = absolute_media_url(request, u.avatar) or ""
+    # Masked lookup: show uploaded avatar or OAuth picture URL.
+    avatar_url = user_public_avatar_url(request, u) or ""
     return Response(
         {
             "code": row.code,

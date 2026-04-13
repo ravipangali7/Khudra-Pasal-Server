@@ -128,7 +128,11 @@ from core.services.wallet_txn_signed import (
 from core.services.order_service import pay_with_wallet
 from core.services import refund_notification_service, support_notification_service, support_ticket_service
 from core.services import refund_service
-from core.views.admin.admin_write_utils import absolute_media_url, validation_error
+from core.views.admin.admin_write_utils import (
+    absolute_media_url,
+    user_public_avatar_url,
+    validation_error,
+)
 from core.views.admin.resource_views import _to_decimal
 from core.views.vendor.vendor_resources import _gen_order_number, _gen_ticket_number
 from core.views.website.home_views import annotate_reels_comments
@@ -2693,7 +2697,7 @@ def _portal_self_profile_get(request, u: User) -> dict:
         "phone": u.phone,
         "email": u.email or "",
         "address": u.address or "",
-        "avatar_url": absolute_media_url(request, u.avatar),
+        "avatar_url": user_public_avatar_url(request, u),
         "username": u.username,
         "kid": u.KID,
         "kyc_status": u.kyc_status,
@@ -2712,7 +2716,7 @@ def _portal_self_profile_get(request, u: User) -> dict:
                 "store_name": u.name,
                 "description": u.profile_description or "",
                 "contact_email": u.email or "",
-                "logo_url": absolute_media_url(request, u.avatar),
+                "logo_url": user_public_avatar_url(request, u),
                 "banner_url": absolute_media_url(request, u.profile_cover),
                 "rating": 0.0,
                 "is_verified": u.kyc_status == User.KYCStatus.VERIFIED,
@@ -2786,7 +2790,7 @@ def portal_self_profile(request):
         out.update(
             {
                 "store_name": u.name,
-                "logo_url": absolute_media_url(request, u.avatar),
+                "logo_url": user_public_avatar_url(request, u),
                 "banner_url": absolute_media_url(request, u.profile_cover),
             }
         )
@@ -2818,7 +2822,7 @@ def portal_customer_profile(request):
                 "contact_email": u.email or "",
                 "phone": u.phone,
                 "address": u.address or "",
-                "logo_url": absolute_media_url(request, u.avatar),
+                "logo_url": user_public_avatar_url(request, u),
                 "banner_url": absolute_media_url(request, u.profile_cover),
                 "username": u.username,
                 "kid": u.KID,
@@ -2859,7 +2863,7 @@ def portal_customer_profile(request):
         {
             "id": str(u.pk),
             "store_name": u.name,
-            "logo_url": absolute_media_url(request, u.avatar),
+            "logo_url": user_public_avatar_url(request, u),
             "banner_url": absolute_media_url(request, u.profile_cover),
         }
     )
@@ -3387,7 +3391,7 @@ def portal_support_ticket_detail(request, ticket_number):
     if not t:
         return Response({"detail": "Not found."}, status=404)
     support_ticket_service.ensure_initial_message(t)
-    _av = lambda u: absolute_media_url(request, u.avatar)
+    _av = lambda u: user_public_avatar_url(request, u)
     msgs = [
         support_ticket_service.message_to_row(
             m, _portal_support_attachment_url, sender_avatar_url_fn=_av
@@ -3437,7 +3441,7 @@ def portal_support_ticket_messages(request, ticket_number):
             before_id,
             limit,
             _portal_support_attachment_url,
-            sender_avatar_url_fn=lambda u: absolute_media_url(request, u.avatar),
+            sender_avatar_url_fn=lambda u: user_public_avatar_url(request, u),
         )
         return Response({"results": results, "has_more": has_more})
 
@@ -3460,7 +3464,7 @@ def portal_support_ticket_messages(request, ticket_number):
             "message": support_ticket_service.message_to_row(
                 msg,
                 _portal_support_attachment_url,
-                sender_avatar_url_fn=lambda u: absolute_media_url(request, u.avatar),
+                sender_avatar_url_fn=lambda u: user_public_avatar_url(request, u),
             ),
         },
         status=201,

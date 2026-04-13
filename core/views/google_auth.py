@@ -59,9 +59,12 @@ class GoogleCredentialLoginView(APIView):
 
         name = str(payload.get("name") or payload.get("email") or "Google User")[:150]
         email = str(payload.get("email") or "")[:254]
+        picture = str(payload.get("picture") or "")
 
         with transaction.atomic():
-            user, created = _get_or_create_social_user("google", provider_user_id, name, email)
+            user, created = _get_or_create_social_user(
+                "google", provider_user_id, name, email, avatar_url=picture
+            )
             if created:
                 get_or_create_personal_wallet(user)
 

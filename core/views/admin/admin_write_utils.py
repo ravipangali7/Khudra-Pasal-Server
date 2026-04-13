@@ -20,6 +20,16 @@ def absolute_media_url(request, file_field) -> str:
     return request.build_absolute_uri(url)
 
 
+def user_public_avatar_url(request, user) -> str:
+    """
+    Prefer a user-uploaded avatar file; otherwise fall back to OAuth `picture` (stored on User.social_avatar_url).
+    """
+    uploaded = absolute_media_url(request, getattr(user, "avatar", None))
+    if uploaded:
+        return uploaded
+    return (getattr(user, "social_avatar_url", None) or "").strip()
+
+
 def product_primary_image_url(request, product) -> str:
     """
     URL for Product primary image, or the first gallery image if primary is missing.
