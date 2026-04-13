@@ -52,6 +52,31 @@ load_dotenv(_ENV_PATH)
 _hydrate_google_oauth_from_dotenv()
 
 
+def _hydrate_gemini_from_dotenv() -> None:
+    """
+    Ensure GEMINI_API_KEY (or GOOGLE_API_KEY) is visible when set in server/.env but the process env is empty.
+    Same pattern as _hydrate_google_oauth_from_dotenv.
+    """
+    for path in (_ENV_PATH, BASE_DIR.parent / ".env"):
+        if not path.is_file():
+            continue
+        vals = dotenv_values(path)
+        for key in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
+            raw = vals.get(key)
+            if raw is None:
+                continue
+            file_val = str(raw).strip()
+            env_val = (os.environ.get(key) or "").strip()
+            if file_val and not env_val:
+                os.environ[key] = file_val
+
+
+_hydrate_gemini_from_dotenv()
+
+# Google Gemini (sales assistant). Prefer GEMINI_API_KEY; GOOGLE_API_KEY is a common alternate name.
+GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip() or (os.environ.get("GOOGLE_API_KEY") or "").strip()
+
+
 def _resolve_google_oauth_credentials() -> tuple[str, str]:
     """Prefer env; optionally load Web client id/secret from a Google credentials JSON file."""
     cid = (os.environ.get("GOOGLE_OAUTH_CLIENT_ID") or "").strip()

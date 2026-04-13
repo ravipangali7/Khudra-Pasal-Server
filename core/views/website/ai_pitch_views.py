@@ -5,10 +5,10 @@ Proxy for Google Gemini sales-assist chat (API key stays server-side).
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 import requests
+from django.conf import settings
 from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import AllowAny
@@ -35,6 +35,33 @@ MAX_MESSAGE_CHARS = 12_000
 MAX_MESSAGES = 40
 
 
+def _normalize_chat_messages(raw: list) -> list[dict[str, str]]:
+    """
+    Merge consecutive turns with the same role (e.g. double user sends) into one message
+    so Gemini receives a valid alternating history.
+    """
+    merged: list[dict[str, str]] = []
+    for m in raw:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        text = m.get("content")
+        if role not in ("user", "assistant") or not isinstance(text, str):
+            continue
+        text = text.strip()
+        if not text:
+            continue
+        if len(text) > MAX_MESSAGE_CHARS:
+            return []
+        if merged and merged[-1]["role"] == role:
+            merged[-1]["content"] = f"{merged[-1]['content']}\n\n{text}"
+            if len(merged[-1]["content"]) > MAX_MESSAGE_CHARS:
+                return []
+        else:
+            merged.append({"role": role, "content": text})
+    return merged
+
+
 def _extract_text(data: dict[str, Any]) -> str:
     try:
         cands = data.get("candidates") or []
@@ -51,10 +78,15 @@ def _extract_text(data: dict[str, Any]) -> str:
 @authentication_classes([JWTAuthentication, TokenAuthentication])
 @permission_classes([AllowAny])
 def ai_pitch(request):
-    key = (os.environ.get("GEMINI_API_KEY") or "").strip()
+    key = (getattr(settings, "GEMINI_API_KEY", None) or "").strip()
     if not key:
         return Response(
-            {"detail": "AI assistant is not configured (missing GEMINI_API_KEY)."},
+            {
+                "detail": (
+                    "AI assistant is not configured. Set GEMINI_API_KEY (or GOOGLE_API_KEY) in the "
+                    "API server environment or in server/.env, then restart the Django process."
+                ),
+            },
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
 
@@ -65,26 +97,22 @@ def ai_pitch(request):
             {"detail": "Expected a non-empty `messages` array."},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    if len(messages) > MAX_MESSAGES:
+    normalized = _normalize_chat_messages(messages)
+    if not normalized:
+        return Response(
+            {"detail": "No valid messages (check role and content)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if len(normalized) > MAX_MESSAGES:
         return Response(
             {"detail": "Too many messages."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     contents: list[dict[str, Any]] = []
-    for m in messages:
-        if not isinstance(m, dict):
-            continue
-        role = m.get("role")
-        text = m.get("content")
-        if not isinstance(text, str):
-            continue
-        text = text.strip()
-        if len(text) > MAX_MESSAGE_CHARS:
-            return Response(
-                {"detail": "Message too long."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+    for m in normalized:
+        role = m["role"]
+        text = m["content"]
         if role == "user":
             contents.append({"role": "user", "parts": [{"text": text}]})
         elif role == "assistant":
