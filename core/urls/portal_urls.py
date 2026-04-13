@@ -96,6 +96,16 @@ urlpatterns = [
         portal_views.portal_orders_payment_complete,
         name="portal-orders-payment-complete",
     ),
+    path(
+        "orders/payment/esewa/verify/",
+        portal_views.portal_orders_payment_esewa_verify,
+        name="portal-orders-payment-esewa-verify",
+    ),
+    path(
+        "orders/payment/khalti/verify/",
+        portal_views.portal_orders_payment_khalti_verify,
+        name="portal-orders-payment-khalti-verify",
+    ),
     path("summary/", portal_views.portal_summary, name="portal-summary"),
     path(
         "switch-portal/context/",

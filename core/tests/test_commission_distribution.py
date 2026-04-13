@@ -398,7 +398,7 @@ class GatewayPaymentCompleteTests(TestCase):
         self.client.credentials(
             HTTP_AUTHORIZATION=f"Token {Token.objects.get(user=self.customer).key}"
         )
-        for method in ("cod", "esewa", "khalti", "ime_pay"):
+        for method in ("cod", "ime_pay"):
             r = self.client.post(
                 "/api/portal/orders/checkout/",
                 {

@@ -227,6 +227,31 @@ for _part in _extra_csrf.split(","):
     if _o and _o not in CSRF_TRUSTED_ORIGINS:
         CSRF_TRUSTED_ORIGINS.append(_o)
 
+# eSewa / Khalti — sandbox test integration (set NEPAL_GATEWAY_CHECKOUT_ENABLED=false to disable).
+NEPAL_GATEWAY_CHECKOUT_ENABLED = os.environ.get(
+    "NEPAL_GATEWAY_CHECKOUT_ENABLED", "true"
+).strip().lower() in ("true", "1", "yes")
+ESEWA_PRODUCT_CODE = (os.environ.get("ESEWA_PRODUCT_CODE") or "EPAYTEST").strip()
+ESEWA_SECRET_KEY = (os.environ.get("ESEWA_SECRET_KEY") or "8gBm/:&EnhH.1/q").strip()
+ESEWA_FORM_URL = (
+    os.environ.get("ESEWA_FORM_URL") or "https://rc-epay.esewa.com.np/api/epay/main/v2/form"
+).strip()
+ESEWA_STATUS_URL = (
+    os.environ.get("ESEWA_STATUS_URL") or "https://rc.esewa.com.np/api/epay/transaction/status/"
+).strip()
+KHALTI_PUBLIC_KEY = (
+    os.environ.get("KHALTI_PUBLIC_KEY") or "test_public_key_dc74e0fd11ba4242b49432bc7d9e2952"
+).strip()
+KHALTI_SECRET_KEY = (
+    os.environ.get("KHALTI_SECRET_KEY") or "test_secret_key_f59e8b7d18b4499ca40f68195a473d4b"
+).strip()
+KHALTI_INITIATE_URL = (
+    os.environ.get("KHALTI_INITIATE_URL") or "https://a.khalti.com/api/v2/epayment/initiate/"
+).strip()
+KHALTI_LOOKUP_URL = (
+    os.environ.get("KHALTI_LOOKUP_URL") or "https://a.khalti.com/api/v2/epayment/lookup/"
+).strip()
+
 # Public origin of this API for OAuth redirect_uri (e.g. https://api.example.com). Defaults to request host.
 OAUTH_REDIRECT_BASE = os.environ.get("OAUTH_REDIRECT_BASE", "").rstrip("/") or None
 
