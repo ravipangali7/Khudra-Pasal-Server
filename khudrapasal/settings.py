@@ -14,13 +14,42 @@ from pathlib import Path
 import json
 import os
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+# Primary env file for this Django project (see server/.env.example).
+_ENV_PATH = BASE_DIR / ".env"
+
+
+def _hydrate_google_oauth_from_dotenv() -> None:
+    """
+    Ensure GOOGLE_OAUTH_* are populated from .env when the process env has empty placeholders.
+
+    load_dotenv() uses override=False by default, so an empty GOOGLE_OAUTH_CLIENT_ID injected
+    by an IDE, Windows service, or container would block values from server/.env.
+    """
+    for path in (_ENV_PATH, BASE_DIR.parent / ".env"):
+        if not path.is_file():
+            continue
+        vals = dotenv_values(path)
+        for key in (
+            "GOOGLE_OAUTH_CLIENT_ID",
+            "GOOGLE_OAUTH_CLIENT_SECRET",
+            "GOOGLE_OAUTH_CREDENTIALS_JSON",
+        ):
+            raw = vals.get(key)
+            if raw is None:
+                continue
+            file_val = str(raw).strip()
+            env_val = (os.environ.get(key) or "").strip()
+            if file_val and not env_val:
+                os.environ[key] = file_val
+
 
 # Optional server/.env for GOOGLE_OAUTH_* and other secrets (see server/.env.example).
-load_dotenv(BASE_DIR / ".env")
+load_dotenv(_ENV_PATH)
+_hydrate_google_oauth_from_dotenv()
 
 
 def _resolve_google_oauth_credentials() -> tuple[str, str]:
