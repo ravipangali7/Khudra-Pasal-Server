@@ -53,6 +53,11 @@ urlpatterns = [
         portal_views.portal_payout_account_detail,
         name="portal-payout-account-detail",
     ),
+    path(
+        "support/super-admin-contact/",
+        portal_views.portal_support_super_admin_contact,
+        name="portal-support-super-admin-contact",
+    ),
     path("support/faqs/", portal_views.portal_support_faqs, name="portal-support-faqs"),
     path(
         "support/attachments/<int:attachment_id>/",

@@ -41,6 +41,7 @@ from core.models import (
     Reel,
     SupportTicket,
     SupportTicketMessage,
+    SupportTicketReaderState,
     Unit,
     User,
     VendorBankDetail,
@@ -49,6 +50,7 @@ from core.models import (
 from core.serializers import ReelPublicSerializer
 from core.services.product_pricing import effective_unit_price, validate_and_set_product_discount
 from core.services import otp_service, support_notification_service, support_ticket_service, wallet_policy
+from core.services.user_presence import online_user_ids_for
 from core.services.pos_order_service import create_pos_order, gen_pos_order_number as _gen_order_number
 from core.services.refund_service import breakdown_for_refund
 from core.services.kyc_service import sync_user_kyc_status
@@ -1010,6 +1012,36 @@ def vendor_reports_export_csv(request):
 # --- Support tickets ---
 
 
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def vendor_support_super_admin_contact(request):
+    vendor, err = vendor_or_error(request)
+    if err:
+        return err
+    del vendor
+    u = support_ticket_service.primary_super_admin_user()
+    if not u:
+        return Response(
+            {
+                "name": "",
+                "phone": "",
+                "avatar_url": "",
+                "is_online": False,
+            }
+        )
+    sa_ids = support_ticket_service.super_admin_user_ids()
+    online = online_user_ids_for(sa_ids)
+    return Response(
+        {
+            "name": u.name or u.phone or "",
+            "phone": u.phone or "",
+            "avatar_url": absolute_media_url(request, u.avatar) or "",
+            "is_online": u.pk in online,
+        }
+    )
+
+
 def _vendor_support_attachment_url(att_id: int) -> str:
     return f"/vendor/support/attachments/{att_id}/"
 
@@ -1026,19 +1058,31 @@ def vendor_support_tickets(request):
             "-last_activity_at", "-created_at"
         )
         paginator, page = _paginate(request, qs)
-        rows = [
-            {
-                "id": t.ticket_number,
-                "subject": t.subject,
-                "status": t.status,
-                "priority": t.priority,
-                "category": t.category,
-                "source_panel": t.source_panel,
-                "created": t.created_at.date().isoformat(),
-                "last_activity": (t.last_activity_at or t.created_at).date().isoformat(),
-            }
-            for t in page
-        ]
+        ticket_ids = [t.pk for t in page]
+        states = {
+            rs.ticket_id: rs
+            for rs in SupportTicketReaderState.objects.filter(
+                reader=request.user, ticket_id__in=ticket_ids
+            )
+        }
+        rows = []
+        for t in page:
+            st = states.get(t.pk)
+            rows.append(
+                {
+                    "id": t.ticket_number,
+                    "subject": t.subject,
+                    "status": t.status,
+                    "priority": t.priority,
+                    "category": t.category,
+                    "source_panel": t.source_panel,
+                    "created": t.created_at.date().isoformat(),
+                    "last_activity": (t.last_activity_at or t.created_at).date().isoformat(),
+                    "has_unread": support_ticket_service.ticket_has_unread_for_submitter(
+                        t, state=st
+                    ),
+                }
+            )
         return paginator.get_paginated_response(rows)
     subj = (request.data.get("subject") or "").strip()
     desc = (request.data.get("description") or "").strip()
@@ -1086,13 +1130,18 @@ def vendor_support_ticket_detail(request, ticket_number):
         return Response({"detail": "Not found."}, status=404)
     if request.method == "GET":
         support_ticket_service.ensure_initial_message(t)
+        support_ticket_service.mark_ticket_read(t, request.user)
         _av = lambda u: absolute_media_url(request, u.avatar)
-        msgs = [
-            support_ticket_service.message_to_row(
-                m, _vendor_support_attachment_url, sender_avatar_url_fn=_av
-            )
-            for m in t.messages.all()
-        ]
+        sa_ids = support_ticket_service.super_admin_user_ids()
+        counterpart_online = bool(online_user_ids_for(sa_ids))
+        msgs = support_ticket_service.serialize_ticket_messages(
+            list(t.messages.all()),
+            _vendor_support_attachment_url,
+            sender_avatar_url_fn=_av,
+            viewer_user_id=request.user.pk,
+            viewer_is_staff=False,
+            counterpart_online=counterpart_online,
+        )
         return Response(
             {
                 "id": t.ticket_number,
@@ -1104,6 +1153,7 @@ def vendor_support_ticket_detail(request, ticket_number):
                 "source_panel": t.source_panel,
                 "created": t.created_at.isoformat(),
                 "last_activity_at": (t.last_activity_at or t.created_at).isoformat(),
+                "counterpart_online": counterpart_online,
                 "messages": msgs,
             }
         )
@@ -1148,12 +1198,17 @@ def vendor_support_ticket_messages(request, ticket_number):
             limit = int(request.query_params.get("limit") or 50)
         except (TypeError, ValueError):
             limit = 50
+        sa_ids = support_ticket_service.super_admin_user_ids()
+        counterpart_online = bool(online_user_ids_for(sa_ids))
         results, has_more = support_ticket_service.messages_page_before(
             t,
             before_id,
             limit,
             _vendor_support_attachment_url,
             sender_avatar_url_fn=lambda u: absolute_media_url(request, u.avatar),
+            viewer_user_id=request.user.pk,
+            viewer_is_staff=False,
+            counterpart_online=counterpart_online,
         )
         return Response({"results": results, "has_more": has_more})
 
@@ -1170,6 +1225,14 @@ def vendor_support_ticket_messages(request, ticket_number):
         .prefetch_related("attachments")
         .first()
     )
+    sa_ids = support_ticket_service.super_admin_user_ids()
+    counterpart_online = bool(online_user_ids_for(sa_ids))
+    tick = support_ticket_service.delivery_tick_for_message(
+        msg,
+        viewer_user_id=request.user.pk,
+        viewer_is_staff=False,
+        counterpart_online=counterpart_online,
+    )
     return Response(
         {
             "ok": True,
@@ -1177,6 +1240,7 @@ def vendor_support_ticket_messages(request, ticket_number):
                 msg,
                 _vendor_support_attachment_url,
                 sender_avatar_url_fn=lambda u: absolute_media_url(request, u.avatar),
+                delivery_ticks=tick,
             ),
         },
         status=201,

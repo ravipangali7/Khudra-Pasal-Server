@@ -58,6 +58,11 @@ urlpatterns = [
     path("customers/", vendor_resources.vendor_customers_list, name="vendor-customers"),
     path("reports/summary/", vendor_resources.vendor_reports_summary, name="vendor-reports-summary"),
     path("reports/export.csv", vendor_resources.vendor_reports_export_csv, name="vendor-reports-csv"),
+    path(
+        "support/super-admin-contact/",
+        vendor_resources.vendor_support_super_admin_contact,
+        name="vendor-support-super-admin-contact",
+    ),
     path("support/tickets/", vendor_resources.vendor_support_tickets, name="vendor-support-tickets"),
     path(
         "support/tickets/<str:ticket_number>/messages/",

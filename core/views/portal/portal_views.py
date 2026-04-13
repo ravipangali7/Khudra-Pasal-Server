@@ -59,6 +59,7 @@ from core.models import (
     ShippingZone,
     SupportTicket,
     SupportTicketMessage,
+    SupportTicketReaderState,
     PayoutAccount,
     User,
     Vendor,
@@ -127,6 +128,7 @@ from core.services.wallet_txn_signed import (
 )
 from core.services.order_service import pay_with_wallet
 from core.services import refund_notification_service, support_notification_service, support_ticket_service
+from core.services.user_presence import online_user_ids_for
 from core.services import refund_service
 from core.views.admin.admin_write_utils import (
     absolute_media_url,
@@ -3302,6 +3304,32 @@ def portal_wallet_withdraw(request):
 @api_view(["GET"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated, IsPortalSelf])
+def portal_support_super_admin_contact(request):
+    u = support_ticket_service.primary_super_admin_user()
+    if not u:
+        return Response(
+            {
+                "name": "",
+                "phone": "",
+                "avatar_url": "",
+                "is_online": False,
+            }
+        )
+    sa_ids = support_ticket_service.super_admin_user_ids()
+    online = online_user_ids_for(sa_ids)
+    return Response(
+        {
+            "name": u.name or u.phone or "",
+            "phone": u.phone or "",
+            "avatar_url": user_public_avatar_url(request, u) or "",
+            "is_online": u.pk in online,
+        }
+    )
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated, IsPortalSelf])
 def portal_support_faqs(request):
     qs = FAQ.objects.filter(
         is_published=True,
@@ -3331,19 +3359,31 @@ def portal_support_tickets(request):
             "-last_activity_at", "-created_at"
         )
         paginator, page = _paginate(request, qs)
-        rows = [
-            {
-                "id": t.ticket_number,
-                "subject": t.subject,
-                "status": t.status,
-                "priority": t.priority,
-                "category": t.category,
-                "source_panel": t.source_panel,
-                "created": t.created_at.date().isoformat(),
-                "last_activity": (t.last_activity_at or t.created_at).date().isoformat(),
-            }
-            for t in page
-        ]
+        ticket_ids = [t.pk for t in page]
+        states = {
+            rs.ticket_id: rs
+            for rs in SupportTicketReaderState.objects.filter(
+                reader=request.user, ticket_id__in=ticket_ids
+            )
+        }
+        rows = []
+        for t in page:
+            st = states.get(t.pk)
+            rows.append(
+                {
+                    "id": t.ticket_number,
+                    "subject": t.subject,
+                    "status": t.status,
+                    "priority": t.priority,
+                    "category": t.category,
+                    "source_panel": t.source_panel,
+                    "created": t.created_at.date().isoformat(),
+                    "last_activity": (t.last_activity_at or t.created_at).date().isoformat(),
+                    "has_unread": support_ticket_service.ticket_has_unread_for_submitter(
+                        t, state=st
+                    ),
+                }
+            )
         return paginator.get_paginated_response(rows)
     subj = (request.data.get("subject") or "").strip()
     desc = (request.data.get("description") or "").strip()
@@ -3391,13 +3431,18 @@ def portal_support_ticket_detail(request, ticket_number):
     if not t:
         return Response({"detail": "Not found."}, status=404)
     support_ticket_service.ensure_initial_message(t)
+    support_ticket_service.mark_ticket_read(t, request.user)
     _av = lambda u: user_public_avatar_url(request, u)
-    msgs = [
-        support_ticket_service.message_to_row(
-            m, _portal_support_attachment_url, sender_avatar_url_fn=_av
-        )
-        for m in t.messages.all()
-    ]
+    sa_ids = support_ticket_service.super_admin_user_ids()
+    counterpart_online = bool(online_user_ids_for(sa_ids))
+    msgs = support_ticket_service.serialize_ticket_messages(
+        list(t.messages.all()),
+        _portal_support_attachment_url,
+        sender_avatar_url_fn=_av,
+        viewer_user_id=request.user.pk,
+        viewer_is_staff=False,
+        counterpart_online=counterpart_online,
+    )
     return Response(
         {
             "id": t.ticket_number,
@@ -3409,6 +3454,7 @@ def portal_support_ticket_detail(request, ticket_number):
             "source_panel": t.source_panel,
             "created": t.created_at.isoformat(),
             "last_activity_at": (t.last_activity_at or t.created_at).isoformat(),
+            "counterpart_online": counterpart_online,
             "messages": msgs,
         }
     )
@@ -3436,12 +3482,17 @@ def portal_support_ticket_messages(request, ticket_number):
             limit = int(request.query_params.get("limit") or 50)
         except (TypeError, ValueError):
             limit = 50
+        sa_ids = support_ticket_service.super_admin_user_ids()
+        counterpart_online = bool(online_user_ids_for(sa_ids))
         results, has_more = support_ticket_service.messages_page_before(
             t,
             before_id,
             limit,
             _portal_support_attachment_url,
             sender_avatar_url_fn=lambda u: user_public_avatar_url(request, u),
+            viewer_user_id=request.user.pk,
+            viewer_is_staff=False,
+            counterpart_online=counterpart_online,
         )
         return Response({"results": results, "has_more": has_more})
 
@@ -3458,6 +3509,14 @@ def portal_support_ticket_messages(request, ticket_number):
         .prefetch_related("attachments")
         .first()
     )
+    sa_ids = support_ticket_service.super_admin_user_ids()
+    counterpart_online = bool(online_user_ids_for(sa_ids))
+    tick = support_ticket_service.delivery_tick_for_message(
+        msg,
+        viewer_user_id=request.user.pk,
+        viewer_is_staff=False,
+        counterpart_online=counterpart_online,
+    )
     return Response(
         {
             "ok": True,
@@ -3465,6 +3524,7 @@ def portal_support_ticket_messages(request, ticket_number):
                 msg,
                 _portal_support_attachment_url,
                 sender_avatar_url_fn=lambda u: user_public_avatar_url(request, u),
+                delivery_ticks=tick,
             ),
         },
         status=201,

@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 from django.http import FileResponse
 from django.utils import timezone
 
@@ -15,6 +16,7 @@ from core.models import (
     SupportTicket,
     SupportTicketMessage,
     SupportTicketMessageAttachment,
+    SupportTicketReaderState,
     User,
 )
 from core.portal_roles import user_has_family_portal_access
@@ -131,6 +133,7 @@ def message_to_row(
     attachment_url_fn: Callable[[int], str] | None = None,
     *,
     sender_avatar_url_fn: Callable[[User], str] | None = None,
+    delivery_ticks: int | None = None,
 ) -> dict:
     u = m.sender
     atts = []
@@ -140,7 +143,7 @@ def message_to_row(
     avatar_url = ""
     if sender_avatar_url_fn is not None:
         avatar_url = sender_avatar_url_fn(u) or ""
-    return {
+    row = {
         "id": str(m.pk),
         "sender_id": u.pk,
         "sender_name": u.name or u.phone or str(u.pk),
@@ -150,6 +153,122 @@ def message_to_row(
         "created_at": m.created_at.isoformat(),
         "attachments": atts,
     }
+    if delivery_ticks is not None:
+        row["delivery_ticks"] = delivery_ticks
+    return row
+
+
+def primary_super_admin_user() -> User | None:
+    return (
+        User.objects.filter(Q(role=User.Role.SUPER_ADMIN) | Q(is_superuser=True))
+        .order_by("id")
+        .first()
+    )
+
+
+def super_admin_user_ids() -> list[int]:
+    return list(
+        User.objects.filter(Q(role=User.Role.SUPER_ADMIN) | Q(is_superuser=True))
+        .values_list("pk", flat=True)[:50]
+    )
+
+
+def mark_ticket_read(ticket: SupportTicket, reader: User) -> None:
+    now = timezone.now()
+    SupportTicketReaderState.objects.update_or_create(
+        ticket=ticket,
+        reader=reader,
+        defaults={"last_read_at": now},
+    )
+
+
+def ticket_has_unread_for_submitter(
+    ticket: SupportTicket,
+    *,
+    state: SupportTicketReaderState | None,
+) -> bool:
+    lr = state.last_read_at if state else None
+    q = SupportTicketMessage.objects.filter(ticket=ticket, sender__is_staff=True)
+    if lr:
+        q = q.filter(created_at__gt=lr)
+    return q.exists()
+
+
+def ticket_has_unread_for_staff_reader(
+    ticket: SupportTicket,
+    *,
+    state: SupportTicketReaderState | None,
+) -> bool:
+    lr = state.last_read_at if state else None
+    q = SupportTicketMessage.objects.filter(ticket=ticket, sender__is_staff=False)
+    if lr:
+        q = q.filter(created_at__gt=lr)
+    return q.exists()
+
+
+def last_message_preview_text(ticket: SupportTicket) -> str:
+    last = (
+        SupportTicketMessage.objects.filter(ticket=ticket)
+        .prefetch_related("attachments")
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    if not last:
+        return ""
+    body = (last.body or "").strip()
+    if len(body) > 80:
+        return body[:77] + "…"
+    if body:
+        return body
+    att = last.attachments.first()
+    if att:
+        return f"📎 {(att.original_name or 'file')[:60]}"
+    return "…"
+
+
+def delivery_tick_for_message(
+    m: SupportTicketMessage,
+    *,
+    viewer_user_id: int,
+    viewer_is_staff: bool,
+    counterpart_online: bool,
+) -> int | None:
+    tick = 2 if counterpart_online else 1
+    if viewer_is_staff:
+        if sender_role_kind(m.sender) != "staff":
+            return None
+    else:
+        if m.sender_id != viewer_user_id:
+            return None
+    return tick
+
+
+def serialize_ticket_messages(
+    messages: Sequence[SupportTicketMessage],
+    attachment_url_fn: Callable[[int], str],
+    *,
+    sender_avatar_url_fn: Callable[[User], str] | None,
+    viewer_user_id: int,
+    viewer_is_staff: bool,
+    counterpart_online: bool,
+) -> list[dict]:
+    out: list[dict] = []
+    for m in messages:
+        tick = delivery_tick_for_message(
+            m,
+            viewer_user_id=viewer_user_id,
+            viewer_is_staff=viewer_is_staff,
+            counterpart_online=counterpart_online,
+        )
+        out.append(
+            message_to_row(
+                m,
+                attachment_url_fn,
+                sender_avatar_url_fn=sender_avatar_url_fn,
+                delivery_ticks=tick,
+            )
+        )
+    return out
 
 
 def append_message(
@@ -201,6 +320,9 @@ def messages_page_before(
     attachment_url_fn: Callable[[int], str],
     *,
     sender_avatar_url_fn: Callable[[User], str] | None = None,
+    viewer_user_id: int | None = None,
+    viewer_is_staff: bool = False,
+    counterpart_online: bool = False,
 ) -> tuple[list[dict], bool]:
     """Older messages with pk < before_id, chronological within the page."""
     lim = max(1, min(limit, 100))
@@ -210,18 +332,30 @@ def messages_page_before(
         .prefetch_related("attachments")
         .order_by("-pk")[: lim + 1]
     )
-    rows = list(qs)
-    has_more = len(rows) > lim
-    rows = rows[:lim]
-    rows.reverse()
-    return [
-        message_to_row(
-            m,
-            attachment_url_fn,
-            sender_avatar_url_fn=sender_avatar_url_fn,
+    raw = list(qs)
+    has_more = len(raw) > lim
+    raw = raw[:lim]
+    raw.reverse()
+    tick_meta = viewer_user_id is not None
+    out: list[dict] = []
+    for m in raw:
+        tick = None
+        if tick_meta:
+            tick = delivery_tick_for_message(
+                m,
+                viewer_user_id=viewer_user_id,
+                viewer_is_staff=viewer_is_staff,
+                counterpart_online=counterpart_online,
+            )
+        out.append(
+            message_to_row(
+                m,
+                attachment_url_fn,
+                sender_avatar_url_fn=sender_avatar_url_fn,
+                delivery_ticks=tick,
+            )
         )
-        for m in rows
-    ], has_more
+    return out, has_more
 
 
 def ensure_initial_message(ticket: SupportTicket) -> None:

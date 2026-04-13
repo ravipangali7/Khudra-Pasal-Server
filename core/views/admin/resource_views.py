@@ -64,6 +64,7 @@ from core.models import (
     ShippingZone,
     SupportTicket,
     SupportTicketMessage,
+    SupportTicketReaderState,
     Unit,
     User,
     Vendor,
@@ -87,6 +88,7 @@ from core.services import (
     support_ticket_service,
 )
 from core.services.product_pricing import effective_unit_price, validate_and_set_product_discount
+from core.services.user_presence import online_user_ids_for
 from core.services.shipping_quote import compute_shipping_fee
 from core.services.base import new_wallet_txn_id
 from core.services.reel_boost_patch import apply_reel_boost_from_data
@@ -2511,24 +2513,37 @@ def admin_tickets_list(request):
     if q:
         qs = qs.filter(Q(subject__icontains=q) | Q(ticket_number__icontains=q))
     paginator, page = _paginate(request, qs)
-    rows = [
-        {
-            "id": t.ticket_number,
-            "subject": t.subject,
-            "status": t.status,
-            "priority": t.priority,
-            "category": t.category,
-            "source_panel": t.source_panel,
-            "submitter_name": t.submitter.name if t.submitter_id else "",
-            "submitter_phone": t.submitter.phone if t.submitter_id else "",
-            "submitter_avatar_url": (
-                absolute_media_url(request, t.submitter.avatar) if t.submitter_id else ""
-            ),
-            "created": t.created_at.date().isoformat(),
-            "last_activity": (t.last_activity_at or t.created_at).date().isoformat(),
-        }
-        for t in page
-    ]
+    ticket_ids = [t.pk for t in page]
+    states = {
+        rs.ticket_id: rs
+        for rs in SupportTicketReaderState.objects.filter(
+            reader=request.user, ticket_id__in=ticket_ids
+        )
+    }
+    rows = []
+    for t in page:
+        st = states.get(t.pk)
+        rows.append(
+            {
+                "id": t.ticket_number,
+                "subject": t.subject,
+                "status": t.status,
+                "priority": t.priority,
+                "category": t.category,
+                "source_panel": t.source_panel,
+                "submitter_name": t.submitter.name if t.submitter_id else "",
+                "submitter_phone": t.submitter.phone if t.submitter_id else "",
+                "submitter_avatar_url": (
+                    absolute_media_url(request, t.submitter.avatar) if t.submitter_id else ""
+                ),
+                "created": t.created_at.date().isoformat(),
+                "last_activity": (t.last_activity_at or t.created_at).date().isoformat(),
+                "has_unread": support_ticket_service.ticket_has_unread_for_staff_reader(
+                    t, state=st
+                ),
+                "last_message_preview": support_ticket_service.last_message_preview_text(t),
+            }
+        )
     return paginator.get_paginated_response(rows)
 
 
@@ -2548,15 +2563,19 @@ def admin_ticket_detail(request, ticket_number):
         return Response({"detail": "Not found."}, status=404)
     if request.method == "GET":
         support_ticket_service.ensure_initial_message(t)
+        support_ticket_service.mark_ticket_read(t, request.user)
         sub = t.submitter
         assign = t.assigned_to
         _av = lambda u: absolute_media_url(request, u.avatar)
-        msgs = [
-            support_ticket_service.message_to_row(
-                m, _admin_support_attachment_url, sender_avatar_url_fn=_av
-            )
-            for m in t.messages.all()
-        ]
+        counterpart_online = sub.pk in online_user_ids_for([sub.pk])
+        msgs = support_ticket_service.serialize_ticket_messages(
+            list(t.messages.all()),
+            _admin_support_attachment_url,
+            sender_avatar_url_fn=_av,
+            viewer_user_id=request.user.pk,
+            viewer_is_staff=True,
+            counterpart_online=counterpart_online,
+        )
         return Response(
             {
                 "id": t.ticket_number,
@@ -2568,6 +2587,7 @@ def admin_ticket_detail(request, ticket_number):
                 "source_panel": t.source_panel,
                 "created": t.created_at.isoformat(),
                 "last_activity_at": (t.last_activity_at or t.created_at).isoformat(),
+                "counterpart_online": counterpart_online,
                 "submitter": {
                     "id": sub.pk,
                     "name": sub.name,
@@ -2643,12 +2663,17 @@ def admin_ticket_messages(request, ticket_number):
             limit = int(request.query_params.get("limit") or 50)
         except (TypeError, ValueError):
             limit = 50
+        sub = t.submitter
+        counterpart_online = sub.pk in online_user_ids_for([sub.pk])
         results, has_more = support_ticket_service.messages_page_before(
             t,
             before_id,
             limit,
             _admin_support_attachment_url,
             sender_avatar_url_fn=lambda u: absolute_media_url(request, u.avatar),
+            viewer_user_id=request.user.pk,
+            viewer_is_staff=True,
+            counterpart_online=counterpart_online,
         )
         return Response({"results": results, "has_more": has_more})
 
@@ -2664,6 +2689,14 @@ def admin_ticket_messages(request, ticket_number):
         .prefetch_related("attachments")
         .first()
     )
+    sub = t.submitter
+    counterpart_online = sub.pk in online_user_ids_for([sub.pk])
+    tick = support_ticket_service.delivery_tick_for_message(
+        msg,
+        viewer_user_id=request.user.pk,
+        viewer_is_staff=True,
+        counterpart_online=counterpart_online,
+    )
     return Response(
         {
             "ok": True,
@@ -2671,6 +2704,7 @@ def admin_ticket_messages(request, ticket_number):
                 msg,
                 _admin_support_attachment_url,
                 sender_avatar_url_fn=lambda u: absolute_media_url(request, u.avatar),
+                delivery_ticks=tick,
             ),
         },
         status=201,

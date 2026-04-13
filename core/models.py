@@ -2567,6 +2567,33 @@ class SupportTicketMessage(models.Model):
         return f"{self.ticket_id}:{self.pk}"
 
 
+class SupportTicketReaderState(models.Model):
+    """Per-user read cursor for a ticket thread (unread bold + read receipts context)."""
+
+    ticket = models.ForeignKey(
+        SupportTicket,
+        on_delete=models.CASCADE,
+        related_name="reader_states",
+    )
+    reader = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="support_ticket_reader_states",
+    )
+    last_read_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["ticket", "reader"],
+                name="uniq_support_ticket_reader_state_ticket_reader",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.ticket_id}:{self.reader_id}"
+
+
 class SupportTicketMessageAttachment(models.Model):
     """File attached to a support ticket message (images, video, documents)."""
 
