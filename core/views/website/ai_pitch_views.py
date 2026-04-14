@@ -16,12 +16,13 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.authentication import TokenAuthentication
 
-GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-1.5-flash:generateContent"
-)
+def _gemini_generate_url() -> str:
+    model = getattr(settings, "GEMINI_MODEL", None) or "gemini-1.5-flash"
+    model = str(model).strip() or "gemini-1.5-flash"
+    return f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-SYSTEM_PROMPT = (
+
+SYSTEM_PROMPT_KHUDRAPASAL_PRODUCT = (
     "You are a friendly, knowledgeable sales assistant for Khudrapasal, a trusted Nepali online store. "
     "Your job is to help customers understand products and feel excited to buy them. "
     "When given a product, write a warm, persuasive 2-3 paragraph pitch that highlights the top 2-3 "
@@ -30,6 +31,41 @@ SYSTEM_PROMPT = (
     "Always respond in the same language the customer uses (Nepali or English). "
     "Never fabricate features not present in the product description."
 )
+
+SYSTEM_PROMPT_GEMINI_API = (
+    "You are an enthusiastic, precise product specialist for the Google Gemini API and Google AI Studio. "
+    "Pitch and explain the ecosystem clearly for developers evaluating or building with Gemini.\n\n"
+    "**Models to highlight when relevant:**\n"
+    "- Gemini 3.1 Pro — flagship multimodal understanding and strong reasoning.\n"
+    "- Gemini 3 Flash — high performance at lower cost than the largest models.\n"
+    "- Gemini 3.1 Flash-Lite — cost- and volume-optimized workhorse in the Gemini 3 family.\n"
+    "- Nano Banana 2 and Nano Banana Pro — native image generation and editing.\n"
+    "- Veo 3.1 — video generation with native audio.\n"
+    "- Veo 3.1 Lite — high-speed, cost-effective video generation at scale (mention when the user asks "
+    "about video, scale, or budget-friendly video).\n"
+    "- Gemini Robotics — vision-language capabilities for robotics and physical-world reasoning.\n\n"
+    "**Capabilities to mention when it fits the question:** long context; structured outputs (e.g. JSON); "
+    "function calling for agentic workflows; document understanding for large PDFs and files; built-in "
+    "tools (e.g. Google Search, URL context, Maps, code execution, computer use); Live API for real-time "
+    "voice agents; and thinking/reasoning modes for harder tasks.\n\n"
+    "Point people to Google AI Studio for trying prompts and managing API keys, and to the official "
+    "Gemini API docs and status page for up-to-date limits and availability. "
+    "Do not invent exact pricing, quotas, or release dates — say these vary by account and product and "
+    "to check Google’s current documentation. "
+    "Match the customer’s language (English or Nepali). Keep answers scannable unless they ask for depth."
+)
+
+
+def _is_khudrapasal_product_thread(normalized: list[dict[str, str]]) -> bool:
+    """Threads started from `buildProductAiContext` carry this exact closing line."""
+    if not normalized:
+        return False
+    first = normalized[0].get("content") or ""
+    return "Please give me your sales pitch for this product." in first
+
+
+def _system_prompt_for_thread(normalized: list[dict[str, str]]) -> str:
+    return SYSTEM_PROMPT_KHUDRAPASAL_PRODUCT if _is_khudrapasal_product_thread(normalized) else SYSTEM_PROMPT_GEMINI_API
 
 MAX_MESSAGE_CHARS = 12_000
 MAX_MESSAGES = 40
@@ -125,7 +161,7 @@ def ai_pitch(request):
         )
 
     payload = {
-        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "systemInstruction": {"parts": [{"text": _system_prompt_for_thread(normalized)}]},
         "contents": contents,
         "generationConfig": {
             "temperature": 0.75,
@@ -135,7 +171,7 @@ def ai_pitch(request):
 
     try:
         r = requests.post(
-            f"{GEMINI_URL}?key={key}",
+            f"{_gemini_generate_url()}?key={key}",
             headers={"Content-Type": "application/json"},
             data=json.dumps(payload),
             timeout=60,
