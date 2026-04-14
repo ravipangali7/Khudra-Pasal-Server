@@ -71,7 +71,16 @@ class GoogleCredentialLoginView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        name = str(payload.get("name") or payload.get("email") or "Google User")[:150]
+        given = str(payload.get("given_name") or "").strip()
+        family = str(payload.get("family_name") or "").strip()
+        if given and family:
+            name = f"{given} {family}"[:150]
+        elif given:
+            name = given[:150]
+        elif family:
+            name = family[:150]
+        else:
+            name = str(payload.get("name") or payload.get("email") or "Google User")[:150]
         email = str(payload.get("email") or "")[:254]
         picture = str(payload.get("picture") or "")
 
