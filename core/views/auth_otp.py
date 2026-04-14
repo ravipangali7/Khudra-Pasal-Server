@@ -111,7 +111,10 @@ def otp_send(request):
                 {"detail": "Your account phone must be a valid Nepal mobile."},
                 status=400,
             )
-        otp_service.create_otp(admin_phone, purpose, signup_name="")
+        try:
+            otp_service.create_otp(admin_phone, purpose, signup_name="")
+        except otp_service.OTPError as e:
+            return Response({"detail": str(e)}, status=400)
         payload = {"detail": "OTP sent."}
         if settings.DEBUG:
             latest = (
@@ -143,7 +146,10 @@ def otp_send(request):
             return Response({"detail": "This invite has expired."}, status=400)
         if invite.phone != phone:
             return Response({"detail": "Phone does not match this invite."}, status=400)
-        otp_service.create_otp(phone, purpose, signup_name="")
+        try:
+            otp_service.create_otp(phone, purpose, signup_name="")
+        except otp_service.OTPError as e:
+            return Response({"detail": str(e)}, status=400)
         payload = {"detail": "OTP sent."}
         if settings.DEBUG:
             latest = (
@@ -188,7 +194,14 @@ def otp_send(request):
                 status=400,
             )
 
-    otp_service.create_otp(phone, purpose, signup_name=name if purpose == OTPVerification.Purpose.SIGNUP else "")
+    try:
+        otp_service.create_otp(
+            phone,
+            purpose,
+            signup_name=name if purpose == OTPVerification.Purpose.SIGNUP else "",
+        )
+    except otp_service.OTPError as e:
+        return Response({"detail": str(e)}, status=400)
 
     payload = {"detail": "OTP sent."}
     if settings.DEBUG:

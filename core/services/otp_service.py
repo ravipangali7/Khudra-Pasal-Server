@@ -24,12 +24,17 @@ def _generate_code() -> str:
 def send_otp_sms(phone: str, code: str) -> None:
     token = (getattr(settings, "AAKASHSMS_AUTH_TOKEN", None) or "").strip()
     if token:
+        from core.services.aakash_sms import AakashSmsError
         from core.services.aakash_sms import send_sms as aakash_send_sms
 
-        aakash_send_sms(
-            to=phone,
-            text=f"Your KhudraPasal verification code is {code}. Do not share it with anyone.",
-        )
+        try:
+            aakash_send_sms(
+                to=phone,
+                text=f"Your KhudraPasal verification code is {code}. Do not share it with anyone.",
+            )
+        except AakashSmsError as e:
+            logger.warning("OTP SMS rejected for %s: %s", phone, e)
+            raise OTPError("Unable to send OTP to this number. Please check the number and try again.") from e
     if settings.DEBUG:
         logger.info("OTP SMS (dev) to %s: %s", phone, code)
 
