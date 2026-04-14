@@ -11,7 +11,8 @@ from core.models import User
 
 
 def _digits_only(value: str) -> str:
-    return "".join(c for c in (value or "") if c.isdigit())
+    # ASCII 0-9 only — avoids Unicode "digits" and keeps SMS gateway input predictable.
+    return "".join(c for c in (value or "") if c in "0123456789")
 
 
 def _nepal_mobile_core(digits: str) -> str | None:
