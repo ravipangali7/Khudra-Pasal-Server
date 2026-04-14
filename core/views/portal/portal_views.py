@@ -124,6 +124,16 @@ from core.services.nominatim_geocode import (
     reverse_geocode,
 )
 from core.services.base import get_or_create_personal_wallet, personal_wallet_qs
+from core.services.khalti_epayment_service import (
+    KhaltiApiError,
+    KhaltiConfigError,
+    extract_lookup_status,
+    extract_total_amount_paisa,
+    initiate_wallet_topup,
+    lookup_payment,
+    map_khalti_status_to_app,
+    rupees_to_paisa,
+)
 from core.services.withdrawal_notifications import notify_family_withdrawal_submitted
 from core.services.withdrawal_requests import (
     create_pending_withdrawal,
@@ -239,6 +249,24 @@ def _portal_esewa_status_verify(*, status_url_base: str, product_code: str, tota
     if not isinstance(data, dict):
         raise ValueError("Invalid status response")
     return data
+
+
+def _portal_khalti_customer_info(user: User) -> dict[str, str]:
+    phone = (user.phone or "").strip() or "9800000000"
+    email = (user.email or "").strip()
+    if not email:
+        email = f"u{user.pk}@wallet.khalti.local"
+    name = (user.name or "").strip() or "Customer"
+    return {"name": name[:120], "email": email[:120], "phone": phone[:15]}
+
+
+def _portal_khalti_frontend_return_url() -> str:
+    base = (getattr(settings, "FRONTEND_URL", "") or "").strip().rstrip("/") or "http://localhost:8080"
+    return f"{base}/portal/wallet?khalti_wallet=1"
+
+
+def _portal_khalti_website_url() -> str:
+    return (getattr(settings, "FRONTEND_URL", "") or "").strip().rstrip("/") or "http://localhost:8080"
 
 
 class IsPortalCustomer(BasePermission):
@@ -3188,6 +3216,60 @@ def portal_wallet_topup(request):
                 },
             }
         )
+    if method_norm == "khalti":
+        purchase_order_id = f"KP-W-{uuid4().hex[:24]}"
+        amount_paisa = rupees_to_paisa(amount)
+        if amount_paisa < 100:
+            return validation_error("amount too small for Khalti (minimum Rs. 1)", field="amount")
+        try:
+            init_data = initiate_wallet_topup(
+                amount_paisa=amount_paisa,
+                purchase_order_id=purchase_order_id,
+                purchase_order_name="Wallet top-up",
+                return_url=_portal_khalti_frontend_return_url(),
+                website_url=_portal_khalti_website_url(),
+                customer_info=_portal_khalti_customer_info(request.user),
+            )
+        except KhaltiConfigError as e:
+            return Response({"detail": str(e)}, status=503)
+        except KhaltiApiError as e:
+            return Response(
+                {"detail": str(e), "khalti_error": (e.body or "")[:2000]},
+                status=502,
+            )
+        pidx = str(init_data.get("pidx") or "").strip()
+        payment_url = str(init_data.get("payment_url") or "").strip()
+        if not pidx or not payment_url:
+            return Response(
+                {"detail": "Khalti initiate response missing pidx or payment_url."},
+                status=502,
+            )
+        PaymentTransaction.objects.create(
+            txn_ref=purchase_order_id,
+            customer=request.user,
+            amount=amount,
+            method=PaymentTransaction.Method.KHALTI,
+            status=PaymentTransaction.Status.PENDING,
+            gateway_response={
+                "kind": "wallet_topup",
+                "wallet_id": str(w.pk),
+                "method": method,
+                "khalti_pidx": pidx,
+                "khalti_purchase_order_id": purchase_order_id,
+                "khalti_initiate": init_data,
+            },
+        )
+        return Response(
+            {
+                "ok": True,
+                "flow": "khalti_redirect",
+                "payment_url": payment_url,
+                "pidx": pidx,
+                "purchase_order_id": purchase_order_id,
+                "expires_at": init_data.get("expires_at"),
+                "expires_in": init_data.get("expires_in"),
+            }
+        )
     try:
         with transaction.atomic():
             wt = wallet_service.credit_wallet(
@@ -3325,6 +3407,174 @@ def portal_wallet_topup_esewa_failure(request):
             row.save(update_fields=["status", "gateway_response"])
     return HttpResponseRedirect(
         _portal_esewa_frontend_redirect_url(request, "failed", txn_ref=txn_ref or None)
+    )
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated, IsPortalCustomer])
+def portal_wallet_topup_khalti_verify(request):
+    """Confirm Khalti payment via lookup (idempotent). Call from SPA after return_url redirect."""
+    pidx = (request.query_params.get("pidx") or "").strip()
+    if not pidx:
+        return validation_error("pidx is required", field="pidx")
+    row = (
+        PaymentTransaction.objects.filter(
+            customer=request.user,
+            method=PaymentTransaction.Method.KHALTI,
+            gateway_response__khalti_pidx=pidx,
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    if not row:
+        return Response({"detail": "Payment not found for this Khalti session."}, status=404)
+    try:
+        lookup_data = lookup_payment(pidx=pidx)
+    except KhaltiConfigError as e:
+        return Response({"detail": str(e)}, status=503)
+    except KhaltiApiError as e:
+        return Response(
+            {"detail": str(e), "khalti_error": (e.body or "")[:2000]},
+            status=502,
+        )
+    khalti_status = extract_lookup_status(lookup_data)
+    app_status = map_khalti_status_to_app(khalti_status)
+    total_paisa = extract_total_amount_paisa(lookup_data)
+    expected_paisa = rupees_to_paisa(row.amount)
+    txn_id = str(lookup_data.get("transaction_id") or "")
+
+    if total_paisa is not None and total_paisa != expected_paisa:
+        return Response(
+            {
+                "success": False,
+                "detail": "Amount mismatch with Khalti lookup.",
+                "data": {
+                    "status": "ERROR",
+                    "khalti_status": khalti_status,
+                    "pidx": pidx,
+                    "expected_total_amount": expected_paisa,
+                    "lookup_total_amount": total_paisa,
+                },
+            },
+            status=400,
+        )
+
+    if app_status == "SUCCESS":
+        if row.status == PaymentTransaction.Status.SUCCESS and row.wallet_transaction_id:
+            return Response(
+                {
+                    "success": True,
+                    "data": {
+                        "status": "SUCCESS",
+                        "khalti_status": khalti_status,
+                        "pidx": pidx,
+                        "transaction_id": txn_id,
+                        "total_amount": total_paisa or expected_paisa,
+                    },
+                }
+            )
+        with transaction.atomic():
+            row = PaymentTransaction.objects.select_for_update().get(pk=row.pk)
+            if row.status == PaymentTransaction.Status.SUCCESS and row.wallet_transaction_id:
+                return Response(
+                    {
+                        "success": True,
+                        "data": {
+                            "status": "SUCCESS",
+                            "khalti_status": khalti_status,
+                            "pidx": pidx,
+                            "transaction_id": txn_id,
+                            "total_amount": total_paisa or expected_paisa,
+                        },
+                    }
+                )
+            w, err = _ensure_active_personal_wallet(row.customer)
+            if err:
+                return Response({"detail": "Wallet is not active"}, status=400)
+            wt = wallet_service.credit_wallet(
+                w,
+                row.amount,
+                wtype=WalletTransaction.Type.TOPUP,
+                description="Wallet top-up (Khalti)",
+                performed_by=row.customer,
+            )
+            wallet_service.apply_topup_bonus_after_credit(
+                w,
+                row.amount,
+                bonus_reference_id=wt.txn_id,
+                performed_by=row.customer,
+            )
+            row.wallet_transaction = wt
+            row.status = PaymentTransaction.Status.SUCCESS
+            row.gateway_response = {
+                **(row.gateway_response or {}),
+                "khalti_lookup": lookup_data,
+            }
+            row.verified_at = timezone.now()
+            row.save(
+                update_fields=["wallet_transaction", "status", "gateway_response", "verified_at"]
+            )
+        return Response(
+            {
+                "success": True,
+                "data": {
+                    "status": "SUCCESS",
+                    "khalti_status": khalti_status,
+                    "pidx": pidx,
+                    "transaction_id": txn_id,
+                    "total_amount": total_paisa or expected_paisa,
+                },
+            }
+        )
+
+    if app_status == "FAILED":
+        if row.status == PaymentTransaction.Status.PENDING:
+            row.status = PaymentTransaction.Status.FAILED
+            row.gateway_response = {**(row.gateway_response or {}), "khalti_lookup": lookup_data}
+            row.save(update_fields=["status", "gateway_response"])
+        return Response(
+            {
+                "success": True,
+                "data": {
+                    "status": "FAILED",
+                    "khalti_status": khalti_status,
+                    "pidx": pidx,
+                    "transaction_id": txn_id,
+                    "total_amount": total_paisa or expected_paisa,
+                },
+            }
+        )
+
+    if app_status == "PENDING":
+        return Response(
+            {
+                "success": True,
+                "data": {
+                    "status": "PENDING",
+                    "khalti_status": khalti_status,
+                    "pidx": pidx,
+                    "transaction_id": txn_id,
+                    "total_amount": total_paisa or expected_paisa,
+                },
+            }
+        )
+
+    if row.status == PaymentTransaction.Status.PENDING:
+        row.status = PaymentTransaction.Status.FAILED
+        row.gateway_response = {**(row.gateway_response or {}), "khalti_lookup": lookup_data}
+        row.save(update_fields=["status", "gateway_response"])
+    return Response(
+        {
+            "success": True,
+            "data": {
+                "status": "ERROR",
+                "khalti_status": khalti_status,
+                "pidx": pidx,
+                "transaction_id": txn_id,
+                "total_amount": total_paisa or expected_paisa,
+            },
+        }
     )
 
 

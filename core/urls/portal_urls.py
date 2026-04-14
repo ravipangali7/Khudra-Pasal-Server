@@ -27,6 +27,11 @@ urlpatterns = [
         name="portal-wallet-topup-esewa-failure",
     ),
     path(
+        "wallet/topup/khalti/verify/",
+        portal_views.portal_wallet_topup_khalti_verify,
+        name="portal-wallet-topup-khalti-verify",
+    ),
+    path(
         "wallet/transfer-recipients/",
         portal_views.portal_wallet_transfer_recipients,
         name="portal-wallet-transfer-recipients",

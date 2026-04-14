@@ -76,6 +76,10 @@ _hydrate_gemini_from_dotenv()
 # Google Gemini (sales assistant). Prefer GEMINI_API_KEY; GOOGLE_API_KEY is a common alternate name.
 GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip() or (os.environ.get("GOOGLE_API_KEY") or "").strip()
 
+# Khalti ePayment (v2) — secret stays on the server. Test/UAT keys from Khalti merchant dashboard.
+KHALTI_SECRET_KEY = (os.environ.get("KHALTI_SECRET_KEY") or "").strip()
+KHALTI_BASE_URL = (os.environ.get("KHALTI_BASE_URL") or "https://khalti.com/api/v2").strip().rstrip("/")
+
 
 def _resolve_google_oauth_credentials() -> tuple[str, str]:
     """Prefer env; optionally load Web client id/secret from a Google credentials JSON file."""
