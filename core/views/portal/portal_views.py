@@ -1,12 +1,15 @@
 """Customer / family / child portal API (Token auth)."""
 
+import base64
+import hashlib
+import hmac
 import json
-
-import requests
 from collections import defaultdict
 from collections.abc import Mapping
 from datetime import timedelta
 from decimal import Decimal
+from urllib.parse import urlencode
+from urllib.request import urlopen
 from uuid import uuid4
 
 from core.phone_auth import authenticate_user_by_phone, normalize_nepal_phone
@@ -15,6 +18,8 @@ from django.core.exceptions import ValidationError
 from django.contrib.sessions.models import Session
 from django.db import transaction
 from django.db.models import Count, Q, Sum
+from django.http import HttpResponseRedirect
+from django.urls import reverse
 from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.authentication import SessionAuthentication, TokenAuthentication
@@ -101,7 +106,6 @@ from core.services.child_spending_service import (
     validate_child_spending_limits,
 )
 from core.services.purchase_approval_service import consume_purchase_approvals_after_checkout
-from core.services import nepal_payment_gateways
 from core.services import (
     family_join_request_service,
     family_member_provision_service,
@@ -142,6 +146,99 @@ from core.views.admin.admin_write_utils import (
 from core.views.admin.resource_views import _to_decimal
 from core.views.vendor.vendor_resources import _gen_order_number, _gen_ticket_number
 from core.views.website.home_views import annotate_reels_comments
+
+ESEWA_SIGNED_FIELD_NAMES = "total_amount,transaction_uuid,product_code"
+ESEWA_RESPONSE_SIGNED_FIELD_NAMES = (
+    "transaction_code,status,total_amount,transaction_uuid,product_code,signed_field_names"
+)
+
+
+def _portal_esewa_frontend_redirect_path(status: str, txn_ref: str | None = None) -> str:
+    payload = {"esewa": status}
+    if txn_ref:
+        payload["txn_ref"] = txn_ref
+    return f"/portal/wallet?{urlencode(payload)}"
+
+
+def _portal_esewa_frontend_redirect_url(request, status: str, txn_ref: str | None = None) -> str:
+    base = (getattr(settings, "FRONTEND_URL", "") or "").rstrip("/")
+    path = _portal_esewa_frontend_redirect_path(status=status, txn_ref=txn_ref)
+    if base:
+        return f"{base}{path}"
+    return request.build_absolute_uri(path)
+
+
+def _portal_esewa_amount_str(amount: Decimal) -> str:
+    return f"{amount:.2f}"
+
+
+def _portal_esewa_signature(message: str, secret_key: str) -> str:
+    return base64.b64encode(
+        hmac.new(secret_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).digest()
+    ).decode("utf-8")
+
+
+def _portal_esewa_payment_settings():
+    product_code = (getattr(settings, "ESEWA_EPAY_PRODUCT_CODE", "") or "EPAYTEST").strip()
+    secret_key = (getattr(settings, "ESEWA_EPAY_SECRET_KEY", "") or "8gBm/:&EnhH.1/q").strip()
+    form_url = (
+        getattr(settings, "ESEWA_EPAY_FORM_URL", "") or "https://rc-epay.esewa.com.np/api/epay/main/v2/form"
+    ).strip()
+    status_url_base = (
+        getattr(settings, "ESEWA_EPAY_STATUS_URL_BASE", "")
+        or "https://rc.esewa.com.np/api/epay/transaction/status/"
+    ).strip()
+    return product_code, secret_key, form_url, status_url_base
+
+
+def _portal_esewa_parse_callback_payload(request) -> dict:
+    raw = (
+        request.data.get("data")
+        or request.query_params.get("data")
+        or request.data.get("payload")
+        or request.query_params.get("payload")
+        or ""
+    )
+    if not raw:
+        raise ValueError("Missing eSewa callback payload.")
+    try:
+        decoded = base64.b64decode(str(raw)).decode("utf-8")
+        payload = json.loads(decoded)
+    except Exception as exc:
+        raise ValueError("Invalid eSewa callback payload.") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid eSewa callback payload.")
+    return payload
+
+
+def _portal_esewa_verify_callback_signature(payload: Mapping, secret_key: str) -> bool:
+    signed_field_names = str(payload.get("signed_field_names") or "").strip()
+    if not signed_field_names:
+        return False
+    parts = [x.strip() for x in signed_field_names.split(",") if x.strip()]
+    if not parts:
+        return False
+    msg = ",".join(f"{k}={payload.get(k, '')}" for k in parts)
+    expected = _portal_esewa_signature(msg, secret_key)
+    received = str(payload.get("signature") or "")
+    return hmac.compare_digest(expected, received)
+
+
+def _portal_esewa_status_verify(*, status_url_base: str, product_code: str, total_amount: str, transaction_uuid: str):
+    qs = urlencode(
+        {
+            "product_code": product_code,
+            "total_amount": total_amount,
+            "transaction_uuid": transaction_uuid,
+        }
+    )
+    url = f"{status_url_base}?{qs}"
+    with urlopen(url, timeout=8) as res:
+        raw = res.read().decode("utf-8")
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("Invalid status response")
+    return data
 
 
 class IsPortalCustomer(BasePermission):
@@ -3039,6 +3136,58 @@ def portal_wallet_topup(request):
     if amount <= 0:
         return validation_error("amount must be positive", field="amount")
     method = (request.data.get("method") or "topup").strip()[:50]
+    method_norm = method.lower()
+    if method_norm == "esewa":
+        product_code, secret_key, form_url, _status_url_base = _portal_esewa_payment_settings()
+        txn_uuid = str(uuid4())
+        total_amount = _portal_esewa_amount_str(amount)
+        message = (
+            f"total_amount={total_amount},transaction_uuid={txn_uuid},product_code={product_code}"
+        )
+        signature = _portal_esewa_signature(message, secret_key)
+        success_url = request.build_absolute_uri(
+            reverse("portal-wallet-topup-esewa-success")
+        )
+        failure_url = request.build_absolute_uri(
+            reverse("portal-wallet-topup-esewa-failure")
+        )
+        PaymentTransaction.objects.create(
+            txn_ref=txn_uuid,
+            customer=request.user,
+            amount=amount,
+            method=PaymentTransaction.Method.ESEWA,
+            status=PaymentTransaction.Status.PENDING,
+            gateway_response={
+                "kind": "wallet_topup",
+                "wallet_id": str(w.pk),
+                "method": method,
+                "esewa_init": {
+                    "total_amount": total_amount,
+                    "transaction_uuid": txn_uuid,
+                    "product_code": product_code,
+                },
+            },
+        )
+        return Response(
+            {
+                "ok": True,
+                "flow": "esewa_redirect",
+                "action_url": form_url,
+                "fields": {
+                    "amount": total_amount,
+                    "tax_amount": "0",
+                    "product_service_charge": "0",
+                    "product_delivery_charge": "0",
+                    "total_amount": total_amount,
+                    "transaction_uuid": txn_uuid,
+                    "product_code": product_code,
+                    "success_url": success_url,
+                    "failure_url": failure_url,
+                    "signed_field_names": ESEWA_SIGNED_FIELD_NAMES,
+                    "signature": signature,
+                },
+            }
+        )
     try:
         with transaction.atomic():
             wt = wallet_service.credit_wallet(
@@ -3058,6 +3207,125 @@ def portal_wallet_topup(request):
         return Response({"detail": str(e)}, status=400)
     w.refresh_from_db()
     return Response({"ok": True, "balance": float(w.balance)})
+
+
+@api_view(["GET", "POST"])
+@permission_classes([AllowAny])
+def portal_wallet_topup_esewa_success(request):
+    product_code, secret_key, _form_url, status_url_base = _portal_esewa_payment_settings()
+    txn_ref = ""
+    try:
+        payload = _portal_esewa_parse_callback_payload(request)
+        txn_ref = str(payload.get("transaction_uuid") or "").strip()
+        if not txn_ref:
+            raise ValueError("Missing transaction_uuid")
+        row = PaymentTransaction.objects.select_related("customer").filter(
+            txn_ref=txn_ref,
+            method=PaymentTransaction.Method.ESEWA,
+        ).first()
+        if not row:
+            raise ValueError("Payment transaction not found")
+        if row.status == PaymentTransaction.Status.SUCCESS and row.wallet_transaction_id:
+            return HttpResponseRedirect(
+                _portal_esewa_frontend_redirect_url(request, "success", txn_ref=txn_ref)
+            )
+        if not _portal_esewa_verify_callback_signature(payload, secret_key):
+            raise ValueError("Invalid callback signature")
+        if str(payload.get("status") or "").upper() != "COMPLETE":
+            raise ValueError("Payment not complete")
+        callback_total = _portal_esewa_amount_str(_to_decimal(payload.get("total_amount"), "0"))
+        expected_total = _portal_esewa_amount_str(row.amount)
+        callback_product = str(payload.get("product_code") or "").strip()
+        if callback_total != expected_total:
+            raise ValueError("Amount mismatch")
+        if callback_product != product_code:
+            raise ValueError("Product code mismatch")
+        status_data = _portal_esewa_status_verify(
+            status_url_base=status_url_base,
+            product_code=product_code,
+            total_amount=expected_total,
+            transaction_uuid=txn_ref,
+        )
+        if str(status_data.get("status") or "").upper() != "COMPLETE":
+            raise ValueError("Status verification failed")
+        with transaction.atomic():
+            row = PaymentTransaction.objects.select_for_update().get(pk=row.pk)
+            if row.status == PaymentTransaction.Status.SUCCESS and row.wallet_transaction_id:
+                return HttpResponseRedirect(
+                    _portal_esewa_frontend_redirect_url(request, "success", txn_ref=txn_ref)
+                )
+            w, err = _ensure_active_personal_wallet(row.customer)
+            if err:
+                raise ValueError("Wallet is not active")
+            wt = wallet_service.credit_wallet(
+                w,
+                row.amount,
+                wtype=WalletTransaction.Type.TOPUP,
+                description="Wallet top-up (eSewa)",
+                performed_by=row.customer,
+            )
+            wallet_service.apply_topup_bonus_after_credit(
+                w,
+                row.amount,
+                bonus_reference_id=wt.txn_id,
+                performed_by=row.customer,
+            )
+            row.wallet_transaction = wt
+            row.status = PaymentTransaction.Status.SUCCESS
+            row.gateway_response = {
+                **(row.gateway_response or {}),
+                "esewa_callback_payload": dict(payload),
+                "esewa_status_verify": status_data,
+            }
+            row.verified_at = timezone.now()
+            row.save(
+                update_fields=["wallet_transaction", "status", "gateway_response", "verified_at"]
+            )
+        return HttpResponseRedirect(
+            _portal_esewa_frontend_redirect_url(request, "success", txn_ref=txn_ref)
+        )
+    except Exception as exc:
+        if txn_ref:
+            row = PaymentTransaction.objects.filter(
+                txn_ref=txn_ref, method=PaymentTransaction.Method.ESEWA
+            ).first()
+            if row and row.status == PaymentTransaction.Status.PENDING:
+                row.status = PaymentTransaction.Status.FAILED
+                row.gateway_response = {
+                    **(row.gateway_response or {}),
+                    "esewa_callback_error": str(exc),
+                }
+                row.save(update_fields=["status", "gateway_response"])
+        return HttpResponseRedirect(
+            _portal_esewa_frontend_redirect_url(request, "failed", txn_ref=txn_ref or None)
+        )
+
+
+@api_view(["GET", "POST"])
+@permission_classes([AllowAny])
+def portal_wallet_topup_esewa_failure(request):
+    txn_ref = (
+        str(request.query_params.get("transaction_uuid") or request.data.get("transaction_uuid") or "")
+        .strip()
+    )
+    if txn_ref:
+        row = PaymentTransaction.objects.filter(
+            txn_ref=txn_ref,
+            method=PaymentTransaction.Method.ESEWA,
+            status=PaymentTransaction.Status.PENDING,
+        ).first()
+        if row:
+            row.status = PaymentTransaction.Status.FAILED
+            row.gateway_response = {
+                **(row.gateway_response or {}),
+                "esewa_failure_callback": {
+                    "query": dict(request.query_params),
+                },
+            }
+            row.save(update_fields=["status", "gateway_response"])
+    return HttpResponseRedirect(
+        _portal_esewa_frontend_redirect_url(request, "failed", txn_ref=txn_ref or None)
+    )
 
 
 @api_view(["POST"])
@@ -3993,7 +4261,6 @@ def portal_orders_checkout(request):
     except ValueError as e:
         return validation_error(str(e), field="items")
 
-    gateway_checkout: dict | None = None
     try:
         with transaction.atomic():
             try:
@@ -4047,42 +4314,22 @@ def portal_orders_checkout(request):
             raw_pay = request.data.get("payment_method")
             if raw_pay is None or not str(raw_pay).strip():
                 return validation_error(
-                    "payment_method is required (wallet, esewa, or khalti).",
+                    "payment_method is required; use wallet.",
                     field="payment_method",
                 )
             payment_method = _payment_method_from_client(str(raw_pay))
             if not payment_method:
                 return validation_error("invalid payment_method", field="payment_method")
-
-            use_wallet = payment_method == Order.PaymentMethod.WALLET
-            use_gateway = payment_method in (
-                Order.PaymentMethod.ESEWA,
-                Order.PaymentMethod.KHALTI,
-            )
-            if not use_wallet and not use_gateway:
+            if payment_method != Order.PaymentMethod.WALLET:
                 return validation_error(
-                    "Unsupported payment_method. Use wallet, esewa, or khalti.",
-                    field="payment_method",
-                )
-            if use_gateway and not getattr(settings, "NEPAL_GATEWAY_CHECKOUT_ENABLED", False):
-                return validation_error(
-                    "Online payment (eSewa/Khalti) is disabled.",
-                    field="payment_method",
-                )
-            if (
-                use_gateway
-                and payment_method == Order.PaymentMethod.KHALTI
-                and nepal_payment_gateways.rupees_to_khalti_paisa(grand_total_plan) < 1000
-            ):
-                return validation_error(
-                    "Khalti requires a minimum order total of Rs. 10 (1000 paisa).",
+                    "Only KhudraPasal Wallet is supported for checkout.",
                     field="payment_method",
                 )
 
             notes = (request.data.get("notes") or "")[:500]
             pay_wallet: Wallet | None = None
             fund_source_label = ""
-            if use_wallet:
+            if payment_method == Order.PaymentMethod.WALLET:
                 pay_wallet, fund_source_label = _resolve_checkout_wallet(request)
                 pay_wallet = Wallet.objects.select_for_update().get(pk=pay_wallet.pk)
                 if pay_wallet.status != Wallet.Status.ACTIVE:
@@ -4178,7 +4425,7 @@ def portal_orders_checkout(request):
                 canonical = min(orders_created, key=lambda o: o.pk)
                 Order.objects.filter(pk=canonical.pk).update(coupon_id=coupon_obj.pk)
 
-            if use_gateway:
+            if payment_method in PORTAL_GATEWAY_PAYMENT_METHODS:
                 for order in orders_created:
                     PaymentTransaction.objects.create(
                         txn_ref=f"{order.order_number}-{uuid4().hex[:16]}",
@@ -4188,73 +4435,6 @@ def portal_orders_checkout(request):
                         method=payment_method,
                         status=PaymentTransaction.Status.PENDING,
                     )
-                order_nums = [o.order_number for o in orders_created]
-                if payment_method == Order.PaymentMethod.ESEWA:
-                    esewa_tx = str(uuid4())
-                    meta = {
-                        "provider": "esewa",
-                        "transaction_uuid": esewa_tx,
-                        "order_numbers": order_nums,
-                    }
-                    PaymentTransaction.objects.filter(order__in=orders_created).update(
-                        gateway_response=meta
-                    )
-                    fe = settings.FRONTEND_URL.rstrip("/")
-                    form_action, fields = nepal_payment_gateways.esewa_build_form_fields(
-                        grand_total=grand_total_plan,
-                        transaction_uuid=esewa_tx,
-                        product_code=settings.ESEWA_PRODUCT_CODE,
-                        secret_key=settings.ESEWA_SECRET_KEY,
-                        success_url=f"{fe}/checkout/payment/esewa/return",
-                        failure_url=f"{fe}/checkout/payment/failed?gateway=esewa",
-                        form_action=settings.ESEWA_FORM_URL,
-                    )
-                    gateway_checkout = {
-                        "provider": "esewa",
-                        "form_action": form_action,
-                        "fields": fields,
-                    }
-                elif payment_method == Order.PaymentMethod.KHALTI:
-                    fe = settings.FRONTEND_URL.rstrip("/")
-                    po_id = ",".join(order_nums)[:48]
-                    init_kw: dict = {
-                        "return_url": f"{fe}/checkout/payment/khalti/return",
-                        "website_url": fe,
-                        "amount_paisa": nepal_payment_gateways.rupees_to_khalti_paisa(
-                            grand_total_plan
-                        ),
-                        "purchase_order_id": po_id or "order",
-                        "purchase_order_name": f"KhudraPasal ({len(order_nums)} order(s))",
-                        "secret_key": settings.KHALTI_SECRET_KEY,
-                        "initiate_url": settings.KHALTI_INITIATE_URL,
-                    }
-                    if u.phone:
-                        init_kw["customer_info"] = {
-                            "name": (u.name or "Customer")[:120],
-                            "email": (getattr(u, "email", None) or "")[:120],
-                            "phone": (normalize_nepal_phone(u.phone) or str(u.phone))[
-                                :15
-                            ],
-                        }
-                    resp = nepal_payment_gateways.khalti_initiate_payment(**init_kw)
-                    pidx = resp.get("pidx")
-                    payment_url = resp.get("payment_url")
-                    if not pidx or not payment_url:
-                        raise ValueError("Could not start Khalti payment; try again.")
-                    meta = {
-                        "provider": "khalti",
-                        "pidx": pidx,
-                        "order_numbers": order_nums,
-                    }
-                    PaymentTransaction.objects.filter(order__in=orders_created).update(
-                        gateway_response=meta
-                    )
-                    gateway_checkout = {
-                        "provider": "khalti",
-                        "public_key": settings.KHALTI_PUBLIC_KEY,
-                        "payment_url": payment_url,
-                        "pidx": pidx,
-                    }
 
             if payment_method == Order.PaymentMethod.WALLET and pay_wallet is not None:
                 for order in orders_created:
@@ -4302,289 +4482,23 @@ def portal_orders_checkout(request):
                 )
 
     first = orders_created[0]
-    response_body: dict = {
-        "orders": [
-            {
-                "order_number": o.order_number,
-                "total": float(o.total),
-                "payment_status": o.payment_status,
-            }
-            for o in orders_created
-        ],
-        "order_number": first.order_number,
-        "total": float(grand_total),
-        "payment_status": payment_status_out,
-        "requires_payment_confirmation": False,
-    }
-    if gateway_checkout is not None:
-        response_body["gateway"] = gateway_checkout
-    return Response(response_body, status=201)
-
-
-def _mark_pending_gateway_orders_paid(
-    u: User,
-    nums: list[str],
-    *,
-    merge_gateway_payload: dict | None = None,
-) -> tuple[list[str], list[str], Response | None]:
-    """Returns (completed, already_paid, error_response)."""
-    already_paid: list[str] = []
-    completed: list[str] = []
-
-    with transaction.atomic():
-        for num in nums:
-            o = (
-                Order.objects.select_for_update()
-                .filter(order_number=num, customer_id=u.pk)
-                .first()
-            )
-            if not o:
-                return [], [], Response({"detail": f"Order {num} not found."}, status=404)
-            if o.payment_status == Order.PaymentStatus.PAID:
-                already_paid.append(num)
-                continue
-            if o.payment_status != Order.PaymentStatus.PENDING:
-                return (
-                    [],
-                    [],
-                    Response(
-                        {
-                            "detail": (
-                                f"Order {num} cannot be confirmed "
-                                f"(payment_status={o.payment_status})."
-                            )
-                        },
-                        status=400,
-                    ),
-                )
-            pt = (
-                PaymentTransaction.objects.select_for_update()
-                .filter(
-                    order_id=o.pk,
-                    customer_id=u.pk,
-                    status=PaymentTransaction.Status.PENDING,
-                )
-                .first()
-            )
-            if not pt:
-                return (
-                    [],
-                    [],
-                    Response(
-                        {
-                            "detail": (
-                                f"No pending gateway payment for order {num}. "
-                                "COD orders must be marked paid by admin."
-                            )
-                        },
-                        status=400,
-                    ),
-                )
-            if pt.amount != o.total:
-                return (
-                    [],
-                    [],
-                    Response(
-                        {"detail": f"Payment amount mismatch for order {num}."},
-                        status=400,
-                    ),
-                )
-            pt.status = PaymentTransaction.Status.SUCCESS
-            if merge_gateway_payload is not None:
-                prev = pt.gateway_response if isinstance(pt.gateway_response, dict) else {}
-                merged = {**prev, **merge_gateway_payload}
-                pt.gateway_response = merged
-                pt.save(update_fields=["status", "gateway_response"])
-            else:
-                pt.save(update_fields=["status"])
-            completed.append(num)
-
-    return completed, already_paid, None
-
-
-@api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
-@permission_classes([IsAuthenticated, IsPortalShopper])
-def portal_orders_payment_esewa_verify(request):
-    """Verify eSewa sandbox payment via status API, then mark orders paid."""
-    u = request.user
-    raw_orders = request.data.get("order_numbers")
-    if not isinstance(raw_orders, list) or not raw_orders:
-        return validation_error(
-            "order_numbers must be a non-empty list", field="order_numbers"
-        )
-    nums = [str(x).strip() for x in raw_orders if str(x).strip()]
-    transaction_uuid = (request.data.get("transaction_uuid") or "").strip()
-    data_b64 = request.data.get("data")
-    if not transaction_uuid and isinstance(data_b64, str) and data_b64.strip():
-        try:
-            dec = nepal_payment_gateways.decode_esewa_redirect_data(data_b64.strip())
-            transaction_uuid = str(dec.get("transaction_uuid") or "").strip()
-        except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
-            return Response({"detail": "Invalid eSewa callback payload."}, status=400)
-    if not transaction_uuid:
-        return validation_error("transaction_uuid or data is required", field="transaction_uuid")
-
-    orders = list(
-        Order.objects.filter(order_number__in=nums, customer_id=u.pk).order_by("pk")
-    )
-    if len(orders) != len(nums):
-        return Response({"detail": "One or more orders were not found."}, status=404)
-    expected_total = sum((o.total for o in orders), Decimal("0"))
-    for o in orders:
-        pt = PaymentTransaction.objects.filter(
-            order_id=o.pk,
-            customer_id=u.pk,
-            status=PaymentTransaction.Status.PENDING,
-            method=PaymentTransaction.Method.ESEWA,
-        ).first()
-        if not pt:
-            return Response(
-                {"detail": f"No pending eSewa payment for order {o.order_number}."},
-                status=400,
-            )
-        gw = pt.gateway_response if isinstance(pt.gateway_response, dict) else {}
-        if gw.get("transaction_uuid") != transaction_uuid:
-            return Response(
-                {"detail": "eSewa transaction does not match these orders."},
-                status=400,
-            )
-
-    try:
-        status_payload = nepal_payment_gateways.esewa_fetch_status(
-            product_code=settings.ESEWA_PRODUCT_CODE,
-            total_amount=expected_total,
-            transaction_uuid=transaction_uuid,
-            status_url=settings.ESEWA_STATUS_URL,
-        )
-    except (requests.RequestException, ValueError) as exc:
-        return Response(
-            {"detail": f"Could not verify eSewa payment: {exc}"},
-            status=502,
-        )
-
-    if not nepal_payment_gateways.esewa_status_is_complete(status_payload):
-        return Response(
-            {
-                "detail": "eSewa payment is not complete.",
-                "esewa_status": status_payload,
-            },
-            status=400,
-        )
-
-    merge = {"esewa_status_check": status_payload}
-    completed, already_paid, err = _mark_pending_gateway_orders_paid(
-        u, nums, merge_gateway_payload=merge
-    )
-    if err is not None:
-        return err
-
-    out_orders: list[dict] = []
-    for num in nums:
-        ox = Order.objects.filter(order_number=num, customer_id=u.pk).first()
-        if ox:
-            out_orders.append(
-                {
-                    "order_number": ox.order_number,
-                    "payment_status": ox.payment_status,
-                    "total": float(ox.total),
-                }
-            )
-
+    requires_payment_confirmation = payment_method in PORTAL_GATEWAY_PAYMENT_METHODS
     return Response(
         {
-            "orders": out_orders,
-            "completed": completed,
-            "already_paid": already_paid,
-            "verified": True,
-        }
-    )
-
-
-@api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
-@permission_classes([IsAuthenticated, IsPortalShopper])
-def portal_orders_payment_khalti_verify(request):
-    """Verify Khalti sandbox payment via lookup API, then mark orders paid."""
-    u = request.user
-    pidx = (request.data.get("pidx") or "").strip()
-    if not pidx:
-        return validation_error("pidx is required", field="pidx")
-
-    try:
-        lookup = nepal_payment_gateways.khalti_lookup_payment(
-            pidx=pidx,
-            secret_key=settings.KHALTI_SECRET_KEY,
-            lookup_url=settings.KHALTI_LOOKUP_URL,
-        )
-    except (requests.RequestException, ValueError) as exc:
-        return Response(
-            {"detail": f"Could not verify Khalti payment: {exc}"},
-            status=502,
-        )
-
-    st = lookup.get("status")
-    if st != "Completed":
-        return Response(
-            {"detail": "Khalti payment is not complete.", "khalti": lookup},
-            status=400,
-        )
-
-    pts = list(
-        PaymentTransaction.objects.filter(
-            customer_id=u.pk,
-            status=PaymentTransaction.Status.PENDING,
-            method=PaymentTransaction.Method.KHALTI,
-        ).select_related("order")
-    )
-    group: list[PaymentTransaction] = []
-    for pt in pts:
-        gw = pt.gateway_response if isinstance(pt.gateway_response, dict) else {}
-        if gw.get("pidx") == pidx:
-            group.append(pt)
-    if not group:
-        return Response(
-            {"detail": "No pending order payment found for this Khalti session."},
-            status=404,
-        )
-
-    total_expected = sum((pt.amount for pt in group), Decimal("0"))
-    total_paisa = lookup.get("total_amount")
-    try:
-        paid_paisa = int(total_paisa)
-    except (TypeError, ValueError):
-        paid_paisa = -1
-    if paid_paisa != nepal_payment_gateways.rupees_to_khalti_paisa(total_expected):
-        return Response({"detail": "Khalti amount does not match order total."}, status=400)
-
-    nums = [pt.order.order_number for pt in group if pt.order_id]
-    nums = sorted(set(nums), key=lambda x: x)
-    merge = {"khalti_lookup": lookup}
-    completed, already_paid, err = _mark_pending_gateway_orders_paid(
-        u, nums, merge_gateway_payload=merge
-    )
-    if err is not None:
-        return err
-
-    out_orders: list[dict] = []
-    for num in nums:
-        ox = Order.objects.filter(order_number=num, customer_id=u.pk).first()
-        if ox:
-            out_orders.append(
+            "orders": [
                 {
-                    "order_number": ox.order_number,
-                    "payment_status": ox.payment_status,
-                    "total": float(ox.total),
+                    "order_number": o.order_number,
+                    "total": float(o.total),
+                    "payment_status": o.payment_status,
                 }
-            )
-
-    return Response(
-        {
-            "orders": out_orders,
-            "completed": completed,
-            "already_paid": already_paid,
-            "verified": True,
-        }
+                for o in orders_created
+            ],
+            "order_number": first.order_number,
+            "total": float(grand_total),
+            "payment_status": payment_status_out,
+            "requires_payment_confirmation": requires_payment_confirmation,
+        },
+        status=201,
     )
 
 
@@ -4610,11 +4524,62 @@ def portal_orders_payment_complete(request):
     if isinstance(payload, dict):
         gw_update = payload
 
-    completed, already_paid, err = _mark_pending_gateway_orders_paid(
-        u, nums, merge_gateway_payload=gw_update
-    )
-    if err is not None:
-        return err
+    already_paid: list[str] = []
+    completed: list[str] = []
+
+    with transaction.atomic():
+        for num in nums:
+            o = (
+                Order.objects.select_for_update()
+                .filter(order_number=num, customer_id=u.pk)
+                .first()
+            )
+            if not o:
+                return Response({"detail": f"Order {num} not found."}, status=404)
+            if o.payment_status == Order.PaymentStatus.PAID:
+                already_paid.append(num)
+                continue
+            if o.payment_status != Order.PaymentStatus.PENDING:
+                return Response(
+                    {
+                        "detail": (
+                            f"Order {num} cannot be confirmed "
+                            f"(payment_status={o.payment_status})."
+                        )
+                    },
+                    status=400,
+                )
+            pt = (
+                PaymentTransaction.objects.select_for_update()
+                .filter(
+                    order_id=o.pk,
+                    customer_id=u.pk,
+                    status=PaymentTransaction.Status.PENDING,
+                )
+                .first()
+            )
+            if not pt:
+                return Response(
+                    {
+                        "detail": (
+                            f"No pending gateway payment for order {num}. "
+                            "COD orders must be marked paid by admin."
+                        )
+                    },
+                    status=400,
+                )
+            if pt.amount != o.total:
+                return Response(
+                    {"detail": f"Payment amount mismatch for order {num}."},
+                    status=400,
+                )
+            pt.status = PaymentTransaction.Status.SUCCESS
+            if gw_update is not None:
+                pt.gateway_response = gw_update
+                pt.save(update_fields=["status", "gateway_response"])
+            else:
+                pt.save(update_fields=["status"])
+            completed.append(num)
 
     out_orders: list[dict] = []
     for num in nums:

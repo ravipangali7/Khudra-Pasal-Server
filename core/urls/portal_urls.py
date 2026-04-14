@@ -17,6 +17,16 @@ urlpatterns = [
     path("reels/favourites/", portal_views.portal_reels_favourites, name="portal-reels-favourites"),
     path("wallet/topup/", portal_views.portal_wallet_topup, name="portal-wallet-topup"),
     path(
+        "wallet/topup/esewa/success/",
+        portal_views.portal_wallet_topup_esewa_success,
+        name="portal-wallet-topup-esewa-success",
+    ),
+    path(
+        "wallet/topup/esewa/failure/",
+        portal_views.portal_wallet_topup_esewa_failure,
+        name="portal-wallet-topup-esewa-failure",
+    ),
+    path(
         "wallet/transfer-recipients/",
         portal_views.portal_wallet_transfer_recipients,
         name="portal-wallet-transfer-recipients",
@@ -95,16 +105,6 @@ urlpatterns = [
         "orders/payment/complete/",
         portal_views.portal_orders_payment_complete,
         name="portal-orders-payment-complete",
-    ),
-    path(
-        "orders/payment/esewa/verify/",
-        portal_views.portal_orders_payment_esewa_verify,
-        name="portal-orders-payment-esewa-verify",
-    ),
-    path(
-        "orders/payment/khalti/verify/",
-        portal_views.portal_orders_payment_khalti_verify,
-        name="portal-orders-payment-khalti-verify",
     ),
     path("summary/", portal_views.portal_summary, name="portal-summary"),
     path(
