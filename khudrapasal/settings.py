@@ -37,6 +37,7 @@ def _hydrate_google_oauth_from_dotenv() -> None:
             "GOOGLE_OAUTH_CLIENT_ID",
             "GOOGLE_OAUTH_CLIENT_SECRET",
             "GOOGLE_OAUTH_CREDENTIALS_JSON",
+            "GOOGLE_ID_TOKEN_AUDIENCE",
         ):
             raw = vals.get(key)
             if raw is None:
@@ -105,6 +106,22 @@ def _resolve_google_oauth_credentials() -> tuple[str, str]:
     except (OSError, json.JSONDecodeError, TypeError, AttributeError):
         pass
     return cid, sec
+
+
+def _audience_from_spa_dotenv() -> str:
+    """
+    GIS ID tokens are minted for the Web client id (same as VITE_GOOGLE_CLIENT_ID).
+    When the API process has no GOOGLE_OAUTH_CLIENT_ID (common misconfiguration), fall back
+    to the SPA env file so local and simple deployments still verify tokens.
+    """
+    for path in (BASE_DIR.parent / "web" / ".env", BASE_DIR.parent / ".env"):
+        if not path.is_file():
+            continue
+        vals = dotenv_values(path)
+        v = (vals.get("VITE_GOOGLE_CLIENT_ID") or "").strip()
+        if v:
+            return v
+    return ""
 
 
 # Quick-start development settings - unsuitable for production
@@ -235,7 +252,11 @@ for _part in _extra_csrf.split(","):
 OAUTH_REDIRECT_BASE = os.environ.get("OAUTH_REDIRECT_BASE", "").rstrip("/") or None
 
 GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET = _resolve_google_oauth_credentials()
-GOOGLE_ID_TOKEN_AUDIENCE = (os.environ.get("GOOGLE_ID_TOKEN_AUDIENCE") or "").strip() or GOOGLE_OAUTH_CLIENT_ID
+GOOGLE_ID_TOKEN_AUDIENCE = (
+    (os.environ.get("GOOGLE_ID_TOKEN_AUDIENCE") or "").strip()
+    or GOOGLE_OAUTH_CLIENT_ID
+    or _audience_from_spa_dotenv()
+)
 FACEBOOK_APP_ID = os.environ.get("FACEBOOK_APP_ID", "")
 FACEBOOK_APP_SECRET = os.environ.get("FACEBOOK_APP_SECRET", "")
 

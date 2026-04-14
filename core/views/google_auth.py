@@ -44,8 +44,15 @@ class GoogleCredentialLoginView(APIView):
         audience = (getattr(settings, "GOOGLE_ID_TOKEN_AUDIENCE", "") or "").strip()
         if not audience:
             return Response(
-                {"detail": "GOOGLE_ID_TOKEN_AUDIENCE is not configured."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                {
+                    "detail": (
+                        "Google ID token audience is not configured. Set GOOGLE_OAUTH_CLIENT_ID "
+                        "(or GOOGLE_ID_TOKEN_AUDIENCE) on the API host to your Web client id "
+                        "(same value as VITE_GOOGLE_CLIENT_ID in web/.env), or deploy "
+                        "web/.env beside the server so the API can read VITE_GOOGLE_CLIENT_ID."
+                    ),
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
         try:
