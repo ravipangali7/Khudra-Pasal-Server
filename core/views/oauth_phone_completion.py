@@ -56,7 +56,10 @@ def oauth_phone_send(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    otp_service.create_otp(phone, OTPVerification.Purpose.OAUTH_PHONE, "")
+    try:
+        otp_service.create_otp(phone, OTPVerification.Purpose.OAUTH_PHONE, "")
+    except otp_service.OTPError as e:
+        return Response({"detail": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
     payload = {"detail": "OTP sent."}
     if settings.DEBUG:
         latest = (

@@ -34,7 +34,21 @@ def send_otp_sms(phone: str, code: str) -> None:
             )
         except AakashSmsError as e:
             logger.warning("OTP SMS rejected for %s: %s", phone, e)
-            raise OTPError("Unable to send OTP to this number. Please check the number and try again.") from e
+            if settings.DEBUG:
+                # Allow local/staging to complete flows when the gateway rejects or is misconfigured;
+                # callers may expose the code only when DEBUG (see e.g. oauth_phone_send).
+                logger.info("OTP SMS skipped after failure because DEBUG=True; code was still stored.")
+                return
+            err = str(e).lower()
+            if "balance" in err or "not enough" in err:
+                raise OTPError(
+                    "SMS could not be sent due to a service limit. Please try again later."
+                ) from e
+            if "auth token" in err or ("token" in err and "valid" in err):
+                raise OTPError("SMS service is not configured correctly. Please contact support.") from e
+            raise OTPError(
+                "Unable to send OTP to this number. Please check the number and try again."
+            ) from e
     if settings.DEBUG:
         logger.info("OTP SMS (dev) to %s: %s", phone, code)
 

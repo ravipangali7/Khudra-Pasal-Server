@@ -33,11 +33,6 @@ def _ascii_digits(value: str) -> str:
     return "".join(c for c in (value or "") if c in "0123456789")
 
 
-def _recipient_format_retryable(message: str) -> bool:
-    m = (message or "").lower()
-    return "valid recipient" in m or "no valid" in m
-
-
 def _post_sms(*, url: str, token: str, to_field: str, body: str) -> None:
     try:
         resp = requests.post(
@@ -81,8 +76,8 @@ def send_sms(*, to: str, text: str) -> None:
     Send one SMS via Aakash SMS v3.
 
     `to` is normalized to Nepal's 10-digit mobile (same rules as `normalize_nepal_phone`).
-    If the gateway rejects the national format with a recipient error, one retry uses
-    ``977`` + national (13 digits), which some deployments accept.
+    The v3 API expects comma-separated **10-digit** numbers only (see Aakash docs); do not
+    send international-prefix formats in the ``to`` field.
     """
     token = (getattr(settings, "AAKASHSMS_AUTH_TOKEN", None) or "").strip()
     if not token:
@@ -103,18 +98,7 @@ def send_sms(*, to: str, text: str) -> None:
         "https://sms.aakashsms.com/sms/v3/send"
     )
 
-    try:
-        _post_sms(url=url, token=token, to_field=to_canon, body=body)
-    except AakashSmsError as first_err:
-        if not _recipient_format_retryable(str(first_err)):
-            raise
-        intl = f"977{to_canon}"
-        logger.warning(
-            "Aakash SMS national format rejected (%s); retrying with intl format ***%s",
-            first_err,
-            to_canon[-4:],
-        )
-        _post_sms(url=url, token=token, to_field=intl, body=body)
+    _post_sms(url=url, token=token, to_field=to_canon, body=body)
 
 
 def _message_from_payload(payload: Any) -> str:

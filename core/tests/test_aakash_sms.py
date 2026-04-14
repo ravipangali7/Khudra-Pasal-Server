@@ -117,43 +117,22 @@ class AakashSmsTests(TestCase):
         AAKASHSMS_API_URL="https://sms.example.test/v3/send",
     )
     @patch("core.services.aakash_sms.requests.post")
-    def test_send_retries_with_977_prefix_when_gateway_rejects_national_format(
+    def test_send_does_not_retry_with_intl_format_v3_requires_ten_digits(
         self, mock_post: MagicMock
     ) -> None:
-        success_json = {
-            "error": False,
-            "message": "queued",
-            "data": {
-                "valid": [
-                    {
-                        "id": 1,
-                        "mobile": "9779811111111",
-                        "text": "Hello",
-                        "credit": 1,
-                        "network": "ncell",
-                        "status": "queued",
-                    }
-                ],
-                "invalid": [],
+        """Aakash v3 documents ``to`` as comma-separated 10-digit numbers only."""
+        mock_post.return_value = MagicMock(
+            ok=True,
+            status_code=200,
+            json=lambda: {
+                "error": True,
+                "message": "No valid recipients.",
+                "data": [],
             },
-        }
-        mock_post.side_effect = [
-            MagicMock(
-                ok=True,
-                status_code=200,
-                json=lambda: {
-                    "error": True,
-                    "message": "No valid recipients.",
-                    "data": [],
-                },
-            ),
-            MagicMock(ok=True, status_code=200, json=lambda: success_json),
-        ]
+        )
 
-        send_sms(to="+977 981-1111111", text="Hello")
+        with self.assertRaises(AakashSmsError):
+            send_sms(to="+977 981-1111111", text="Hello")
 
-        self.assertEqual(mock_post.call_count, 2)
-        first = mock_post.call_args_list[0][1]["data"]["to"]
-        second = mock_post.call_args_list[1][1]["data"]["to"]
-        self.assertEqual(first, "9811111111")
-        self.assertEqual(second, "9779811111111")
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertEqual(mock_post.call_args[1]["data"]["to"], "9811111111")
