@@ -1,8 +1,10 @@
 """Portal-scoped orders list and refund request / execute flows."""
 
 from decimal import Decimal
+from datetime import timedelta
 
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
@@ -15,6 +17,7 @@ from core.models import (
     Product,
     Refund,
     Role,
+    OrderSettings,
     User,
     Vendor,
     Wallet,
@@ -101,6 +104,25 @@ class PortalOrdersSurfaceTests(TestCase):
         r = self.client.get("/api/family-portal/orders/")
         self.assertEqual(r.status_code, status.HTTP_200_OK)
         self.assertEqual(len(r.data["results"]), 1)
+
+    def test_orders_list_hides_refund_when_refund_validity_expired(self):
+        order = self._create_order(
+            placed_portal=Order.PlacedPortal.PORTAL_MAIN, total=Decimal("120.00")
+        )
+        order.payment_status = Order.PaymentStatus.PAID
+        order.payment_method = Order.PaymentMethod.WALLET
+        order.created_at = timezone.now() - timedelta(days=10)
+        order.save(update_fields=["payment_status", "payment_method", "created_at"])
+        settings = OrderSettings.load()
+        settings.refund_validity_days = 7
+        settings.save()
+
+        r = self.client.get("/api/portal/orders/")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(r.data["results"]), 1)
+        row = r.data["results"][0]
+        self.assertFalse(row.get("refund_allowed"))
+        self.assertIsNone(row.get("refund_estimate"))
 
 
 class RefundExecuteWalletTests(TestCase):

@@ -155,6 +155,26 @@ def admin_vendor_ledger(request, vendor_pk: int):
 @api_view(["GET"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
+def admin_vendor_ledger_all(request):
+    if err := _forbidden(request):
+        return err
+    qs = VendorLedgerEntry.objects.select_related("vendor").order_by("-created_at")
+    et = (request.query_params.get("entry_type") or "").strip()
+    if et:
+        qs = qs.filter(entry_type=et)
+    paginator, page = _paginate(request, qs)
+    rows: list[dict] = []
+    for e in page:
+        row = _vendor_ledger_row(e)
+        row["vendor_id"] = str(e.vendor_id)
+        row["vendor_name"] = e.vendor.name
+        rows.append(row)
+    return paginator.get_paginated_response(rows)
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
 def admin_vendor_supplier_ledger(request, vendor_pk: int, sp_pk: int):
     """Posted stock purchases for one supplier (same payload as vendor portal)."""
     if err := _forbidden(request):

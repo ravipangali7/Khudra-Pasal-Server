@@ -82,6 +82,11 @@ urlpatterns = [
         name="admin-stock-purchases-all",
     ),
     path(
+        "vendors/all/ledger/",
+        admin_vendor_inventory_views.admin_vendor_ledger_all,
+        name="admin-vendor-ledger-all",
+    ),
+    path(
         "vendors/<int:vendor_pk>/suppliers/<int:sp_pk>/ledger/",
         admin_vendor_inventory_views.admin_vendor_supplier_ledger,
         name="admin-vendor-supplier-ledger",

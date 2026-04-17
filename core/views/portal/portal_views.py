@@ -400,6 +400,14 @@ def _order_matches_list_surface(o: Order, surface: str) -> bool:
     return o.placed_portal == surface
 
 
+def _order_within_refund_validity(order: Order, order_settings: OrderSettings) -> bool:
+    """True when order is still inside configured refund validity days."""
+    max_age = timedelta(days=int(order_settings.refund_validity_days or 0))
+    if not max_age:
+        return True
+    return timezone.now() - order.created_at <= max_age
+
+
 def _notify_wallet_recipient(
     recipient: User, title: str, message: str, action_url: str = ""
 ) -> None:
@@ -868,6 +876,7 @@ def portal_orders_list(request, list_placed_portal: str | None = None):
         .order_by("-created_at")
     )
     paginator, page = _paginate(request, qs)
+    order_settings = OrderSettings.load()
     rows = []
     for o in page:
         lines = [
@@ -901,12 +910,16 @@ def portal_orders_list(request, list_placed_portal: str | None = None):
                 already += r.amount
         remaining = max(Decimal("0"), Decimal(o.total) - already)
         refund_estimate = None
+        refund_allowed = False
         if (
             remaining > 0
             and o.payment_method == Order.PaymentMethod.WALLET
             and o.payment_status == Order.PaymentStatus.PAID
             and o.status not in (Order.Status.CANCELLED, Order.Status.REFUNDED)
+            and not o.refunds.filter(status=Refund.Status.PENDING).exists()
+            and _order_within_refund_validity(o, order_settings)
         ):
+            refund_allowed = True
             try:
                 fe = refund_service.refund_financials(
                     o, remaining, persist_settlement=False
@@ -933,6 +946,7 @@ def portal_orders_list(request, list_placed_portal: str | None = None):
                 "lines": lines,
                 "refunds": refund_rows,
                 "refund_estimate": refund_estimate,
+                "refund_allowed": refund_allowed,
             }
         )
     return paginator.get_paginated_response(rows)
@@ -967,9 +981,8 @@ def portal_order_refund_request(request, pk: int, refund_surface: str):
     if o.status in (Order.Status.CANCELLED, Order.Status.REFUNDED):
         return validation_error("This order cannot be refunded.", field="order")
 
-    settings = OrderSettings.load()
-    max_age = timedelta(days=int(settings.refund_validity_days or 0))
-    if max_age and timezone.now() - o.created_at > max_age:
+    order_settings = OrderSettings.load()
+    if not _order_within_refund_validity(o, order_settings):
         return validation_error("Refund period has expired.", field="order")
 
     already = (
