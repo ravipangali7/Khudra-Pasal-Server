@@ -36,6 +36,27 @@ def _vendor_or_404(vendor_pk: int) -> tuple[Vendor | None, Response | None]:
     return v, None
 
 
+def _admin_suppliers_list_response(request, vendor: Vendor | None) -> Response:
+    q = (request.query_params.get("q") or "").strip()
+    if vendor is None:
+        qs = (
+            Supplier.objects.select_related("vendor")
+            .prefetch_related("stock_purchases")
+            .order_by("name")
+        )
+    else:
+        qs = _supplier_queryset_with_ledger(vendor).order_by("name")
+    if q:
+        qs = qs.filter(Q(name__icontains=q) | Q(phone__icontains=q))
+    paginator, page = _paginate(request, qs)
+    rows = [_supplier_payload(s) for s in page]
+    if vendor is None:
+        for row, supplier in zip(rows, page):
+            row["vendor_id"] = str(supplier.vendor_id)
+            row["vendor_name"] = supplier.vendor.name
+    return paginator.get_paginated_response(rows)
+
+
 @api_view(["GET", "POST"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
@@ -46,13 +67,7 @@ def admin_vendor_suppliers(request, vendor_pk: int):
     if not_found:
         return not_found
     if request.method == "GET":
-        q = (request.query_params.get("q") or "").strip()
-        qs = _supplier_queryset_with_ledger(vendor).order_by("name")
-        if q:
-            qs = qs.filter(Q(name__icontains=q) | Q(phone__icontains=q))
-        paginator, page = _paginate(request, qs)
-        rows = [_supplier_payload(s) for s in page]
-        return paginator.get_paginated_response(rows)
+        return _admin_suppliers_list_response(request, vendor)
     name = (request.data.get("name") or "").strip()
     if not name:
         return validation_error("name is required", field="name")
@@ -67,6 +82,15 @@ def admin_vendor_suppliers(request, vendor_pk: int):
         is_active=bool(request.data.get("is_active", True)),
     )
     return Response(_supplier_payload(s), status=201)
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_suppliers_all(request):
+    if err := _forbidden(request):
+        return err
+    return _admin_suppliers_list_response(request, None)
 
 
 @api_view(["GET", "PATCH", "DELETE"])
@@ -251,6 +275,100 @@ def admin_vendor_stock_purchases(request, vendor_pk: int):
         pk=p.pk
     )
     return Response(_purchase_payload(p), status=201)
+
+
+@api_view(["GET", "PATCH", "DELETE"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_vendor_stock_purchase_detail(request, vendor_pk: int, pk: int):
+    if err := _forbidden(request):
+        return err
+    vendor, not_found = _vendor_or_404(vendor_pk)
+    if not_found:
+        return not_found
+    p = (
+        VendorStockPurchase.objects.filter(pk=pk, vendor=vendor)
+        .select_related("supplier")
+        .prefetch_related("lines__product")
+        .first()
+    )
+    if not p:
+        return Response({"detail": "Not found."}, status=404)
+    if request.method == "GET":
+        return Response(_purchase_payload(p))
+    if request.method == "DELETE":
+        if p.status != VendorStockPurchase.Status.DRAFT:
+            return Response({"detail": "Only draft purchases can be deleted."}, status=400)
+        p.delete()
+        return Response({"ok": True})
+    if p.status != VendorStockPurchase.Status.DRAFT:
+        return Response({"detail": "Only draft purchases can be edited."}, status=400)
+    if "supplier_id" in request.data:
+        try:
+            sid = int(request.data.get("supplier_id"))
+        except (TypeError, ValueError):
+            return validation_error("invalid supplier_id", field="supplier_id")
+        supplier = Supplier.objects.filter(pk=sid, vendor=vendor).first()
+        if not supplier:
+            return validation_error("supplier not found", field="supplier_id")
+        p.supplier = supplier
+    if "notes" in request.data:
+        p.notes = (request.data.get("notes") or "")[:2000]
+    if "tax" in request.data:
+        p.tax = Decimal(str(request.data.get("tax") or "0")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+    if "lines" in request.data:
+        try:
+            lines_spec = _parse_lines(request.data.get("lines"), vendor)
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=400)
+        p.lines.all().delete()
+        for pid, qty, unit_cost in lines_spec:
+            lt = (unit_cost * qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            VendorStockPurchaseLine.objects.create(
+                purchase=p,
+                product_id=pid,
+                quantity=qty,
+                unit_cost=unit_cost,
+                line_total=lt,
+            )
+    recompute_purchase_totals(p)
+    p.save(update_fields=["subtotal", "total", "tax", "supplier", "notes"])
+    p = VendorStockPurchase.objects.select_related("supplier").prefetch_related("lines__product").get(
+        pk=p.pk
+    )
+    return Response(_purchase_payload(p))
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_stock_purchases_all(request):
+    if err := _forbidden(request):
+        return err
+    qs = VendorStockPurchase.objects.select_related("supplier", "vendor").order_by("-created_at")
+    st = (request.query_params.get("status") or "").strip()
+    if st in (VendorStockPurchase.Status.DRAFT, VendorStockPurchase.Status.POSTED):
+        qs = qs.filter(status=st)
+    paginator, page = _paginate(request, qs)
+    rows = []
+    for p in page:
+        rows.append(
+            {
+                "id": str(p.pk),
+                "reference": p.reference,
+                "status": p.status,
+                "supplier_id": str(p.supplier_id),
+                "supplier_name": p.supplier.name,
+                "vendor_id": str(p.vendor_id),
+                "vendor_name": p.vendor.name,
+                "total": float(p.total),
+                "created_at": p.created_at.isoformat(),
+                "posted_at": p.posted_at.isoformat() if p.posted_at else None,
+            }
+        )
+    return paginator.get_paginated_response(rows)
 
 
 @api_view(["POST"])

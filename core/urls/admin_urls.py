@@ -72,6 +72,16 @@ urlpatterns = [
     path("products/<int:pk>/", resource_views.admin_product_detail_write, name="admin-products-write"),
     path("vendors/create/", resource_views.admin_vendor_create, name="admin-vendors-create"),
     path(
+        "vendors/all/suppliers/",
+        admin_vendor_inventory_views.admin_suppliers_all,
+        name="admin-suppliers-all",
+    ),
+    path(
+        "vendors/all/stock-purchases/",
+        admin_vendor_inventory_views.admin_stock_purchases_all,
+        name="admin-stock-purchases-all",
+    ),
+    path(
         "vendors/<int:vendor_pk>/suppliers/<int:sp_pk>/ledger/",
         admin_vendor_inventory_views.admin_vendor_supplier_ledger,
         name="admin-vendor-supplier-ledger",
@@ -90,6 +100,11 @@ urlpatterns = [
         "vendors/<int:vendor_pk>/ledger/",
         admin_vendor_inventory_views.admin_vendor_ledger,
         name="admin-vendor-ledger",
+    ),
+    path(
+        "vendors/<int:vendor_pk>/stock-purchases/<int:pk>/",
+        admin_vendor_inventory_views.admin_vendor_stock_purchase_detail,
+        name="admin-vendor-stock-purchase-detail",
     ),
     path(
         "vendors/<int:vendor_pk>/stock-purchases/<int:pk>/post/",
