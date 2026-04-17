@@ -36,11 +36,10 @@ def _annotate_admin_user_customer_metrics(queryset):
         .annotate(_c=Count("id"))
         .values("_c")[:1]
     )
+    # Lifetime order volume: sum order totals for every row tied to this customer
+    # (all statuses — pending through delivered — so admin "Total spend" matches placed orders).
     spent_sq = (
-        Order.objects.filter(
-            customer_id=OuterRef("pk"),
-            status=Order.Status.DELIVERED,
-        )
+        Order.objects.filter(customer_id=OuterRef("pk"))
         .values("customer_id")
         .annotate(_s=Sum("total"))
         .values("_s")[:1]
