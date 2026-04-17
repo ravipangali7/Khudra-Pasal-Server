@@ -80,7 +80,7 @@ def _admin_suppliers_list_response(request, vendor: Vendor | None) -> Response:
     if vendor is None:
         for row, supplier in zip(rows, page):
             row["vendor_id"] = str(supplier.vendor_id)
-            row["vendor_name"] = supplier.vendor.name
+            row["vendor_name"] = supplier.vendor.store_name
     resp = paginator.get_paginated_response(rows)
     resp.data["summary"] = summary
     return resp
@@ -417,7 +417,7 @@ def admin_stock_purchases_all(request):
                 "supplier_id": str(p.supplier_id),
                 "supplier_name": p.supplier.name,
                 "vendor_id": str(p.vendor_id),
-                "vendor_name": p.vendor.name,
+                "vendor_name": p.vendor.store_name,
                 "total": float(p.total),
                 "created_at": p.created_at.isoformat(),
                 "posted_at": p.posted_at.isoformat() if p.posted_at else None,
