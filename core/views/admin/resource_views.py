@@ -645,6 +645,17 @@ def admin_products_list(request):
     if err := _forbidden(request):
         return err
     qs = Product.objects.select_related("category", "brand", "seller").order_by("-created_at")
+
+    def _parse_bool_query(value):
+        if value is None:
+            return None
+        v = str(value).strip().lower()
+        if v in {"1", "true", "yes", "on"}:
+            return True
+        if v in {"0", "false", "no", "off"}:
+            return False
+        return None
+
     status = request.query_params.get("status")
     if status:
         qs = qs.filter(status=status)
@@ -654,6 +665,12 @@ def admin_products_list(request):
     seller_id = request.query_params.get("seller_id") or request.query_params.get("vendor_id")
     if seller_id:
         qs = qs.filter(seller_id=seller_id)
+    enable_pos = _parse_bool_query(request.query_params.get("enable_pos"))
+    if enable_pos is not None:
+        qs = qs.filter(enable_pos=enable_pos)
+    enable_reels = _parse_bool_query(request.query_params.get("enable_reels"))
+    if enable_reels is not None:
+        qs = qs.filter(enable_reels=enable_reels)
     paginator, page = _paginate(request, qs)
     rows = [
         {
