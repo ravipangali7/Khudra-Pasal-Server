@@ -121,6 +121,11 @@ urlpatterns = [
         admin_vendor_inventory_views.admin_vendor_stock_purchases,
         name="admin-vendor-stock-purchases",
     ),
+    path(
+        "vendors/<int:pk>/impersonate/",
+        resource_views.admin_vendor_impersonate,
+        name="admin-vendors-impersonate",
+    ),
     path("vendors/<int:pk>/", resource_views.admin_vendor_detail_write, name="admin-vendors-write"),
     path("vendors/", resource_views.admin_vendors_list, name="admin-vendors"),
     path("reels/create/", resource_views.admin_reel_create, name="admin-reels-create"),

@@ -12,7 +12,7 @@ from rest_framework.decorators import api_view, authentication_classes, permissi
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from core.models import Product, Supplier, VendorLedgerEntry, VendorStockPurchase, VendorStockPurchaseLine
+from core.models import Product, Supplier, Vendor, VendorLedgerEntry, VendorStockPurchase, VendorStockPurchaseLine
 from core.services.stock_purchase_service import (
     generate_purchase_reference,
     post_stock_purchase,
@@ -132,9 +132,13 @@ def vendor_suppliers(request):
     return Response(_supplier_payload(s), status=201)
 
 
-def _supplier_queryset_with_ledger(vendor):
+def _supplier_queryset_with_ledger(vendor: Vendor | None = None):
+    """Annotate suppliers with posted-purchase totals (ledger credit). Pass vendor=None for all vendors."""
     posted_filter = Q(stock_purchases__status=VendorStockPurchase.Status.POSTED)
-    return Supplier.objects.filter(vendor=vendor).annotate(
+    qs = Supplier.objects.all()
+    if vendor is not None:
+        qs = qs.filter(vendor=vendor)
+    return qs.select_related("vendor").annotate(
         ledger_credit=Coalesce(
             Sum("stock_purchases__total", filter=posted_filter),
             Value(Decimal("0"), output_field=DecimalField(max_digits=12, decimal_places=2)),

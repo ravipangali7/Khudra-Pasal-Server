@@ -5,7 +5,8 @@ from __future__ import annotations
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, DecimalField, Q, Sum, Value
+from django.db.models.functions import Coalesce
 from rest_framework.authentication import SessionAuthentication, TokenAuthentication
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -36,25 +37,53 @@ def _vendor_or_404(vendor_pk: int) -> tuple[Vendor | None, Response | None]:
     return v, None
 
 
+def _vendor_ledger_amount_totals(qs):
+    """Sum credits (amount > 0) and debits (amount < 0) over the full queryset (not one page)."""
+    credit_sum = qs.filter(amount__gt=0).aggregate(s=Sum("amount"))["s"]
+    debit_sum = qs.filter(amount__lt=0).aggregate(s=Sum("amount"))["s"]
+    credit = Decimal(credit_sum or 0).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    neg_total = Decimal(debit_sum or 0)
+    debit = (-neg_total).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    balance = (credit - debit).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return {
+        "credit": float(credit),
+        "debit": float(debit),
+        "balance": float(balance),
+    }
+
+
 def _admin_suppliers_list_response(request, vendor: Vendor | None) -> Response:
     q = (request.query_params.get("q") or "").strip()
-    if vendor is None:
-        qs = (
-            Supplier.objects.select_related("vendor")
-            .prefetch_related("stock_purchases")
-            .order_by("name")
-        )
-    else:
-        qs = _supplier_queryset_with_ledger(vendor).order_by("name")
+    qs = _supplier_queryset_with_ledger(vendor).order_by("name")
     if q:
         qs = qs.filter(Q(name__icontains=q) | Q(phone__icontains=q))
+
+    totals = qs.aggregate(
+        supplier_count=Count("pk", distinct=True),
+        total_ledger_credit=Coalesce(
+            Sum("ledger_credit"),
+            Value(Decimal("0"), output_field=DecimalField(max_digits=14, decimal_places=2)),
+        ),
+    )
+    credit_raw = totals.get("total_ledger_credit") or Decimal("0")
+    credit = credit_raw if isinstance(credit_raw, Decimal) else Decimal(str(credit_raw))
+    credit = credit.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    summary = {
+        "supplier_count": int(totals.get("supplier_count") or 0),
+        "total_ledger_credit": float(credit),
+        "total_ledger_debit": 0.0,
+        "total_ledger_balance": float(credit),
+    }
+
     paginator, page = _paginate(request, qs)
     rows = [_supplier_payload(s) for s in page]
     if vendor is None:
         for row, supplier in zip(rows, page):
             row["vendor_id"] = str(supplier.vendor_id)
             row["vendor_name"] = supplier.vendor.name
-    return paginator.get_paginated_response(rows)
+    resp = paginator.get_paginated_response(rows)
+    resp.data["summary"] = summary
+    return resp
 
 
 @api_view(["GET", "POST"])
@@ -147,9 +176,12 @@ def admin_vendor_ledger(request, vendor_pk: int):
     et = (request.query_params.get("entry_type") or "").strip()
     if et:
         qs = qs.filter(entry_type=et)
+    totals = _vendor_ledger_amount_totals(qs)
     paginator, page = _paginate(request, qs)
     rows = [_vendor_ledger_row(e) for e in page]
-    return paginator.get_paginated_response(rows)
+    resp = paginator.get_paginated_response(rows)
+    resp.data["ledger_totals"] = totals
+    return resp
 
 
 @api_view(["GET"])
@@ -158,18 +190,21 @@ def admin_vendor_ledger(request, vendor_pk: int):
 def admin_vendor_ledger_all(request):
     if err := _forbidden(request):
         return err
-    qs = VendorLedgerEntry.objects.select_related("vendor").order_by("-created_at")
+    qs = VendorLedgerEntry.objects.select_related("vendor").order_by("vendor__store_name", "-created_at")
     et = (request.query_params.get("entry_type") or "").strip()
     if et:
         qs = qs.filter(entry_type=et)
+    totals = _vendor_ledger_amount_totals(qs)
     paginator, page = _paginate(request, qs)
     rows: list[dict] = []
     for e in page:
         row = _vendor_ledger_row(e)
         row["vendor_id"] = str(e.vendor_id)
-        row["vendor_name"] = e.vendor.name
+        row["vendor_name"] = e.vendor.store_name
         rows.append(row)
-    return paginator.get_paginated_response(rows)
+    resp = paginator.get_paginated_response(rows)
+    resp.data["ledger_totals"] = totals
+    return resp
 
 
 @api_view(["GET"])

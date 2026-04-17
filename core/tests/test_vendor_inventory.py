@@ -246,3 +246,61 @@ class VendorInventoryApiTests(TestCase):
         )
         self.assertEqual(r.status_code, status.HTTP_201_CREATED)
         self.assertEqual(float(r.data["amount"]), -10.0)
+
+
+class AdminVendorLedgerAllApiTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create_user(
+            username="admledger",
+            password="x",
+            phone="9855555611",
+            name="Super",
+            role=User.Role.SUPER_ADMIN,
+            is_staff=True,
+            is_superuser=True,
+        )
+        self.admin_token = Token.objects.create(user=self.admin)
+        self.vendor_user = User.objects.create_user(
+            username="vledgerall",
+            password="x",
+            phone="9855555612",
+            name="Seller",
+            role=User.Role.NORMAL,
+        )
+        self.vendor = Vendor.objects.create(
+            user=self.vendor_user,
+            store_name="Ledger All Store",
+            store_slug="ledger-all-store",
+            status=Vendor.Status.APPROVED,
+            commission_rate=Decimal("10.00"),
+        )
+
+    def test_admin_vendor_ledger_all_totals_and_store_name(self):
+        VendorLedgerEntry.objects.create(
+            vendor=self.vendor,
+            entry_type=VendorLedgerEntry.EntryType.ADJUSTMENT,
+            amount=Decimal("100.00"),
+            reference_type="",
+            reference_id="",
+            description="Credit adj",
+        )
+        VendorLedgerEntry.objects.create(
+            vendor=self.vendor,
+            entry_type=VendorLedgerEntry.EntryType.ADJUSTMENT,
+            amount=Decimal("-30.00"),
+            reference_type="",
+            reference_id="",
+            description="Debit adj",
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.admin_token.key}")
+        r = self.client.get("/api/admin/vendors/all/ledger/", {"page_size": 10}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertIn("ledger_totals", r.data)
+        self.assertEqual(r.data["ledger_totals"]["credit"], 100.0)
+        self.assertEqual(r.data["ledger_totals"]["debit"], 30.0)
+        self.assertEqual(r.data["ledger_totals"]["balance"], 70.0)
+        rows = r.data.get("results", [])
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertEqual(row["vendor_name"], "Ledger All Store")

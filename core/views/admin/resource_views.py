@@ -16,6 +16,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from django.utils.text import slugify
 from rest_framework.authentication import SessionAuthentication, TokenAuthentication
+from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, authentication_classes, parser_classes, permission_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.pagination import PageNumberPagination
@@ -68,6 +69,7 @@ from core.models import (
     Unit,
     User,
     Vendor,
+    VendorImpersonationLog,
     Wallet,
     WalletBonus,
     WalletSettings,
@@ -4268,6 +4270,57 @@ def admin_product_approval_write(request, pk):
         },
     )
     return Response({"id": str(row.pk), "status": row.status})
+
+
+@api_view(["POST"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_vendor_impersonate(request, pk):
+    """
+    Issue the vendor owner's API token so an authenticated admin can open the vendor SPA as that seller.
+    Logged in VendorImpersonationLog and audit trail.
+    """
+    if err := _forbidden(request):
+        return err
+    vendor = Vendor.objects.filter(pk=pk).select_related("user").first()
+    if not vendor:
+        return Response({"detail": "Not found."}, status=404)
+    if not vendor.user.is_active:
+        return Response({"detail": "Vendor account is inactive."}, status=400)
+    token, _ = Token.objects.get_or_create(user=vendor.user)
+    session_key = str(uuid4())
+    VendorImpersonationLog.objects.create(
+        admin=request.user,
+        vendor=vendor,
+        session_token=session_key[:100],
+        expires_at=timezone.now() + timedelta(hours=12),
+    )
+    ip = client_ip_from_request(request)
+    audit_service.log(
+        "Admin vendor impersonation",
+        log_type=AuditLog.Type.SECURITY,
+        performed_by=request.user,
+        action_kind=AuditLog.ActionKind.LOGIN,
+        module="vendors",
+        ip_address=ip,
+        metadata={
+            "vendor_id": str(vendor.pk),
+            "impersonation_session": session_key[:36],
+            "vendor_user_id": str(vendor.user_id),
+        },
+    )
+    return Response(
+        {
+            "token": token.key,
+            "user": {
+                "id": vendor.user.id,
+                "name": vendor.user.name,
+                "store_name": vendor.store_name,
+                "store_slug": vendor.store_slug,
+                "status": vendor.status,
+            },
+        }
+    )
 
 
 @api_view(["PATCH"])

@@ -1,8 +1,11 @@
 import os
+from decimal import Decimal
 
 from django.conf import settings
 from django.core.cache import cache
-from django.db.models import Q
+from django.db.models import Count, IntegerField, OuterRef, Q, Subquery, Sum, Value
+from django.db.models.fields import DecimalField
+from django.db.models.functions import Coalesce
 from rest_framework.authentication import SessionAuthentication, TokenAuthentication
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, authentication_classes, permission_classes, throttle_classes
@@ -10,7 +13,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from core.models import AuditLog, EmployeeProfile, KYCDocument, SecuritySettings, User, Vendor
+from core.models import AuditLog, EmployeeProfile, KYCDocument, Order, SecuritySettings, User, Vendor, Wallet
 from core.phone_auth import (
     authenticate_user_by_phone,
     find_user_by_phone_input,
@@ -23,6 +26,52 @@ from core.services.kyc_portal import supersede_non_approved_kyc, validate_kyc_up
 from core.services.kyc_service import sync_user_kyc_status
 from core.serializers import AdminUserSerializer
 from core.views.admin.admin_write_utils import absolute_media_url, client_ip_from_request, validation_error
+
+
+def _annotate_admin_user_customer_metrics(queryset):
+    """Subquery aggregates so list rows do not double-count via joins."""
+    order_count_sq = (
+        Order.objects.filter(customer_id=OuterRef("pk"))
+        .values("customer_id")
+        .annotate(_c=Count("id"))
+        .values("_c")[:1]
+    )
+    spent_sq = (
+        Order.objects.filter(
+            customer_id=OuterRef("pk"),
+            status=Order.Status.DELIVERED,
+        )
+        .values("customer_id")
+        .annotate(_s=Sum("total"))
+        .values("_s")[:1]
+    )
+    wallet_sq = (
+        Wallet.objects.filter(owner_id=OuterRef("pk"))
+        .exclude(type=Wallet.Type.VENDOR)
+        .values("owner_id")
+        .annotate(_w=Sum("balance"))
+        .values("_w")[:1]
+    )
+    return queryset.annotate(
+        admin_order_count=Coalesce(
+            Subquery(order_count_sq, output_field=IntegerField()),
+            Value(0),
+        ),
+        admin_total_spent=Coalesce(
+            Subquery(
+                spent_sq,
+                output_field=DecimalField(max_digits=14, decimal_places=2),
+            ),
+            Value(Decimal("0")),
+        ),
+        admin_wallet_balance=Coalesce(
+            Subquery(
+                wallet_sq,
+                output_field=DecimalField(max_digits=16, decimal_places=2),
+            ),
+            Value(Decimal("0")),
+        ),
+    )
 
 
 def _validate_customer_document_file(uploaded):
@@ -138,10 +187,11 @@ def admin_login(request):
         ip_address=ip,
         metadata={"portal": "admin"},
     )
+    u = _annotate_admin_user_customer_metrics(User.objects.filter(pk=user.pk)).first()
     return Response(
         {
             "token": token.key,
-            "user": AdminUserSerializer(user).data,
+            "user": AdminUserSerializer(u, context={"request": request}).data,
         }
     )
 
@@ -291,6 +341,8 @@ def users_list(request):
                 pass
         queryset = queryset.filter(q)
 
+    queryset = _annotate_admin_user_customer_metrics(queryset)
+
     paginator = UserPagination()
     page = paginator.paginate_queryset(queryset, request)
     serializer = AdminUserSerializer(
@@ -343,8 +395,9 @@ def admin_user_create(request):
         file_fields.append("customer_document")
     if file_fields:
         user.save(update_fields=file_fields)
+    u = _annotate_admin_user_customer_metrics(User.objects.filter(pk=user.pk)).first()
     return Response(
-        AdminUserSerializer(user, context={"request": request}).data, status=201
+        AdminUserSerializer(u, context={"request": request}).data, status=201
     )
 
 
@@ -355,7 +408,7 @@ def admin_user_detail_write(request, pk):
     forbidden = _forbidden_if_not_admin(request)
     if forbidden:
         return forbidden
-    user = User.objects.filter(pk=pk).first()
+    user = _annotate_admin_user_customer_metrics(User.objects.filter(pk=pk)).first()
     if not user:
         return Response({"detail": "Not found."}, status=404)
     if request.method == "GET":
@@ -403,7 +456,8 @@ def admin_user_detail_write(request, pk):
         module="users",
         metadata={"phone": user.phone, "role": user.role},
     )
-    data = AdminUserSerializer(user, context={"request": request}).data
+    u = _annotate_admin_user_customer_metrics(User.objects.filter(pk=user.pk)).first()
+    data = AdminUserSerializer(u, context={"request": request}).data
     data["avatar"] = absolute_media_url(request, user.avatar) if user.avatar else ""
     return Response(data)
 

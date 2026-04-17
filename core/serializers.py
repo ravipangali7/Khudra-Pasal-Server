@@ -292,6 +292,9 @@ class FlashDealSerializer(serializers.ModelSerializer):
 class AdminUserSerializer(serializers.ModelSerializer):
     customer_document = serializers.SerializerMethodField()
     avatar = serializers.SerializerMethodField()
+    order_count = serializers.SerializerMethodField()
+    total_spent = serializers.SerializerMethodField()
+    wallet_balance = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -307,6 +310,9 @@ class AdminUserSerializer(serializers.ModelSerializer):
             "created_at",
             "customer_document",
             "avatar",
+            "order_count",
+            "total_spent",
+            "wallet_balance",
         ]
 
     def get_customer_document(self, obj):
@@ -324,6 +330,17 @@ class AdminUserSerializer(serializers.ModelSerializer):
         if not request:
             return ""
         return user_public_avatar_url(request, obj) or ""
+
+    def get_order_count(self, obj):
+        return int(getattr(obj, "admin_order_count", 0) or 0)
+
+    def get_total_spent(self, obj):
+        v = getattr(obj, "admin_total_spent", None)
+        return float(v or 0)
+
+    def get_wallet_balance(self, obj):
+        v = getattr(obj, "admin_wallet_balance", None)
+        return float(v or 0)
 
 
 class RecentOrderSerializer(serializers.ModelSerializer):
