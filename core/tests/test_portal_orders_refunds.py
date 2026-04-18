@@ -358,6 +358,69 @@ class RefundCommissionExample200Tests(TestCase):
         self.assertEqual(bal, Decimal("1000.00") - Decimal("200.00") + Decimal("199.85"))
 
 
+class RefundRetentionOnCommissionSliceOnlyTests(TestCase):
+    """Wallet retention % applies only to the proportional platform commission slice (not order gross)."""
+
+    def setUp(self):
+        _wallet_refund_fee_percentage(Decimal("5.00"))
+
+    def test_full_refund_170_ten_percent_commission_five_percent_retention(self):
+        user = User.objects.create_user(
+            username="ref170u",
+            password="x",
+            phone="9817171717",
+            name="C170",
+            role=User.Role.NORMAL,
+        )
+        wallet = get_or_create_personal_wallet(user)
+        Wallet.objects.filter(pk=wallet.pk).update(balance=Decimal("500.00"))
+        vendor_user = User.objects.create_user(
+            username="ref170v",
+            password="x",
+            phone="9827272727",
+            name="V170",
+            role=User.Role.NORMAL,
+        )
+        vendor = Vendor.objects.create(
+            user=vendor_user,
+            store_name="Store170",
+            status=Vendor.Status.APPROVED,
+            commission_rate=Decimal("10.00"),
+        )
+        cat = Category.objects.create(name="C170", slug="c170")
+        Product.objects.create(
+            name="P170",
+            sku="SKU-170",
+            category=cat,
+            seller=vendor,
+            price=Decimal("170.00"),
+            stock=5,
+            status=Product.Status.ACTIVE,
+        )
+        order = Order.objects.create(
+            order_number=_gen_order_number(),
+            customer=user,
+            seller=vendor,
+            status=Order.Status.PENDING,
+            payment_method=Order.PaymentMethod.WALLET,
+            payment_status=Order.PaymentStatus.PENDING,
+            subtotal=Decimal("170.00"),
+            delivery_fee=Decimal("0"),
+            discount_amount=Decimal("0"),
+            total=Decimal("170.00"),
+            placed_portal=Order.PlacedPortal.PORTAL_MAIN,
+            payment_wallet=wallet,
+        )
+        pay_with_wallet(order, wallet, fund_source="Personal wallet")
+        order.refresh_from_db()
+        fin = refund_financials(order, Decimal("170.00"), persist_settlement=True)
+        # 10% of 170 = 17 commission slice; 5% retention on that slice only = 0.85
+        self.assertEqual(fin.fee_retained, Decimal("0.85"))
+        self.assertEqual(fin.platform_debit, Decimal("16.15"))
+        self.assertEqual(fin.vendor_claw, Decimal("153.00"))
+        self.assertEqual(fin.customer_credit, Decimal("169.15"))
+
+
 class RefundSuperAdminPatchTests(TestCase):
     def setUp(self):
         self.client = APIClient()

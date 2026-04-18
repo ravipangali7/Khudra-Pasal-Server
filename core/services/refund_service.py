@@ -82,12 +82,16 @@ def _financials_from_totals(
     R: Decimal,
     *,
     total_amount: Decimal,
-    vendor_amount: Decimal,
+    commission_amount: Decimal,
 ) -> RefundFinancials:
     if total_amount <= 0:
         raise ValueError("Invalid settlement total for refund")
-    vendor_claw = (R * vendor_amount / total_amount).quantize(Q2, rounding=ROUND_HALF_UP)
-    commission_slice = (R - vendor_claw).quantize(Q2, rounding=ROUND_HALF_UP)
+    # Match the platform commission wallet credit proportionally (same ratio as settlement),
+    # then derive vendor clawback as the remainder so wallet-fee % applies to that slice only.
+    commission_slice = (R * commission_amount / total_amount).quantize(
+        Q2, rounding=ROUND_HALF_UP
+    )
+    vendor_claw = (R - commission_slice).quantize(Q2, rounding=ROUND_HALF_UP)
     fee_retained = wallet_policy.compute_peer_transfer_fee(commission_slice).quantize(
         Q2, rounding=ROUND_HALF_UP
     )
@@ -122,13 +126,17 @@ def refund_financials(order: Order, gross: Decimal, *, persist_settlement: bool 
         return _financials_from_totals(
             R,
             total_amount=settlement.total_amount,
-            vendor_amount=settlement.vendor_amount,
+            commission_amount=settlement.commission_amount,
         )
 
     split = _commission_split_from_order(order)
     if split:
-        total_amount, vendor_amount, _commission = split
-        return _financials_from_totals(R, total_amount=total_amount, vendor_amount=vendor_amount)
+        total_amount, _vendor_amount, commission = split
+        return _financials_from_totals(
+            R,
+            total_amount=total_amount,
+            commission_amount=commission,
+        )
 
     return RefundFinancials(
         vendor_claw=Decimal("0"),

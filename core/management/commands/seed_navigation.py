@@ -56,6 +56,7 @@ class Command(BaseCommand):
         # Remove deprecated vendor nav keys dropped from seeds (Marketing, coupons, flash-deals, etc.).
         seed_vendor_keys = {k for (s, k, *_rest) in seed_rows if s == "vendor"}
         deprecated_vendor_keys = {
+            "add-product",
             "logout",
             "marketing",
             "coupons",

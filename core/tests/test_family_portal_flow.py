@@ -30,7 +30,7 @@ from core.models import (
     WalletTransaction,
     WalletWithdrawal,
 )
-from core.services import family_service, otp_service, wallet_service
+from core.services import family_portal_wallet_service, family_service, otp_service, wallet_service
 from core.services.family_service import get_platform_hub_group
 from core.services.base import get_or_create_personal_wallet
 from core.services.family_portal_wallet_service import (
@@ -43,6 +43,16 @@ from core.tests.wallet_test_settings import relax_wallet_settings_for_tests
 
 
 class FamilyPortalFlowTests(TestCase):
+    def _fund_family_master(self, amount: str):
+        group = FamilyGroup.objects.get(leader=self.leader)
+        family_portal_wallet_service.family_wallet_load(
+            group=group,
+            amount=Decimal(amount),
+            performed_by=self.leader,
+            category=None,
+            method="test",
+        )
+
     def setUp(self):
         relax_wallet_settings_for_tests()
         self.client = APIClient()
@@ -322,7 +332,10 @@ class FamilyPortalFlowTests(TestCase):
             format="json",
         )
         self.assertEqual(r.status_code, status.HTTP_200_OK)
-        self.assertTrue(r.data["ok"])
+        self.assertEqual(r.data.get("flow"), "esewa_redirect")
+        shared.refresh_from_db()
+        self.assertEqual(shared.balance, Decimal("0.00"))
+        self._fund_family_master("150.50")
         shared.refresh_from_db()
         self.assertEqual(shared.balance, Decimal("150.50"))
 
@@ -359,10 +372,13 @@ class FamilyPortalFlowTests(TestCase):
             format="json",
         )
         self.assertEqual(r.status_code, status.HTTP_200_OK)
-        self.assertTrue(r.data["ok"])
+        self.assertEqual(r.data.get("flow"), "esewa_redirect")
         new_shared = get_default_shared_wallet(group)
         self.assertIsNotNone(new_shared)
         self.assertNotEqual(new_shared.pk, old_pk)
+        self.assertEqual(new_shared.balance, Decimal("0.00"))
+        self._fund_family_master("25")
+        new_shared.refresh_from_db()
         self.assertEqual(new_shared.balance, Decimal("25.00"))
 
     def test_approve_join_request_adds_existing_user(self):
@@ -837,14 +853,7 @@ class FamilyPortalFlowTests(TestCase):
             format="json",
         )
         cat = FamilyWalletCategory.objects.get(group=group, name="Food")
-        self.client.post(
-            "/api/portal/family/wallet/load/",
-            {
-                "amount": "200",
-                "method": "esewa",
-            },
-            format="json",
-        )
+        self._fund_family_master("200")
         master = get_default_shared_wallet(group)
         w_cat = Wallet.objects.get(
             family_group=group, family_category=cat, type=Wallet.Type.SHARED
@@ -1162,11 +1171,7 @@ class FamilyPortalFlowTests(TestCase):
 
     def test_family_wallet_transactions_signed_amount_and_flow(self):
         self._login_leader_with_family()
-        self.client.post(
-            "/api/portal/family/wallet/load/",
-            {"amount": "100", "method": "esewa"},
-            format="json",
-        )
+        self._fund_family_master("100")
         r = self.client.get("/api/portal/family/wallet-transactions/")
         self.assertEqual(r.status_code, status.HTTP_200_OK)
         self.assertGreaterEqual(len(r.data["results"]), 1)
@@ -1178,11 +1183,7 @@ class FamilyPortalFlowTests(TestCase):
     def test_child_portal_summary_and_transactions_parent_distribute(self):
         self._login_leader_with_family()
         group = FamilyGroup.objects.get(leader=self.leader)
-        self.client.post(
-            "/api/portal/family/wallet/load/",
-            {"amount": "300", "method": "esewa"},
-            format="json",
-        )
+        self._fund_family_master("300")
         master = get_default_shared_wallet(group)
         child_user = User.objects.create_user(
             username="childsum",
@@ -1282,6 +1283,16 @@ class FamilyPortalFlowTests(TestCase):
             format="json",
         )
         self.assertEqual(r_top.status_code, status.HTTP_200_OK)
+        self.assertEqual(r_top.data.get("flow"), "esewa_redirect")
+        cw.refresh_from_db()
+        self.assertEqual(cw.balance, Decimal("10.00"))
+        wallet_service.credit_wallet(
+            cw,
+            Decimal("25"),
+            wtype=WalletTransaction.Type.TOPUP,
+            description="Test top-up credit",
+            performed_by=child_user,
+        )
         cw.refresh_from_db()
         self.assertEqual(cw.balance, Decimal("35.00"))
         pa = PayoutAccount.objects.create(
@@ -1382,11 +1393,7 @@ class FamilyPortalFlowTests(TestCase):
         group = FamilyGroup.objects.get(leader=self.leader)
         shared = get_default_shared_wallet(group)
         self.assertIsNotNone(shared)
-        self.client.post(
-            "/api/portal/family/wallet/load/",
-            {"amount": "500", "method": "esewa"},
-            format="json",
-        )
+        self._fund_family_master("500")
         pa = PayoutAccount.objects.create(
             user=self.leader,
             type=PayoutAccount.Type.ESEWA,
@@ -1443,11 +1450,7 @@ class FamilyPortalFlowTests(TestCase):
         )
 
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {leader_token}")
-        self.client.post(
-            "/api/portal/family/wallet/load/",
-            {"amount": "200", "method": "esewa"},
-            format="json",
-        )
+        self._fund_family_master("200")
         pa2 = PayoutAccount.objects.create(
             user=self.leader,
             type=PayoutAccount.Type.ESEWA,
