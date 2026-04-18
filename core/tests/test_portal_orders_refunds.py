@@ -347,32 +347,6 @@ class RefundCommissionExample200Tests(TestCase):
         bal = Wallet.objects.get(pk=self.wallet.pk).balance
         self.assertEqual(bal, Decimal("1000.00") - Decimal("200.00") + Decimal("199.85"))
 
-    def test_full_refund_respects_vendor_refund_commission_percent(self):
-        """10% of the commission slice (Rs. 5) => Rs. 0.50 retained instead of default 3%."""
-        self.vendor.refund_commission_percent = Decimal("10.00")
-        self.vendor.save(update_fields=["refund_commission_percent"])
-        order = Order.objects.create(
-            order_number=_gen_order_number(),
-            customer=self.user,
-            seller=self.vendor,
-            status=Order.Status.PENDING,
-            payment_method=Order.PaymentMethod.WALLET,
-            payment_status=Order.PaymentStatus.PENDING,
-            subtotal=Decimal("200.00"),
-            delivery_fee=Decimal("0"),
-            discount_amount=Decimal("0"),
-            total=Decimal("200.00"),
-            placed_portal=Order.PlacedPortal.PORTAL_MAIN,
-            payment_wallet=self.wallet,
-        )
-        pay_with_wallet(order, self.wallet, fund_source="Personal wallet")
-        order.refresh_from_db()
-        gross = Decimal("200.00")
-        fin = refund_financials(order, gross, persist_settlement=True)
-        self.assertEqual(fin.fee_retained, Decimal("0.50"))
-        self.assertEqual(fin.customer_credit, Decimal("199.50"))
-        self.assertEqual(fin.platform_debit, Decimal("4.50"))
-
 
 class RefundSuperAdminPatchTests(TestCase):
     def setUp(self):

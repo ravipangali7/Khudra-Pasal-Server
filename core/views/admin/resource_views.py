@@ -525,9 +525,6 @@ def admin_order_detail(request, pk):
                 "gross": float(remaining),
                 "platform_fee": float(rfin.fee_retained),
                 "net_credit": float(rfin.customer_credit),
-                "refund_commission_percent": float(
-                    refund_service.effective_refund_commission_percent(o)
-                ),
             }
         except ValueError:
             refund_preview = None
@@ -636,9 +633,6 @@ def admin_order_refund(request, pk):
             "gross_amount": float(remaining),
             "platform_fee": float(fin.fee_retained),
             "net_credit": float(fin.customer_credit),
-            "refund_commission_percent": float(
-                refund_service.effective_refund_commission_percent(o)
-            ),
             "status": Refund.Status.PENDING,
             "message": "Pending Super Admin approval.",
         },
@@ -736,7 +730,6 @@ def admin_vendors_list(request):
                 "revenue": float(v.revenue_sum or 0),
                 "status": v.status,
                 "commission": float(v.commission_rate),
-                "refund_commission_percent": float(v.refund_commission_percent),
                 "walletBalance": float(bal),
                 "canPost": v.can_post,
                 "canSell": v.can_sell,
@@ -812,12 +805,6 @@ def admin_vendor_create(request):
         store_slug = f"{base_slug}-{suffix}"
 
     commission_rate = _to_decimal(request.data.get("commission_rate"), "10")
-    refund_commission_percent = _to_decimal(
-        request.data.get("refund_commission_percent"), "3"
-    )
-    refund_commission_percent = max(
-        Decimal("0"), min(Decimal("100"), refund_commission_percent)
-    )
     can_post = _bool_field("can_post", True)
     can_sell = _bool_field("can_sell", True)
 
@@ -843,7 +830,6 @@ def admin_vendor_create(request):
             phone=phone[:15],
             address=(request.data.get("address") or "").strip(),
             commission_rate=commission_rate,
-            refund_commission_percent=refund_commission_percent,
             can_post=can_post,
             can_sell=can_sell,
             status=status,
@@ -1409,7 +1395,7 @@ def admin_refunds_list(request):
     if err := _forbidden(request):
         return err
     qs = Refund.objects.select_related(
-        "order", "customer", "order__commission_settlement", "order__seller"
+        "order", "customer", "order__commission_settlement"
     ).order_by("-created_at")
     paginator, page = _paginate(request, qs)
     rows = []
@@ -1418,17 +1404,6 @@ def admin_refunds_list(request):
         has_settlement = bool(
             getattr(r.order, "commission_settlement", None)
             and r.order.seller_id
-        )
-        seller = r.order.seller if r.order.seller_id else None
-        refund_pct = (
-            float(seller.refund_commission_percent)
-            if seller is not None
-            else None
-        )
-        pct_label = (
-            format(seller.refund_commission_percent, "f").rstrip("0").rstrip(".")
-            if seller is not None
-            else ""
         )
         rows.append(
             {
@@ -1447,9 +1422,8 @@ def admin_refunds_list(request):
                 "gross_amount": float(r.amount),
                 "platform_fee": float(fee),
                 "net_credit": float(net),
-                "refund_commission_percent": refund_pct,
                 "deduction_summary": (
-                    f"Vendor full share + commission returned ({pct_label}% of commission slice retained)"
+                    "Vendor full share + commission returned (3% of commission slice retained)"
                     if has_settlement
                     else "Platform pool (no vendor settlement)"
                 ),
@@ -4376,7 +4350,6 @@ def admin_vendor_detail_write(request, pk):
         "address",
         "status",
         "commission_rate",
-        "refund_commission_percent",
         "rejection_reason",
         "is_verified",
         "can_post",
@@ -4388,9 +4361,6 @@ def admin_vendor_detail_write(request, pk):
                 setattr(row, field, val in (True, "true", "1", 1))
             elif field == "commission_rate":
                 setattr(row, field, _to_decimal(val, str(row.commission_rate)))
-            elif field == "refund_commission_percent":
-                pct = _to_decimal(val, str(row.refund_commission_percent))
-                setattr(row, field, max(Decimal("0"), min(Decimal("100"), pct)))
             else:
                 setattr(row, field, val)
     owner_name = (request.data.get("owner_name") or "").strip()

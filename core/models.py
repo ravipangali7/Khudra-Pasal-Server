@@ -698,12 +698,6 @@ class Vendor(models.Model):
     commission_rate = models.DecimalField(
         max_digits=5, decimal_places=2, default=Decimal("10.00")
     )
-    refund_commission_percent = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-        default=Decimal("3.00"),
-        help_text="Percentage of the proportional commission slice retained by the platform on refunds (0–100).",
-    )
     rating = models.DecimalField(max_digits=3, decimal_places=2, default=Decimal("0.00"))
     is_verified = models.BooleanField(default=False)
     can_post = models.BooleanField(default=True)

@@ -12,6 +12,7 @@ from core.services import commission_service, notification_service, vendor_servi
 from core.services.base import get_or_create_personal_wallet
 
 Q2 = Decimal("0.01")
+FEE_RATE = Decimal("0.03")
 
 
 @dataclass(frozen=True)
@@ -48,38 +49,17 @@ def _commission_split_from_order(order: Order) -> tuple[Decimal, Decimal, Decima
     return total, vendor_amount, commission
 
 
-def effective_refund_commission_percent(order: Order) -> Decimal:
-    """Share (0–100) of the proportional *commission slice* retained on refunds; 0 when no vendor."""
-    if not order.seller_id:
-        return Decimal("0")
-    vendor = order.seller
-    raw = getattr(vendor, "refund_commission_percent", None)
-    if raw is None:
-        pct = Decimal("3.00")
-    else:
-        pct = Decimal(str(raw)).quantize(Q2, rounding=ROUND_HALF_UP)
-    if pct < 0:
-        return Decimal("0")
-    if pct > 100:
-        return Decimal("100")
-    return pct
-
-
 def _financials_from_totals(
     R: Decimal,
     *,
     total_amount: Decimal,
     vendor_amount: Decimal,
-    refund_commission_percent: Decimal,
 ) -> RefundFinancials:
     if total_amount <= 0:
         raise ValueError("Invalid settlement total for refund")
     vendor_claw = (R * vendor_amount / total_amount).quantize(Q2, rounding=ROUND_HALF_UP)
     commission_slice = (R - vendor_claw).quantize(Q2, rounding=ROUND_HALF_UP)
-    rate = (refund_commission_percent / Decimal("100")).quantize(
-        Decimal("0.0001"), rounding=ROUND_HALF_UP
-    )
-    fee_retained = (commission_slice * rate).quantize(Q2, rounding=ROUND_HALF_UP)
+    fee_retained = (commission_slice * FEE_RATE).quantize(Q2, rounding=ROUND_HALF_UP)
     platform_debit = (commission_slice - fee_retained).quantize(Q2, rounding=ROUND_HALF_UP)
     customer_credit = (vendor_claw + platform_debit).quantize(Q2, rounding=ROUND_HALF_UP)
     return RefundFinancials(
@@ -92,8 +72,8 @@ def _financials_from_totals(
 
 def refund_financials(order: Order, gross: Decimal, *, persist_settlement: bool = False) -> RefundFinancials:
     """
-    Commission-based refund split: vendor's refund_commission_percent applies only to the proportional
-    commission slice of this refund. No settlement / no seller: full gross to customer, platform debits full gross.
+    Commission-based refund split: 3% fee applies only to the proportional commission slice of this refund.
+    No settlement / no seller: full gross to customer, platform debits full gross.
 
     persist_settlement: when True (refund create / execute), persist missing settlement for paid seller orders.
     When False (read paths), use DB settlement or the same split in-memory without writing.
@@ -105,26 +85,18 @@ def refund_financials(order: Order, gross: Decimal, *, persist_settlement: bool 
     if persist_settlement:
         _ensure_commission_settlement(order)
 
-    refund_pct = effective_refund_commission_percent(order)
-
     settlement = OrderCommissionSettlement.objects.filter(order_id=order.pk).first()
     if settlement and order.seller_id:
         return _financials_from_totals(
             R,
             total_amount=settlement.total_amount,
             vendor_amount=settlement.vendor_amount,
-            refund_commission_percent=refund_pct,
         )
 
     split = _commission_split_from_order(order)
     if split:
         total_amount, vendor_amount, _commission = split
-        return _financials_from_totals(
-            R,
-            total_amount=total_amount,
-            vendor_amount=vendor_amount,
-            refund_commission_percent=refund_pct,
-        )
+        return _financials_from_totals(R, total_amount=total_amount, vendor_amount=vendor_amount)
 
     return RefundFinancials(
         vendor_claw=Decimal("0"),
