@@ -4,6 +4,7 @@ from django.core.validators import MinValueValidator
 from rest_framework import serializers
 
 from core.services.product_pricing import effective_unit_price, storefront_unit_price
+from core.services.storefront_product_visibility import product_is_storefront_purchasable
 
 from core.models import (
     AutoApprovalRule,
@@ -445,6 +446,7 @@ class ReelPublicSerializer(serializers.ModelSerializer):
             "category_slug": cat.slug,
             "parent_category_slug": parent.slug if parent else None,
             "category_ancestor_slugs": _category_ancestor_slugs(cat),
+            "purchasable": product_is_storefront_purchasable(p),
         }
 
     def get_comments_count(self, obj):

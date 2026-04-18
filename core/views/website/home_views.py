@@ -44,6 +44,10 @@ from core.services.product_pricing import (
 )
 from core.services.storefront_coupon_hints import coupon_hints_for_product_ids
 from core.services.child_shopping_guard import validate_child_may_purchase_product
+from core.services.storefront_product_visibility import (
+    product_is_storefront_purchasable,
+    storefront_active_product_q,
+)
 from core.services.portal_checkout_pricing import checkout_items_weight_kg
 from core.services.shipping_quote import compute_shipping_fee
 from core.views.admin.admin_write_utils import absolute_media_url
@@ -112,8 +116,7 @@ def _active_products_queryset():
     This matches ``resolve_checkout_lines`` in ``portal_checkout_pricing``.
     """
     return (
-        Product.objects.filter(status=Product.Status.ACTIVE)
-        .filter(Q(seller__isnull=True) | Q(seller__status=Vendor.Status.APPROVED))
+        Product.objects.filter(storefront_active_product_q())
         .select_related("category", "category__parent", "seller", "brand", "unit")
         .prefetch_related(_product_image_prefetch())
     )
@@ -681,7 +684,7 @@ def deals_list(request):
 def _public_reels_base_queryset():
     return (
         Reel.objects.filter(status__in=[Reel.Status.ACTIVE, Reel.Status.APPROVED])
-        .select_related("vendor", "product", "product__category")
+        .select_related("vendor", "product", "product__category", "product__seller")
         .prefetch_related("comments")
     )
 
@@ -1004,6 +1007,19 @@ def cart_item_add(request):
         return Response({"detail": "quantity must be at least 1."}, status=400)
     product = _active_products_queryset().filter(pk=product_id).first()
     if not product:
+        stale = (
+            Product.objects.filter(pk=product_id)
+            .select_related("seller")
+            .first()
+        )
+        if stale and not product_is_storefront_purchasable(stale):
+            return Response(
+                {
+                    "detail": "This product is not available for purchase. "
+                    "It may be inactive or the seller is not approved yet."
+                },
+                status=400,
+            )
         return Response({"detail": "Product not found."}, status=404)
     try:
         validate_child_may_purchase_product(request.user, product)
@@ -1081,6 +1097,19 @@ def wishlist_item_add(request):
         return Response({"detail": "product_id is required."}, status=400)
     product = _active_products_queryset().filter(pk=product_id).first()
     if not product:
+        stale = (
+            Product.objects.filter(pk=product_id)
+            .select_related("seller")
+            .first()
+        )
+        if stale and not product_is_storefront_purchasable(stale):
+            return Response(
+                {
+                    "detail": "This product is not available for purchase. "
+                    "It may be inactive or the seller is not approved yet."
+                },
+                status=400,
+            )
         return Response({"detail": "Product not found."}, status=404)
     item, _ = ProductWishlist.objects.get_or_create(user=request.user, product=product)
     ctx = _storefront_product_list_context(request, [product.pk])
