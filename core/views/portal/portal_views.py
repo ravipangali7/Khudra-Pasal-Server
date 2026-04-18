@@ -293,6 +293,83 @@ def _order_within_refund_validity(order: Order, order_settings: OrderSettings) -
     return timezone.now() - order.created_at <= max_age
 
 
+def _serialize_portal_order_row(o: Order, order_settings: OrderSettings) -> dict:
+    """Shape one portal order for list/detail APIs (customer-scoped queryset)."""
+    lines = [
+        {
+            "product_id": it.product_id,
+            "name": it.product.name,
+            "quantity": it.quantity,
+            "unit_price": float(it.unit_price),
+            "line_total": float(it.total_price),
+        }
+        for it in o.items.all()
+    ]
+    refund_rows = []
+    for r in o.refunds.all().order_by("-created_at"):
+        fee, net = refund_service.breakdown_for_refund(r)
+        refund_rows.append(
+            {
+                "refund_number": r.refund_number,
+                "status": r.status,
+                "amount": float(r.amount),
+                "gross_amount": float(r.amount),
+                "platform_fee": float(fee),
+                "net_credit": float(net),
+                "reason": r.reason,
+                "created_at": r.created_at.isoformat(),
+            }
+        )
+    already = Decimal("0")
+    for r in o.refunds.all():
+        if r.status == Refund.Status.APPROVED:
+            already += r.amount
+    remaining = max(Decimal("0"), Decimal(o.total) - already)
+    refund_estimate = None
+    refund_allowed = False
+    if (
+        remaining > 0
+        and o.payment_method == Order.PaymentMethod.WALLET
+        and o.payment_status == Order.PaymentStatus.PAID
+        and o.status not in (Order.Status.CANCELLED, Order.Status.REFUNDED)
+        and not o.refunds.filter(status=Refund.Status.PENDING).exists()
+        and _order_within_refund_validity(o, order_settings)
+    ):
+        refund_allowed = True
+        try:
+            fe = refund_service.refund_financials(
+                o, remaining, persist_settlement=False
+            )
+            refund_estimate = {
+                "gross": float(remaining),
+                "platform_fee": float(fe.fee_retained),
+                "net_credit": float(fe.customer_credit),
+                "platform_retention_label": refund_service.commission_slice_retention_short_label(),
+            }
+        except ValueError:
+            refund_estimate = None
+
+    item_count = getattr(o, "item_count", None)
+    if item_count is None:
+        item_count = o.items.count()
+
+    return {
+        "id": o.order_number,
+        "pk": o.pk,
+        "date": o.created_at.date().isoformat(),
+        "status": o.status,
+        "total": float(o.total),
+        "items": item_count,
+        "payment": o.get_payment_method_display(),
+        "seller": o.seller.store_name if o.seller_id else "In-House",
+        "seller_id": o.seller_id,
+        "lines": lines,
+        "refunds": refund_rows,
+        "refund_estimate": refund_estimate,
+        "refund_allowed": refund_allowed,
+    }
+
+
 def _notify_wallet_recipient(
     recipient: User, title: str, message: str, action_url: str = ""
 ) -> None:
@@ -762,80 +839,33 @@ def portal_orders_list(request, list_placed_portal: str | None = None):
     )
     paginator, page = _paginate(request, qs)
     order_settings = OrderSettings.load()
-    rows = []
-    for o in page:
-        lines = [
-            {
-                "product_id": it.product_id,
-                "name": it.product.name,
-                "quantity": it.quantity,
-                "unit_price": float(it.unit_price),
-                "line_total": float(it.total_price),
-            }
-            for it in o.items.all()
-        ]
-        refund_rows = []
-        for r in o.refunds.all().order_by("-created_at"):
-            fee, net = refund_service.breakdown_for_refund(r)
-            refund_rows.append(
-                {
-                    "refund_number": r.refund_number,
-                    "status": r.status,
-                    "amount": float(r.amount),
-                    "gross_amount": float(r.amount),
-                    "platform_fee": float(fee),
-                    "net_credit": float(net),
-                    "reason": r.reason,
-                    "created_at": r.created_at.isoformat(),
-                }
-            )
-        already = Decimal("0")
-        for r in o.refunds.all():
-            if r.status == Refund.Status.APPROVED:
-                already += r.amount
-        remaining = max(Decimal("0"), Decimal(o.total) - already)
-        refund_estimate = None
-        refund_allowed = False
-        if (
-            remaining > 0
-            and o.payment_method == Order.PaymentMethod.WALLET
-            and o.payment_status == Order.PaymentStatus.PAID
-            and o.status not in (Order.Status.CANCELLED, Order.Status.REFUNDED)
-            and not o.refunds.filter(status=Refund.Status.PENDING).exists()
-            and _order_within_refund_validity(o, order_settings)
-        ):
-            refund_allowed = True
-            try:
-                fe = refund_service.refund_financials(
-                    o, remaining, persist_settlement=False
-                )
-                refund_estimate = {
-                    "gross": float(remaining),
-                    "platform_fee": float(fe.fee_retained),
-                    "net_credit": float(fe.customer_credit),
-                    "platform_retention_label": refund_service.commission_slice_retention_short_label(),
-                }
-            except ValueError:
-                refund_estimate = None
-
-        rows.append(
-            {
-                "id": o.order_number,
-                "pk": o.pk,
-                "date": o.created_at.date().isoformat(),
-                "status": o.status,
-                "total": float(o.total),
-                "items": o.item_count,
-                "payment": o.get_payment_method_display(),
-                "seller": o.seller.store_name if o.seller_id else "In-House",
-                "seller_id": o.seller_id,
-                "lines": lines,
-                "refunds": refund_rows,
-                "refund_estimate": refund_estimate,
-                "refund_allowed": refund_allowed,
-            }
-        )
+    rows = [_serialize_portal_order_row(o, order_settings) for o in page]
     return paginator.get_paginated_response(rows)
+
+
+@api_view(["GET"])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
+@permission_classes([IsAuthenticated, IsPortalShopper])
+def portal_order_detail(request, pk: int, list_placed_portal: str | None = None):
+    u = request.user
+    surface = list_placed_portal or Order.PlacedPortal.PORTAL_MAIN
+    if not _user_may_use_placed_portal(u, surface):
+        return Response(
+            {"detail": "You cannot view orders for this portal surface."},
+            status=403,
+        )
+    o = (
+        Order.objects.filter(pk=pk, customer=u)
+        .filter(_orders_surface_q(surface))
+        .select_related("seller")
+        .prefetch_related("items__product", "refunds")
+        .annotate(item_count=Count("items"))
+        .first()
+    )
+    if not o:
+        return Response({"detail": "Order not found."}, status=404)
+    order_settings = OrderSettings.load()
+    return Response(_serialize_portal_order_row(o, order_settings))
 
 
 @api_view(["POST"])

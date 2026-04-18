@@ -99,6 +99,19 @@ class PortalOrdersSurfaceTests(TestCase):
         self.assertEqual(r.status_code, status.HTTP_200_OK)
         self.assertEqual(len(r.data["results"]), 0)
 
+    def test_main_order_detail_matches_list_shape(self):
+        order = self._create_order(placed_portal=None)
+        r = self.client.get(f"/api/portal/orders/{order.pk}/")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertEqual(r.data["pk"], order.pk)
+        self.assertEqual(r.data["id"], order.order_number)
+        self.assertIn("lines", r.data)
+
+    def test_main_order_detail_404_for_family_surface_order(self):
+        order = self._create_order(placed_portal=Order.PlacedPortal.PORTAL_FAMILY)
+        r = self.client.get(f"/api/portal/orders/{order.pk}/")
+        self.assertEqual(r.status_code, status.HTTP_404_NOT_FOUND)
+
     def test_family_list_only_family_orders(self):
         self._create_order(placed_portal=Order.PlacedPortal.PORTAL_FAMILY)
         self._create_order(placed_portal=None)
