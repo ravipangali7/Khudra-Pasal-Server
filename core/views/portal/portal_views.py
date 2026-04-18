@@ -1,15 +1,11 @@
 """Customer / family / child portal API (JWT, Token, or Session auth)."""
 
-import base64
-import hashlib
-import hmac
 import json
 from collections import defaultdict
 from collections.abc import Mapping
 from datetime import timedelta
 from decimal import Decimal
 from urllib.parse import urlencode
-from urllib.request import urlopen
 from uuid import uuid4
 
 from core.phone_auth import authenticate_user_by_phone, normalize_nepal_phone
@@ -113,6 +109,7 @@ from core.services.child_spending_service import (
     validate_child_spending_limits,
 )
 from core.services.purchase_approval_service import consume_purchase_approvals_after_checkout
+from core.services.site_settings_policy import site_kyc_required_flag, storefront_orders_gate_response
 from core.services import (
     family_join_request_service,
     family_member_provision_service,
@@ -131,16 +128,7 @@ from core.services.nominatim_geocode import (
     reverse_geocode,
 )
 from core.services.base import get_or_create_personal_wallet, personal_wallet_qs
-from core.services.khalti_epayment_service import (
-    KhaltiApiError,
-    KhaltiConfigError,
-    extract_lookup_status,
-    extract_total_amount_paisa,
-    initiate_wallet_topup,
-    lookup_payment,
-    map_khalti_status_to_app,
-    rupees_to_paisa,
-)
+from core.services.khalti_epayment_service import KhaltiApiError, KhaltiConfigError
 from core.services.withdrawal_notifications import notify_family_withdrawal_submitted
 from core.services.withdrawal_requests import (
     create_pending_withdrawal,
@@ -163,117 +151,7 @@ from core.views.admin.admin_write_utils import (
 from core.views.admin.resource_views import _to_decimal
 from core.views.vendor.vendor_resources import _gen_order_number, _gen_ticket_number
 from core.views.website.home_views import annotate_reels_comments
-
-ESEWA_SIGNED_FIELD_NAMES = "total_amount,transaction_uuid,product_code"
-ESEWA_RESPONSE_SIGNED_FIELD_NAMES = (
-    "transaction_code,status,total_amount,transaction_uuid,product_code,signed_field_names"
-)
-
-
-def _portal_esewa_frontend_redirect_path(status: str, txn_ref: str | None = None) -> str:
-    payload = {"esewa": status}
-    if txn_ref:
-        payload["txn_ref"] = txn_ref
-    return f"/portal/wallet?{urlencode(payload)}"
-
-
-def _portal_esewa_frontend_redirect_url(request, status: str, txn_ref: str | None = None) -> str:
-    base = (getattr(settings, "FRONTEND_URL", "") or "").rstrip("/")
-    path = _portal_esewa_frontend_redirect_path(status=status, txn_ref=txn_ref)
-    if base:
-        return f"{base}{path}"
-    return request.build_absolute_uri(path)
-
-
-def _portal_esewa_amount_str(amount: Decimal) -> str:
-    return f"{amount:.2f}"
-
-
-def _portal_esewa_signature(message: str, secret_key: str) -> str:
-    return base64.b64encode(
-        hmac.new(secret_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).digest()
-    ).decode("utf-8")
-
-
-def _portal_esewa_payment_settings():
-    product_code = (getattr(settings, "ESEWA_EPAY_PRODUCT_CODE", "") or "EPAYTEST").strip()
-    secret_key = (getattr(settings, "ESEWA_EPAY_SECRET_KEY", "") or "8gBm/:&EnhH.1/q").strip()
-    form_url = (
-        getattr(settings, "ESEWA_EPAY_FORM_URL", "") or "https://rc-epay.esewa.com.np/api/epay/main/v2/form"
-    ).strip()
-    status_url_base = (
-        getattr(settings, "ESEWA_EPAY_STATUS_URL_BASE", "")
-        or "https://rc.esewa.com.np/api/epay/transaction/status/"
-    ).strip()
-    return product_code, secret_key, form_url, status_url_base
-
-
-def _portal_esewa_parse_callback_payload(request) -> dict:
-    raw = (
-        request.data.get("data")
-        or request.query_params.get("data")
-        or request.data.get("payload")
-        or request.query_params.get("payload")
-        or ""
-    )
-    if not raw:
-        raise ValueError("Missing eSewa callback payload.")
-    try:
-        decoded = base64.b64decode(str(raw)).decode("utf-8")
-        payload = json.loads(decoded)
-    except Exception as exc:
-        raise ValueError("Invalid eSewa callback payload.") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("Invalid eSewa callback payload.")
-    return payload
-
-
-def _portal_esewa_verify_callback_signature(payload: Mapping, secret_key: str) -> bool:
-    signed_field_names = str(payload.get("signed_field_names") or "").strip()
-    if not signed_field_names:
-        return False
-    parts = [x.strip() for x in signed_field_names.split(",") if x.strip()]
-    if not parts:
-        return False
-    msg = ",".join(f"{k}={payload.get(k, '')}" for k in parts)
-    expected = _portal_esewa_signature(msg, secret_key)
-    received = str(payload.get("signature") or "")
-    return hmac.compare_digest(expected, received)
-
-
-def _portal_esewa_status_verify(*, status_url_base: str, product_code: str, total_amount: str, transaction_uuid: str):
-    qs = urlencode(
-        {
-            "product_code": product_code,
-            "total_amount": total_amount,
-            "transaction_uuid": transaction_uuid,
-        }
-    )
-    url = f"{status_url_base}?{qs}"
-    with urlopen(url, timeout=8) as res:
-        raw = res.read().decode("utf-8")
-    data = json.loads(raw)
-    if not isinstance(data, dict):
-        raise ValueError("Invalid status response")
-    return data
-
-
-def _portal_khalti_customer_info(user: User) -> dict[str, str]:
-    phone = (user.phone or "").strip() or "9800000000"
-    email = (user.email or "").strip()
-    if not email:
-        email = f"u{user.pk}@wallet.khalti.local"
-    name = (user.name or "").strip() or "Customer"
-    return {"name": name[:120], "email": email[:120], "phone": phone[:15]}
-
-
-def _portal_khalti_frontend_return_url() -> str:
-    base = (getattr(settings, "FRONTEND_URL", "") or "").strip().rstrip("/") or "http://localhost:8080"
-    return f"{base}/portal/wallet?khalti_wallet=1"
-
-
-def _portal_khalti_website_url() -> str:
-    return (getattr(settings, "FRONTEND_URL", "") or "").strip().rstrip("/") or "http://localhost:8080"
+from core.services import wallet_gateway_topup as wgt
 
 
 class IsPortalCustomer(BasePermission):
@@ -824,7 +702,7 @@ def portal_me(request):
             "email": u.email or "",
             "role": u.role,
             "kyc_status": u.kyc_status,
-            "kyc_required": True,
+            "kyc_required": site_kyc_required_flag(),
             "kyc_rejection_reason": latest_kyc_rejection_reason(u),
             "wallet_id": str(w.pk) if w else None,
             "wallet_balance": float(w.balance) if w else 0.0,
@@ -935,6 +813,7 @@ def portal_orders_list(request, list_placed_portal: str | None = None):
                     "gross": float(remaining),
                     "platform_fee": float(fe.fee_retained),
                     "net_credit": float(fe.customer_credit),
+                    "platform_retention_label": refund_service.commission_slice_retention_short_label(),
                 }
             except ValueError:
                 refund_estimate = None
@@ -1038,6 +917,7 @@ def portal_order_refund_request(request, pk: int, refund_surface: str):
             "gross_amount": float(amount),
             "platform_fee": float(fin.fee_retained),
             "net_credit": float(fin.customer_credit),
+            "platform_retention_label": refund_service.commission_slice_retention_short_label(),
             "amount": float(amount),
             "status": rf.status,
         },
@@ -1697,22 +1577,62 @@ def portal_family_wallet_load(request):
     if amount <= 0:
         return validation_error("amount must be positive", field="amount")
     method = (request.data.get("method") or "esewa").strip()[:50]
+    method_norm = method.lower()
     if request.data.get("category_id") not in (None, ""):
         return validation_error(
             "Top-ups credit only the main family wallet; use Transfer to move funds into a bucket.",
             field="category_id",
         )
-    try:
-        w, _wt = family_portal_wallet_service.family_wallet_load(
-            group=primary,
-            amount=amount,
-            performed_by=request.user,
-            category=None,
-            method=method,
+    if method_norm not in ("esewa", "khalti"):
+        return validation_error(
+            "Only eSewa and Khalti are supported for adding money to the family wallet.",
+            field="method",
         )
+    w = family_portal_wallet_service.ensure_default_shared_wallet(primary, primary.leader)
+    raw_return = (request.data.get("return_path") or "/family-portal/wallets-overview").strip()
+    return_path = raw_return[:500] if raw_return.startswith("/") else f"/{raw_return[:499].lstrip('/')}"
+    try:
+        wgt.assert_can_topup_wallet(payer=request.user, wallet=w, target=wgt.TOPUP_TARGET_FAMILY_MASTER)
     except ValueError as e:
         return Response({"detail": str(e)}, status=400)
-    return Response({"ok": True, "balance": float(w.balance), "wallet_id": str(w.pk)})
+    if method_norm == "esewa":
+        return Response(
+            wgt.build_esewa_initiate_response(
+                request=request,
+                payer=request.user,
+                wallet=w,
+                amount=amount,
+                method=method,
+                topup_target=wgt.TOPUP_TARGET_FAMILY_MASTER,
+                return_path=return_path,
+                return_query_esewa=None,
+                success_reverse_name="portal-wallet-topup-esewa-success",
+                failure_reverse_name="portal-wallet-topup-esewa-failure",
+            )
+        )
+    try:
+        return Response(
+            wgt.build_khalti_initiate_response(
+                payer=request.user,
+                wallet=w,
+                amount=amount,
+                method=method,
+                topup_target=wgt.TOPUP_TARGET_FAMILY_MASTER,
+                return_path=return_path,
+                return_query_esewa=None,
+                purchase_order_id=f"KP-F-{uuid4().hex[:24]}",
+                purchase_order_name="Family wallet load",
+            )
+        )
+    except ValueError as e:
+        return validation_error(str(e), field="amount")
+    except KhaltiConfigError as e:
+        return Response({"detail": str(e)}, status=503)
+    except KhaltiApiError as e:
+        return Response(
+            {"detail": str(e), "khalti_error": (e.body or "")[:2000]},
+            status=502,
+        )
 
 
 @api_view(["POST"])
@@ -2620,26 +2540,57 @@ def portal_child_wallet_topup(request):
     amount = _to_decimal(request.data.get("amount"), "0")
     if amount <= 0:
         return validation_error("amount must be positive", field="amount")
-    method = (request.data.get("method") or "topup").strip()[:50]
+    method = (request.data.get("method") or "esewa").strip()[:50]
+    method_norm = method.lower()
+    if method_norm not in ("esewa", "khalti"):
+        return validation_error(
+            "Only eSewa and Khalti are supported for adding money to your wallet.",
+            field="method",
+        )
+    raw_return = (request.data.get("return_path") or "/child-portal/topup").strip()
+    return_path = raw_return[:500] if raw_return.startswith("/") else f"/{raw_return[:499].lstrip('/')}"
     try:
-        with transaction.atomic():
-            wt = wallet_service.credit_wallet(
-                w,
-                amount,
-                wtype=WalletTransaction.Type.TOPUP,
-                description=f"Child wallet top-up ({method})",
-                performed_by=request.user,
-            )
-            wallet_service.apply_topup_bonus_after_credit(
-                w,
-                amount,
-                bonus_reference_id=wt.txn_id,
-                performed_by=request.user,
-            )
-    except Exception as e:
+        wgt.assert_can_topup_wallet(payer=request.user, wallet=w, target=wgt.TOPUP_TARGET_CHILD)
+    except ValueError as e:
         return Response({"detail": str(e)}, status=400)
-    w.refresh_from_db()
-    return Response({"ok": True, "balance": float(w.balance)})
+    if method_norm == "esewa":
+        return Response(
+            wgt.build_esewa_initiate_response(
+                request=request,
+                payer=request.user,
+                wallet=w,
+                amount=amount,
+                method=method,
+                topup_target=wgt.TOPUP_TARGET_CHILD,
+                return_path=return_path,
+                return_query_esewa=None,
+                success_reverse_name="portal-wallet-topup-esewa-success",
+                failure_reverse_name="portal-wallet-topup-esewa-failure",
+            )
+        )
+    try:
+        return Response(
+            wgt.build_khalti_initiate_response(
+                payer=request.user,
+                wallet=w,
+                amount=amount,
+                method=method,
+                topup_target=wgt.TOPUP_TARGET_CHILD,
+                return_path=return_path,
+                return_query_esewa=None,
+                purchase_order_id=f"KP-C-{uuid4().hex[:24]}",
+                purchase_order_name="Child wallet top-up",
+            )
+        )
+    except ValueError as e:
+        return validation_error(str(e), field="amount")
+    except KhaltiConfigError as e:
+        return Response({"detail": str(e)}, status=503)
+    except KhaltiApiError as e:
+        return Response(
+            {"detail": str(e), "khalti_error": (e.body or "")[:2000]},
+            status=502,
+        )
 
 
 @api_view(["GET"])
@@ -2683,6 +2634,12 @@ def portal_child_wallet_withdraw(request):
     amount = _to_decimal(request.data.get("amount"), "0")
     if amount <= 0:
         return validation_error("amount must be positive", field="amount")
+    if wallet_policy.withdrawal_requires_otp():
+        otp_resp = _portal_consume_otp_or_error(
+            request, OTPVerification.Purpose.WITHDRAW
+        )
+        if otp_resp is not None:
+            return otp_resp
     raw_pid = request.data.get("payout_account_id") or request.data.get("payout_account")
     try:
         pid = int(raw_pid)
@@ -3185,71 +3142,40 @@ def portal_wallet_topup(request):
         return validation_error("amount must be positive", field="amount")
     method = (request.data.get("method") or "topup").strip()[:50]
     method_norm = method.lower()
+    raw_return = (request.data.get("return_path") or "/portal/wallet").strip()
+    return_path = raw_return[:500] if raw_return.startswith("/") else f"/{raw_return[:499].lstrip('/')}"
     if method_norm == "esewa":
-        product_code, secret_key, form_url, _status_url_base = _portal_esewa_payment_settings()
-        txn_uuid = str(uuid4())
-        total_amount = _portal_esewa_amount_str(amount)
-        message = (
-            f"total_amount={total_amount},transaction_uuid={txn_uuid},product_code={product_code}"
-        )
-        signature = _portal_esewa_signature(message, secret_key)
-        success_url = request.build_absolute_uri(
-            reverse("portal-wallet-topup-esewa-success")
-        )
-        failure_url = request.build_absolute_uri(
-            reverse("portal-wallet-topup-esewa-failure")
-        )
-        PaymentTransaction.objects.create(
-            txn_ref=txn_uuid,
-            customer=request.user,
-            amount=amount,
-            method=PaymentTransaction.Method.ESEWA,
-            status=PaymentTransaction.Status.PENDING,
-            gateway_response={
-                "kind": "wallet_topup",
-                "wallet_id": str(w.pk),
-                "method": method,
-                "esewa_init": {
-                    "total_amount": total_amount,
-                    "transaction_uuid": txn_uuid,
-                    "product_code": product_code,
-                },
-            },
-        )
         return Response(
-            {
-                "ok": True,
-                "flow": "esewa_redirect",
-                "action_url": form_url,
-                "fields": {
-                    "amount": total_amount,
-                    "tax_amount": "0",
-                    "product_service_charge": "0",
-                    "product_delivery_charge": "0",
-                    "total_amount": total_amount,
-                    "transaction_uuid": txn_uuid,
-                    "product_code": product_code,
-                    "success_url": success_url,
-                    "failure_url": failure_url,
-                    "signed_field_names": ESEWA_SIGNED_FIELD_NAMES,
-                    "signature": signature,
-                },
-            }
+            wgt.build_esewa_initiate_response(
+                request=request,
+                payer=request.user,
+                wallet=w,
+                amount=amount,
+                method=method,
+                topup_target=wgt.TOPUP_TARGET_CUSTOMER,
+                return_path=return_path,
+                return_query_esewa=None,
+                success_reverse_name="portal-wallet-topup-esewa-success",
+                failure_reverse_name="portal-wallet-topup-esewa-failure",
+            )
         )
     if method_norm == "khalti":
-        purchase_order_id = f"KP-W-{uuid4().hex[:24]}"
-        amount_paisa = rupees_to_paisa(amount)
-        if amount_paisa < 100:
-            return validation_error("amount too small for Khalti (minimum Rs. 1)", field="amount")
         try:
-            init_data = initiate_wallet_topup(
-                amount_paisa=amount_paisa,
-                purchase_order_id=purchase_order_id,
-                purchase_order_name="Wallet top-up",
-                return_url=_portal_khalti_frontend_return_url(),
-                website_url=_portal_khalti_website_url(),
-                customer_info=_portal_khalti_customer_info(request.user),
+            return Response(
+                wgt.build_khalti_initiate_response(
+                    payer=request.user,
+                    wallet=w,
+                    amount=amount,
+                    method=method,
+                    topup_target=wgt.TOPUP_TARGET_CUSTOMER,
+                    return_path=return_path,
+                    return_query_esewa=None,
+                    purchase_order_id=f"KP-W-{uuid4().hex[:24]}",
+                    purchase_order_name="Wallet top-up",
+                )
             )
+        except ValueError as e:
+            return validation_error(str(e), field="amount")
         except KhaltiConfigError as e:
             return Response({"detail": str(e)}, status=503)
         except KhaltiApiError as e:
@@ -3257,39 +3183,6 @@ def portal_wallet_topup(request):
                 {"detail": str(e), "khalti_error": (e.body or "")[:2000]},
                 status=502,
             )
-        pidx = str(init_data.get("pidx") or "").strip()
-        payment_url = str(init_data.get("payment_url") or "").strip()
-        if not pidx or not payment_url:
-            return Response(
-                {"detail": "Khalti initiate response missing pidx or payment_url."},
-                status=502,
-            )
-        PaymentTransaction.objects.create(
-            txn_ref=purchase_order_id,
-            customer=request.user,
-            amount=amount,
-            method=PaymentTransaction.Method.KHALTI,
-            status=PaymentTransaction.Status.PENDING,
-            gateway_response={
-                "kind": "wallet_topup",
-                "wallet_id": str(w.pk),
-                "method": method,
-                "khalti_pidx": pidx,
-                "khalti_purchase_order_id": purchase_order_id,
-                "khalti_initiate": init_data,
-            },
-        )
-        return Response(
-            {
-                "ok": True,
-                "flow": "khalti_redirect",
-                "payment_url": payment_url,
-                "pidx": pidx,
-                "purchase_order_id": purchase_order_id,
-                "expires_at": init_data.get("expires_at"),
-                "expires_in": init_data.get("expires_in"),
-            }
-        )
     try:
         with transaction.atomic():
             wt = wallet_service.credit_wallet(
@@ -3314,288 +3207,25 @@ def portal_wallet_topup(request):
 @api_view(["GET", "POST"])
 @permission_classes([AllowAny])
 def portal_wallet_topup_esewa_success(request):
-    product_code, secret_key, _form_url, status_url_base = _portal_esewa_payment_settings()
-    txn_ref = ""
-    try:
-        payload = _portal_esewa_parse_callback_payload(request)
-        txn_ref = str(payload.get("transaction_uuid") or "").strip()
-        if not txn_ref:
-            raise ValueError("Missing transaction_uuid")
-        row = PaymentTransaction.objects.select_related("customer").filter(
-            txn_ref=txn_ref,
-            method=PaymentTransaction.Method.ESEWA,
-        ).first()
-        if not row:
-            raise ValueError("Payment transaction not found")
-        if row.status == PaymentTransaction.Status.SUCCESS and row.wallet_transaction_id:
-            return HttpResponseRedirect(
-                _portal_esewa_frontend_redirect_url(request, "success", txn_ref=txn_ref)
-            )
-        if not _portal_esewa_verify_callback_signature(payload, secret_key):
-            raise ValueError("Invalid callback signature")
-        if str(payload.get("status") or "").upper() != "COMPLETE":
-            raise ValueError("Payment not complete")
-        callback_total = _portal_esewa_amount_str(_to_decimal(payload.get("total_amount"), "0"))
-        expected_total = _portal_esewa_amount_str(row.amount)
-        callback_product = str(payload.get("product_code") or "").strip()
-        if callback_total != expected_total:
-            raise ValueError("Amount mismatch")
-        if callback_product != product_code:
-            raise ValueError("Product code mismatch")
-        status_data = _portal_esewa_status_verify(
-            status_url_base=status_url_base,
-            product_code=product_code,
-            total_amount=expected_total,
-            transaction_uuid=txn_ref,
-        )
-        if str(status_data.get("status") or "").upper() != "COMPLETE":
-            raise ValueError("Status verification failed")
-        with transaction.atomic():
-            row = PaymentTransaction.objects.select_for_update().get(pk=row.pk)
-            if row.status == PaymentTransaction.Status.SUCCESS and row.wallet_transaction_id:
-                return HttpResponseRedirect(
-                    _portal_esewa_frontend_redirect_url(request, "success", txn_ref=txn_ref)
-                )
-            w, err = _ensure_active_personal_wallet(row.customer)
-            if err:
-                raise ValueError("Wallet is not active")
-            wt = wallet_service.credit_wallet(
-                w,
-                row.amount,
-                wtype=WalletTransaction.Type.TOPUP,
-                description="Wallet top-up (eSewa)",
-                performed_by=row.customer,
-            )
-            wallet_service.apply_topup_bonus_after_credit(
-                w,
-                row.amount,
-                bonus_reference_id=wt.txn_id,
-                performed_by=row.customer,
-            )
-            row.wallet_transaction = wt
-            row.status = PaymentTransaction.Status.SUCCESS
-            row.gateway_response = {
-                **(row.gateway_response or {}),
-                "esewa_callback_payload": dict(payload),
-                "esewa_status_verify": status_data,
-            }
-            row.verified_at = timezone.now()
-            row.save(
-                update_fields=["wallet_transaction", "status", "gateway_response", "verified_at"]
-            )
-        return HttpResponseRedirect(
-            _portal_esewa_frontend_redirect_url(request, "success", txn_ref=txn_ref)
-        )
-    except Exception as exc:
-        if txn_ref:
-            row = PaymentTransaction.objects.filter(
-                txn_ref=txn_ref, method=PaymentTransaction.Method.ESEWA
-            ).first()
-            if row and row.status == PaymentTransaction.Status.PENDING:
-                row.status = PaymentTransaction.Status.FAILED
-                row.gateway_response = {
-                    **(row.gateway_response or {}),
-                    "esewa_callback_error": str(exc),
-                }
-                row.save(update_fields=["status", "gateway_response"])
-        return HttpResponseRedirect(
-            _portal_esewa_frontend_redirect_url(request, "failed", txn_ref=txn_ref or None)
-        )
+    return HttpResponseRedirect(wgt.handle_esewa_wallet_topup_success(request))
 
 
 @api_view(["GET", "POST"])
 @permission_classes([AllowAny])
 def portal_wallet_topup_esewa_failure(request):
-    txn_ref = (
-        str(request.query_params.get("transaction_uuid") or request.data.get("transaction_uuid") or "")
-        .strip()
-    )
-    if txn_ref:
-        row = PaymentTransaction.objects.filter(
-            txn_ref=txn_ref,
-            method=PaymentTransaction.Method.ESEWA,
-            status=PaymentTransaction.Status.PENDING,
-        ).first()
-        if row:
-            row.status = PaymentTransaction.Status.FAILED
-            row.gateway_response = {
-                **(row.gateway_response or {}),
-                "esewa_failure_callback": {
-                    "query": dict(request.query_params),
-                },
-            }
-            row.save(update_fields=["status", "gateway_response"])
-    return HttpResponseRedirect(
-        _portal_esewa_frontend_redirect_url(request, "failed", txn_ref=txn_ref or None)
-    )
+    return HttpResponseRedirect(wgt.handle_esewa_wallet_topup_failure(request))
 
 
 @api_view(["GET"])
 @authentication_classes(PORTAL_API_AUTHENTICATION)
-@permission_classes([IsAuthenticated, IsPortalCustomer])
+@permission_classes([IsAuthenticated])
 def portal_wallet_topup_khalti_verify(request):
     """Confirm Khalti payment via lookup (idempotent). Call from SPA after return_url redirect."""
     pidx = (request.query_params.get("pidx") or "").strip()
     if not pidx:
         return validation_error("pidx is required", field="pidx")
-    row = (
-        PaymentTransaction.objects.filter(
-            customer=request.user,
-            method=PaymentTransaction.Method.KHALTI,
-            gateway_response__khalti_pidx=pidx,
-        )
-        .order_by("-created_at")
-        .first()
-    )
-    if not row:
-        return Response({"detail": "Payment not found for this Khalti session."}, status=404)
-    try:
-        lookup_data = lookup_payment(pidx=pidx)
-    except KhaltiConfigError as e:
-        return Response({"detail": str(e)}, status=503)
-    except KhaltiApiError as e:
-        return Response(
-            {"detail": str(e), "khalti_error": (e.body or "")[:2000]},
-            status=502,
-        )
-    khalti_status = extract_lookup_status(lookup_data)
-    app_status = map_khalti_status_to_app(khalti_status)
-    total_paisa = extract_total_amount_paisa(lookup_data)
-    expected_paisa = rupees_to_paisa(row.amount)
-    txn_id = str(lookup_data.get("transaction_id") or "")
-
-    if total_paisa is not None and total_paisa != expected_paisa:
-        return Response(
-            {
-                "success": False,
-                "detail": "Amount mismatch with Khalti lookup.",
-                "data": {
-                    "status": "ERROR",
-                    "khalti_status": khalti_status,
-                    "pidx": pidx,
-                    "expected_total_amount": expected_paisa,
-                    "lookup_total_amount": total_paisa,
-                },
-            },
-            status=400,
-        )
-
-    if app_status == "SUCCESS":
-        if row.status == PaymentTransaction.Status.SUCCESS and row.wallet_transaction_id:
-            return Response(
-                {
-                    "success": True,
-                    "data": {
-                        "status": "SUCCESS",
-                        "khalti_status": khalti_status,
-                        "pidx": pidx,
-                        "transaction_id": txn_id,
-                        "total_amount": total_paisa or expected_paisa,
-                    },
-                }
-            )
-        with transaction.atomic():
-            row = PaymentTransaction.objects.select_for_update().get(pk=row.pk)
-            if row.status == PaymentTransaction.Status.SUCCESS and row.wallet_transaction_id:
-                return Response(
-                    {
-                        "success": True,
-                        "data": {
-                            "status": "SUCCESS",
-                            "khalti_status": khalti_status,
-                            "pidx": pidx,
-                            "transaction_id": txn_id,
-                            "total_amount": total_paisa or expected_paisa,
-                        },
-                    }
-                )
-            w, err = _ensure_active_personal_wallet(row.customer)
-            if err:
-                return Response({"detail": "Wallet is not active"}, status=400)
-            wt = wallet_service.credit_wallet(
-                w,
-                row.amount,
-                wtype=WalletTransaction.Type.TOPUP,
-                description="Wallet top-up (Khalti)",
-                performed_by=row.customer,
-            )
-            wallet_service.apply_topup_bonus_after_credit(
-                w,
-                row.amount,
-                bonus_reference_id=wt.txn_id,
-                performed_by=row.customer,
-            )
-            row.wallet_transaction = wt
-            row.status = PaymentTransaction.Status.SUCCESS
-            row.gateway_response = {
-                **(row.gateway_response or {}),
-                "khalti_lookup": lookup_data,
-            }
-            row.verified_at = timezone.now()
-            row.save(
-                update_fields=["wallet_transaction", "status", "gateway_response", "verified_at"]
-            )
-        return Response(
-            {
-                "success": True,
-                "data": {
-                    "status": "SUCCESS",
-                    "khalti_status": khalti_status,
-                    "pidx": pidx,
-                    "transaction_id": txn_id,
-                    "total_amount": total_paisa or expected_paisa,
-                },
-            }
-        )
-
-    if app_status == "FAILED":
-        if row.status == PaymentTransaction.Status.PENDING:
-            row.status = PaymentTransaction.Status.FAILED
-            row.gateway_response = {**(row.gateway_response or {}), "khalti_lookup": lookup_data}
-            row.save(update_fields=["status", "gateway_response"])
-        return Response(
-            {
-                "success": True,
-                "data": {
-                    "status": "FAILED",
-                    "khalti_status": khalti_status,
-                    "pidx": pidx,
-                    "transaction_id": txn_id,
-                    "total_amount": total_paisa or expected_paisa,
-                },
-            }
-        )
-
-    if app_status == "PENDING":
-        return Response(
-            {
-                "success": True,
-                "data": {
-                    "status": "PENDING",
-                    "khalti_status": khalti_status,
-                    "pidx": pidx,
-                    "transaction_id": txn_id,
-                    "total_amount": total_paisa or expected_paisa,
-                },
-            }
-        )
-
-    if row.status == PaymentTransaction.Status.PENDING:
-        row.status = PaymentTransaction.Status.FAILED
-        row.gateway_response = {**(row.gateway_response or {}), "khalti_lookup": lookup_data}
-        row.save(update_fields=["status", "gateway_response"])
-    return Response(
-        {
-            "success": True,
-            "data": {
-                "status": "ERROR",
-                "khalti_status": khalti_status,
-                "pidx": pidx,
-                "transaction_id": txn_id,
-                "total_amount": total_paisa or expected_paisa,
-            },
-        }
-    )
+    body, status = wgt.khalti_wallet_topup_verify_payload(user=request.user, pidx=pidx)
+    return Response(body, status=status)
 
 
 @api_view(["POST"])
@@ -4361,6 +3991,9 @@ def _payment_method_from_client(raw: str) -> str | None:
 @permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_orders_checkout_wallet(request):
     """Default paying wallet and all payable buckets (same rules as POST checkout)."""
+    gate = storefront_orders_gate_response()
+    if gate:
+        return gate
     u = request.user
     default_w = _resolve_default_checkout_wallet(u)
     default_payload = None
@@ -4409,6 +4042,9 @@ def _request_data_dict(request) -> dict:
 @permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_orders_checkout_quote(request):
     """Read-only totals for checkout UI (pricing, flash, coupon, delivery) — no orders or stock changes."""
+    gate = storefront_orders_gate_response()
+    if gate:
+        return gate
     u = request.user
     items = request.data.get("items")
     try:
@@ -4505,6 +4141,9 @@ def portal_orders_checkout_quote(request):
 @authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_orders_checkout(request):
+    gate = storefront_orders_gate_response()
+    if gate:
+        return gate
     u = request.user
     items = request.data.get("items")
     if not isinstance(items, list) or not items:

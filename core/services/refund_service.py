@@ -7,12 +7,41 @@ from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
 
-from core.models import Order, OrderCommissionSettlement, Refund, Wallet, WalletTransaction
+from core.models import Order, OrderCommissionSettlement, Refund, Wallet, WalletSettings, WalletTransaction
 from core.services import commission_service, notification_service, vendor_service, wallet_service
+from core.services import wallet_policy
 from core.services.base import get_or_create_personal_wallet
 
 Q2 = Decimal("0.01")
-FEE_RATE = Decimal("0.03")
+
+
+def _format_fee_value_display(value: Decimal) -> str:
+    s = format(value, "f").rstrip("0").rstrip(".")
+    return s or "0"
+
+
+def commission_slice_retention_short_label() -> str:
+    """UI copy: how wallet transaction rules apply to the proportional commission slice on refunds."""
+    ws = WalletSettings.load()
+    if ws.transaction_fee_type == WalletSettings.FeeType.FLAT:
+        return f"flat Rs. {_format_fee_value_display(ws.transaction_fee_value)} (capped to commission slice)"
+    return f"{_format_fee_value_display(ws.transaction_fee_value)}% of commission slice"
+
+
+def commission_slice_refund_deduction_summary(*, has_vendor_settlement: bool) -> str:
+    label = commission_slice_retention_short_label()
+    if has_vendor_settlement:
+        return f"Vendor full share + commission returned ({label} retained)"
+    return "Platform pool (no vendor settlement)"
+
+
+def commission_slice_retention_customer_message_fragment() -> str:
+    """Wording for customer/vendor notifications (no hardcoded rate)."""
+    ws = WalletSettings.load()
+    if ws.transaction_fee_type == WalletSettings.FeeType.FLAT:
+        return "a flat wallet transaction fee on the commission portion (capped to that slice)"
+    pct = _format_fee_value_display(ws.transaction_fee_value)
+    return f"{pct}% of the commission portion only"
 
 
 @dataclass(frozen=True)
@@ -59,7 +88,9 @@ def _financials_from_totals(
         raise ValueError("Invalid settlement total for refund")
     vendor_claw = (R * vendor_amount / total_amount).quantize(Q2, rounding=ROUND_HALF_UP)
     commission_slice = (R - vendor_claw).quantize(Q2, rounding=ROUND_HALF_UP)
-    fee_retained = (commission_slice * FEE_RATE).quantize(Q2, rounding=ROUND_HALF_UP)
+    fee_retained = wallet_policy.compute_peer_transfer_fee(commission_slice).quantize(
+        Q2, rounding=ROUND_HALF_UP
+    )
     platform_debit = (commission_slice - fee_retained).quantize(Q2, rounding=ROUND_HALF_UP)
     customer_credit = (vendor_claw + platform_debit).quantize(Q2, rounding=ROUND_HALF_UP)
     return RefundFinancials(
@@ -72,7 +103,8 @@ def _financials_from_totals(
 
 def refund_financials(order: Order, gross: Decimal, *, persist_settlement: bool = False) -> RefundFinancials:
     """
-    Commission-based refund split: 3% fee applies only to the proportional commission slice of this refund.
+    Commission-based refund split: wallet transaction fee rules apply only to the proportional
+    commission slice of this refund (same type/value as peer transfers in Wallet settings).
     No settlement / no seller: full gross to customer, platform debits full gross.
 
     persist_settlement: when True (refund create / execute), persist missing settlement for paid seller orders.

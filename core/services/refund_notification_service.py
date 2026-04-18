@@ -6,7 +6,10 @@ from urllib.parse import quote
 
 from core.models import Notification, Refund, User
 from core.portal_roles import user_allowed_for_admin_portal
-from core.services.refund_service import breakdown_for_refund
+from core.services.refund_service import (
+    breakdown_for_refund,
+    commission_slice_retention_customer_message_fragment,
+)
 
 
 def notify_admins_new_refund_request(rf: Refund) -> None:
@@ -39,10 +42,11 @@ def notify_customer_refund_status(rf: Refund, *, approved: bool) -> None:
     if approved:
         fee, net = breakdown_for_refund(rf)
         title = "Refund approved"
+        retain_why = commission_slice_retention_customer_message_fragment()
         msg = (
             f"Your refund {rf.refund_number} for order {rf.order.order_number} was approved. "
             f"Rs. {float(net):,.2f} will be credited to your wallet. "
-            f"The platform retains 3% of the commission portion only (Rs. {float(fee):,.2f})."
+            f"The platform retains Rs. {float(fee):,.2f} ({retain_why})."
         )
     else:
         title = "Refund request declined"
@@ -71,10 +75,11 @@ def notify_vendor_refund_processed(rf: Refund) -> None:
     if not vendor_user:
         return
     fee, net = breakdown_for_refund(rf)
+    retain_why = commission_slice_retention_customer_message_fragment()
     msg = (
         f"Refund {rf.refund_number} for order {order.order_number} was processed. "
         f"Gross Rs. {float(rf.amount):,.2f}; customer receives Rs. {float(net):,.2f}; "
-        f"platform retains Rs. {float(fee):,.2f} (3% of commission on this refund). "
+        f"platform retains Rs. {float(fee):,.2f} ({retain_why}). "
         f"Check your wallet for vendor clawback."
     )
     Notification.objects.create(

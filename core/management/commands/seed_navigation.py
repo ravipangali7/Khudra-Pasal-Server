@@ -105,6 +105,8 @@ class Command(BaseCommand):
             "delivery",
             "wallet-loyalty",
             "wallet-flagged",
+            "shipping-methods",
+            "shipping-calculator",
         }
         to_remove_admin = sorted(deprecated_admin_keys - seed_admin_keys)
         if to_remove_admin:

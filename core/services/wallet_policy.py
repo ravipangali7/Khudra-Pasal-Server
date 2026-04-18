@@ -226,6 +226,7 @@ def public_settings_snapshot() -> dict:
         "daily_transfer_limit": float(ws.daily_transfer_limit),
         "min_withdrawal": float(ws.min_withdrawal),
         "max_withdrawal_per_day": float(ws.max_withdrawal_per_day),
+        "otp_for_withdrawals": bool(ws.otp_for_withdrawals),
         "otp_for_transfers_above": float(ws.otp_for_transfers_above),
         "individual_wallet_enabled": ws.individual_wallet_enabled,
         "shared_wallet_enabled": ws.shared_wallet_enabled,

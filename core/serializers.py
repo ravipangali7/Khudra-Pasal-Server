@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.core.validators import MinValueValidator
+from django.utils import timezone
 from rest_framework import serializers
 
 from core.services.product_pricing import effective_unit_price, storefront_unit_price
@@ -371,6 +372,7 @@ class ReelPublicSerializer(serializers.ModelSerializer):
     is_liked = serializers.SerializerMethodField()
     is_bookmarked = serializers.SerializerMethodField()
     has_added_to_cart = serializers.SerializerMethodField()
+    is_sponsored = serializers.SerializerMethodField()
 
     class Meta:
         model = Reel
@@ -474,6 +476,14 @@ class ReelPublicSerializer(serializers.ModelSerializer):
 
     def get_has_added_to_cart(self, obj):
         return self._has_interaction(obj, ReelInteraction.Type.CART_ADD)
+
+    def get_is_sponsored(self, obj):
+        if not obj.is_sponsored:
+            return False
+        exp = obj.boost_expires_at
+        if exp is None:
+            return True
+        return exp > timezone.now()
 
 
 class ReelCommentSerializer(serializers.ModelSerializer):

@@ -67,9 +67,7 @@ ADMIN_NAV: list[tuple] = [
     ("admin", "reports", "Reports", "BarChart3", "", 150, "", ""),
     ("admin", "reels-admin", "KhudraReels", "Play", "", 160, "", ""),
     ("admin", "shipping", "Shipping", "Truck", "", 170, "", ""),
-    ("admin", "shipping-methods", "Shipping Methods", "Truck", "shipping", 0, "", ""),
-    ("admin", "shipping-zones", "Zones & Rates", "Truck", "shipping", 1, "", ""),
-    ("admin", "shipping-calculator", "Cost Calculator", "Truck", "shipping", 2, "", ""),
+    ("admin", "shipping-zones", "Zones & Rates", "Truck", "shipping", 0, "", ""),
     ("admin", "settings", "Settings", "Settings", "", 180, "", ""),
 ]
 

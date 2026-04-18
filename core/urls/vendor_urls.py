@@ -39,6 +39,12 @@ urlpatterns = [
     path("reviews/", vendor_views.vendor_reviews_list, name="vendor-reviews"),
     path("reviews/<int:pk>/", vendor_resources.vendor_review_update, name="vendor-review-update"),
     path("wallet-transactions/", vendor_views.vendor_wallet_transactions, name="vendor-wallet-txns"),
+    path("wallet/topup/", vendor_views.vendor_wallet_topup, name="vendor-wallet-topup"),
+    path(
+        "wallet/topup/khalti/verify/",
+        vendor_views.vendor_wallet_topup_khalti_verify,
+        name="vendor-wallet-topup-khalti-verify",
+    ),
     path(
         "commission-settlements/",
         vendor_views.vendor_commission_settlements,

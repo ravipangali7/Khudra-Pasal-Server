@@ -202,6 +202,12 @@ urlpatterns = [
     path("wallets/adjust/", resource_views.admin_wallet_adjust, name="admin-wallets-adjust"),
     path("wallets/<int:pk>/", resource_views.admin_wallet_detail_write, name="admin-wallets-write"),
     path("wallets/", resource_views.admin_wallets_list, name="admin-wallets"),
+    path("wallet/topup/", dashboard_views.admin_wallet_topup, name="admin-wallet-topup"),
+    path(
+        "wallet/topup/khalti/verify/",
+        dashboard_views.admin_wallet_topup_khalti_verify,
+        name="admin-wallet-topup-khalti-verify",
+    ),
     path("wallet-settings/", resource_views.admin_wallet_settings_singleton, name="admin-wallet-settings"),
     path("wallet-transactions/", resource_views.admin_wallet_transactions_list, name="admin-wallet-txns"),
     path("wallet-bonuses/create/", resource_views.admin_wallet_bonus_create, name="admin-wallet-bonuses-create"),

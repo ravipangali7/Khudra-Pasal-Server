@@ -14,18 +14,26 @@ from core.models import (
     EmployeeProfile,
     FamilyGroup,
     Order,
+    OrderSettings,
     Product,
     Refund,
     Role,
-    OrderSettings,
     User,
     Vendor,
     Wallet,
+    WalletSettings,
 )
 from core.services.base import get_or_create_personal_wallet
 from core.services.order_service import pay_with_wallet
 from core.services.refund_service import execute_refund, refund_financials
 from core.views.vendor.vendor_resources import _gen_order_number
+
+
+def _wallet_refund_fee_percentage(pct: Decimal) -> None:
+    ws = WalletSettings.load()
+    ws.transaction_fee_type = WalletSettings.FeeType.PERCENTAGE
+    ws.transaction_fee_value = pct
+    ws.save(update_fields=["transaction_fee_type", "transaction_fee_value"])
 
 
 class PortalOrdersSurfaceTests(TestCase):
@@ -127,6 +135,7 @@ class PortalOrdersSurfaceTests(TestCase):
 
 class RefundExecuteWalletTests(TestCase):
     def setUp(self):
+        _wallet_refund_fee_percentage(Decimal("3.00"))
         self.user = User.objects.create_user(
             username="refwu1",
             password="x",
@@ -276,6 +285,7 @@ class RefundCommissionExample200Tests(TestCase):
     """Doc example: order 200, vendor 195, commission 5, customer receives 199.85."""
 
     def setUp(self):
+        _wallet_refund_fee_percentage(Decimal("3.00"))
         self.user = User.objects.create_user(
             username="ref200u",
             password="x",
@@ -472,3 +482,67 @@ class RefundSuperAdminPatchTests(TestCase):
         self.rf.refresh_from_db()
         self.assertEqual(self.rf.status, Refund.Status.APPROVED)
         self.assertIsNotNone(self.rf.processed_at)
+
+
+class RefundCommissionSliceRespectsWalletFlatFeeTests(TestCase):
+    """Retention on the commission slice follows WalletSettings (flat), not a hardcoded rate."""
+
+    def test_full_refund_uses_wallet_flat_on_commission_slice(self):
+        ws = WalletSettings.load()
+        ws.transaction_fee_type = WalletSettings.FeeType.FLAT
+        ws.transaction_fee_value = Decimal("2.00")
+        ws.save(update_fields=["transaction_fee_type", "transaction_fee_value"])
+
+        user = User.objects.create_user(
+            username="refflat_u",
+            password="x",
+            phone="9870101010",
+            name="Flat U",
+            role=User.Role.NORMAL,
+        )
+        wallet = get_or_create_personal_wallet(user)
+        Wallet.objects.filter(pk=wallet.pk).update(balance=Decimal("1000.00"))
+        vendor_user = User.objects.create_user(
+            username="refflat_v",
+            password="x",
+            phone="9870202020",
+            name="Flat V",
+            role=User.Role.NORMAL,
+        )
+        vendor = Vendor.objects.create(
+            user=vendor_user,
+            store_name="Flat Store",
+            status=Vendor.Status.APPROVED,
+            commission_rate=Decimal("2.50"),
+        )
+        cat = Category.objects.create(name="CFlat", slug="cflat")
+        Product.objects.create(
+            name="PFlat",
+            sku="SKU-FLAT",
+            category=cat,
+            seller=vendor,
+            price=Decimal("200.00"),
+            stock=5,
+            status=Product.Status.ACTIVE,
+        )
+        order = Order.objects.create(
+            order_number=_gen_order_number(),
+            customer=user,
+            seller=vendor,
+            status=Order.Status.PENDING,
+            payment_method=Order.PaymentMethod.WALLET,
+            payment_status=Order.PaymentStatus.PENDING,
+            subtotal=Decimal("200.00"),
+            delivery_fee=Decimal("0"),
+            discount_amount=Decimal("0"),
+            total=Decimal("200.00"),
+            placed_portal=Order.PlacedPortal.PORTAL_MAIN,
+            payment_wallet=wallet,
+        )
+        pay_with_wallet(order, wallet, fund_source="Personal wallet")
+        order.refresh_from_db()
+        gross = Decimal("200.00")
+        fin = refund_financials(order, gross, persist_settlement=True)
+        self.assertEqual(fin.fee_retained, Decimal("2.00"))
+        self.assertEqual(fin.platform_debit, Decimal("3.00"))
+        self.assertEqual(fin.customer_credit, Decimal("198.00"))

@@ -21,6 +21,7 @@ from core.portal_roles import (
     normalize_portal_key,
     user_allowed_for_portal_key,
 )
+from core.services.site_settings_policy import new_account_gate_response
 from core.views.unified_auth import (
     build_auth_response_for_portal,
     build_auth_success_response,
@@ -148,6 +149,9 @@ def otp_send(request):
             return Response({"detail": "Name is required."}, status=400)
         if find_user_by_phone_input(phone):
             return Response({"detail": "An account with this number already exists."}, status=400)
+        gate = new_account_gate_response()
+        if gate:
+            return gate
         signup_portal = normalize_portal_key(
             request.data.get("portal") or request.data.get("surface")
         )
@@ -240,6 +244,10 @@ def otp_verify(request):
         return Response({"detail": "Name is required."}, status=400)
     if find_user_by_phone_input(phone):
         return Response({"detail": "An account with this number already exists."}, status=400)
+
+    gate = new_account_gate_response()
+    if gate:
+        return gate
 
     portal_key = normalize_portal_key(
         request.data.get("portal") or request.data.get("surface")

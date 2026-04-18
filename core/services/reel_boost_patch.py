@@ -48,7 +48,9 @@ def apply_reel_boost_from_data(row: Reel, data) -> Optional[Tuple[str, str]]:
             return ("invalid boost_expected_views", "boost_expected_views")
         tier = (data.get("boost_tier") or "").strip()
         valid_tiers = {c[0] for c in Reel.BoostTier.choices}
-        if tier and tier not in valid_tiers:
+        if not tier:
+            tier = Reel.BoostTier.STANDARD
+        elif tier not in valid_tiers:
             return ("invalid boost_tier", "boost_tier")
         row.is_sponsored = True
         row.boost_expires_at = timezone.now() + timedelta(days=duration)

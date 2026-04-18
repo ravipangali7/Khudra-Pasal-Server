@@ -1,5 +1,6 @@
 from datetime import datetime, time, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 from django.db.models import Count, Q, Sum
 from django.db.models.functions import TruncDate
@@ -12,6 +13,11 @@ from rest_framework.authentication import SessionAuthentication, TokenAuthentica
 
 from core.models import DeliveryMan, Order, OrderItem, Product, User, Vendor, Wallet, WalletTransaction
 from core.serializers import RecentOrderSerializer
+from core.services import wallet_gateway_topup as wgt
+from core.services.base import get_or_create_personal_wallet
+from core.services.khalti_epayment_service import KhaltiApiError, KhaltiConfigError
+from core.views.admin.resource_views import _to_decimal
+from core.views.admin.admin_write_utils import validation_error
 
 
 def _is_admin_like(user):
@@ -458,4 +464,82 @@ def dashboard_reports(request):
             "signup_series": signup_series,
         }
     )
+
+
+@api_view(["POST"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_wallet_topup(request):
+    forbidden = _forbidden_if_not_admin(request)
+    if forbidden:
+        return forbidden
+    u = request.user
+    w = get_or_create_personal_wallet(u)
+    if w.status != Wallet.Status.ACTIVE:
+        return Response({"detail": "Wallet is frozen."}, status=400)
+    amount = _to_decimal(request.data.get("amount"), "0")
+    if amount <= 0:
+        return validation_error("amount must be positive", field="amount")
+    method = (request.data.get("method") or "esewa").strip()[:50]
+    method_norm = method.lower()
+    if method_norm not in ("esewa", "khalti"):
+        return validation_error("Only eSewa and Khalti are supported.", field="method")
+    raw_return = (request.data.get("return_path") or "/admin/dashboard").strip()
+    return_path = raw_return[:500] if raw_return.startswith("/") else f"/{raw_return[:499].lstrip('/')}"
+    try:
+        wgt.assert_can_topup_wallet(payer=u, wallet=w, target=wgt.TOPUP_TARGET_ADMIN_PERSONAL)
+    except ValueError as e:
+        return Response({"detail": str(e)}, status=400)
+    if method_norm == "esewa":
+        return Response(
+            wgt.build_esewa_initiate_response(
+                request=request,
+                payer=u,
+                wallet=w,
+                amount=amount,
+                method=method,
+                topup_target=wgt.TOPUP_TARGET_ADMIN_PERSONAL,
+                return_path=return_path,
+                return_query_esewa=None,
+                success_reverse_name="portal-wallet-topup-esewa-success",
+                failure_reverse_name="portal-wallet-topup-esewa-failure",
+            )
+        )
+    try:
+        return Response(
+            wgt.build_khalti_initiate_response(
+                payer=u,
+                wallet=w,
+                amount=amount,
+                method=method,
+                topup_target=wgt.TOPUP_TARGET_ADMIN_PERSONAL,
+                return_path=return_path,
+                return_query_esewa=None,
+                purchase_order_id=f"KP-A-{uuid4().hex[:24]}",
+                purchase_order_name="Admin wallet top-up",
+            )
+        )
+    except ValueError as e:
+        return validation_error(str(e), field="amount")
+    except KhaltiConfigError as e:
+        return Response({"detail": str(e)}, status=503)
+    except KhaltiApiError as e:
+        return Response(
+            {"detail": str(e), "khalti_error": (e.body or "")[:2000]},
+            status=502,
+        )
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_wallet_topup_khalti_verify(request):
+    forbidden = _forbidden_if_not_admin(request)
+    if forbidden:
+        return forbidden
+    pidx = (request.query_params.get("pidx") or "").strip()
+    if not pidx:
+        return validation_error("pidx is required", field="pidx")
+    body, status = wgt.khalti_wallet_topup_verify_payload(user=request.user, pidx=pidx)
+    return Response(body, status=status)
 

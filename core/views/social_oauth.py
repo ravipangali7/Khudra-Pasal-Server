@@ -17,7 +17,7 @@ from django.urls import reverse
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.response import Response
 
-from core.models import User
+from core.models import SiteSettings, User
 from core.portal_roles import (
     PORTAL_FAMILY,
     PORTAL_MAIN,
@@ -361,6 +361,16 @@ def google_oauth_callback(request):
     user, created_new = _get_or_create_social_user(
         "google", gid, name, email, avatar_url=str(picture) if picture else ""
     )
+    if created_new:
+        site = SiteSettings.load()
+        if site.maintenance_mode or not site.new_registrations:
+            user.delete()
+            msg = (
+                "The site is under maintenance. New registrations are unavailable."
+                if site.maintenance_mode
+                else "New registrations are currently disabled."
+            )
+            return _redirect_to_frontend({"oauth_error": msg}, error_return)
     if not user.is_active:
         return _redirect_to_frontend({"oauth_error": "Account disabled."}, error_return)
     if created_new:
@@ -493,6 +503,16 @@ def facebook_oauth_callback(request):
     name = (profile.get("name") or profile.get("email") or "")[:150]
     email = (profile.get("email") or "")[:254]
     user, created_new = _get_or_create_social_user("facebook", fid, name, email)
+    if created_new:
+        site = SiteSettings.load()
+        if site.maintenance_mode or not site.new_registrations:
+            user.delete()
+            msg = (
+                "The site is under maintenance. New registrations are unavailable."
+                if site.maintenance_mode
+                else "New registrations are currently disabled."
+            )
+            return _redirect_to_frontend({"oauth_error": msg}, error_return)
     if not user.is_active:
         return _redirect_to_frontend({"oauth_error": "Account disabled."}, error_return)
     if created_new:

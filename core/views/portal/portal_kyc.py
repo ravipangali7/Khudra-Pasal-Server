@@ -22,6 +22,7 @@ from core.services.kyc_portal import (
 )
 from core.services.kyc_service import sync_user_kyc_status
 from core.services.kyc_withdraw import latest_kyc_rejection_reason
+from core.services.site_settings_policy import site_kyc_required_flag
 from core.views.admin.admin_write_utils import absolute_media_url, validation_error
 from core.views.portal.portal_views import IsPortalSelf
 
@@ -104,7 +105,7 @@ def _kyc_status_payload(request, user: User) -> dict:
 
     return {
         "kyc_status": user.kyc_status,
-        "kyc_required": True,
+        "kyc_required": site_kyc_required_flag(),
         "can_submit": can_submit,
         "message_key": msg_key,
         "rejection_reason": latest_kyc_rejection_reason(user),

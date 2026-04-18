@@ -295,7 +295,7 @@ class KycWithdrawFlowTests(TestCase):
         self.customer.kyc_status = User.KYCStatus.PENDING
         self.customer.save(update_fields=["kyc_status"])
         r4 = self.client.get("/api/portal/kyc/status/")
-        self.assertTrue(r4.data["kyc_required"])
+        self.assertFalse(r4.data["kyc_required"])
         self.assertTrue(r4.data["can_submit"])
 
     def test_vendor_withdraw_blocked_when_approved_without_portal_kyc(self):

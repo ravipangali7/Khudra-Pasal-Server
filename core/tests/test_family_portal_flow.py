@@ -26,10 +26,11 @@ from core.models import (
     ProductRestriction,
     User,
     Wallet,
+    WalletSettings,
     WalletTransaction,
     WalletWithdrawal,
 )
-from core.services import family_service, wallet_service
+from core.services import family_service, otp_service, wallet_service
 from core.services.family_service import get_platform_hub_group
 from core.services.base import get_or_create_personal_wallet
 from core.services.family_portal_wallet_service import (
@@ -1305,6 +1306,64 @@ class FamilyPortalFlowTests(TestCase):
             format="json",
         )
         self.assertEqual(r_denied.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_child_wallet_withdraw_requires_otp_when_enabled(self):
+        ws = WalletSettings.load()
+        ws.otp_for_withdrawals = True
+        ws.save(update_fields=["otp_for_withdrawals"])
+        self._login_leader_with_family()
+        group = FamilyGroup.objects.get(leader=self.leader)
+        perm, _ = FamilyGroupPermission.objects.get_or_create(group=group)
+        perm.allow_cash_withdrawal = True
+        perm.save()
+        child_user = User.objects.create_user(
+            username="child_otp_wd",
+            password=self.pw,
+            phone="9712222222",
+            name="ChildOtpWd",
+            role=User.Role.CHILD,
+            kyc_status=User.KYCStatus.VERIFIED,
+        )
+        FamilyMember.objects.create(
+            group=group,
+            user=child_user,
+            role=FamilyMember.Role.CHILD,
+            status=FamilyMember.Status.ACTIVE,
+        )
+        Wallet.objects.create(
+            owner=child_user,
+            type=Wallet.Type.CHILD,
+            family_group=group,
+            status=Wallet.Status.ACTIVE,
+            balance=Decimal("20.00"),
+        )
+        self.client.credentials()
+        login = self.client.post(
+            "/api/child-portal/auth/login/",
+            {"phone": child_user.phone, "password": self.pw},
+            format="json",
+        )
+        self.assertEqual(login.status_code, status.HTTP_200_OK)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {login.data['token']}")
+        pa = PayoutAccount.objects.create(
+            user=child_user,
+            type=PayoutAccount.Type.ESEWA,
+            phone="9812222222",
+        )
+        r0 = self.client.post(
+            "/api/portal/child/wallet/withdraw/",
+            {"amount": "3", "payout_account_id": pa.pk},
+            format="json",
+        )
+        self.assertEqual(r0.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(r0.data.get("code"), "otp_required")
+        row = otp_service.create_otp(child_user.phone, OTPVerification.Purpose.WITHDRAW)
+        r1 = self.client.post(
+            "/api/portal/child/wallet/withdraw/",
+            {"amount": "3", "payout_account_id": pa.pk, "otp": row.otp},
+            format="json",
+        )
+        self.assertEqual(r1.status_code, status.HTTP_201_CREATED, r1.data)
 
     def test_family_parent_wallet_withdraw_multipart_notifications(self):
         self.leader.kyc_status = User.KYCStatus.VERIFIED

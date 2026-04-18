@@ -10,8 +10,10 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.models import SiteSettings
 from core.portal_roles import infer_portal_key_from_frontend_path
 from core.services import family_service
+from core.services.site_settings_policy import social_new_user_would_be_created
 from core.services.base import get_or_create_personal_wallet
 from core.views.social_oauth import (
     _effective_portal_key_for_oauth,
@@ -90,6 +92,30 @@ class GoogleCredentialLoginView(APIView):
             name = str(payload.get("name") or payload.get("email") or "Google User")[:150]
         email = str(payload.get("email") or "")[:254]
         picture = str(payload.get("picture") or "")
+
+        if social_new_user_would_be_created("google", provider_user_id, email):
+            site = SiteSettings.load()
+            if site.maintenance_mode:
+                return Response(
+                    {
+                        "detail": "The site is under maintenance. New registrations are unavailable.",
+                        "code": "maintenance_mode",
+                    },
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            if not site.new_registrations:
+                if flow == "register":
+                    return Response(
+                        {
+                            "detail": "New registrations are currently disabled.",
+                            "code": "registrations_closed",
+                        },
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+                return Response(
+                    {"detail": "No account found for this Google login. Please sign up first."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
         with transaction.atomic():
             user, created = _get_or_create_social_user(

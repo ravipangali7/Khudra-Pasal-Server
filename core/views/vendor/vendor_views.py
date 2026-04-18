@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 from datetime import datetime, time
 from decimal import Decimal
+from uuid import uuid4
 
 from core.phone_auth import authenticate_user_by_phone
 from django.core.exceptions import ObjectDoesNotExist
@@ -21,6 +22,7 @@ from django.db.models import Exists, OuterRef, Q
 from core.models import (
     Notification,
     Order,
+    SiteSettings,
     OrderCommissionSettlement,
     Product,
     ProductReview,
@@ -29,8 +31,12 @@ from core.models import (
     WalletWithdrawal,
 )
 from core.portal_roles import PORTAL_VENDOR, assert_portal_login_allowed
+from core.services import vendor_service, wallet_gateway_topup as wgt
+from core.services.khalti_epayment_service import KhaltiApiError, KhaltiConfigError
 from core.services.wallet_txn_signed import signed_amount_for_wallet_transaction
 from core.services.product_pricing import effective_unit_price
+from core.views.admin.admin_write_utils import validation_error
+from core.views.admin.resource_views import _to_decimal
 
 from core.views.vendor.common import media_url, vendor_or_error, vendor_pending_withdrawal_total
 
@@ -153,6 +159,7 @@ def vendor_me(request):
         {
             "id": str(vendor.pk),
             "user_id": request.user.pk,
+            "pos_enabled": SiteSettings.load().pos_enabled,
             "store_name": vendor.store_name,
             "store_slug": vendor.store_slug,
             "status": vendor.status,
@@ -510,6 +517,83 @@ def vendor_commission_settlements(request):
         for s in page
     ]
     return paginator.get_paginated_response(rows)
+
+
+@api_view(["POST"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def vendor_wallet_topup(request):
+    vendor, err = vendor_or_error(request)
+    if err:
+        return err
+    w = vendor_service.ensure_vendor_wallet(vendor)
+    amount = _to_decimal(request.data.get("amount"), "0")
+    if amount <= 0:
+        return validation_error("amount must be positive", field="amount")
+    method = (request.data.get("method") or "esewa").strip()[:50]
+    method_norm = method.lower()
+    if method_norm not in ("esewa", "khalti"):
+        return validation_error("Only eSewa and Khalti are supported.", field="method")
+    raw_return = (request.data.get("return_path") or "/vendor/wallet").strip()
+    return_path = raw_return[:500] if raw_return.startswith("/") else f"/{raw_return[:499].lstrip('/')}"
+    payer = request.user
+    try:
+        wgt.assert_can_topup_wallet(payer=payer, wallet=w, target=wgt.TOPUP_TARGET_VENDOR)
+    except ValueError as e:
+        return Response({"detail": str(e)}, status=400)
+    if method_norm == "esewa":
+        return Response(
+            wgt.build_esewa_initiate_response(
+                request=request,
+                payer=payer,
+                wallet=w,
+                amount=amount,
+                method=method,
+                topup_target=wgt.TOPUP_TARGET_VENDOR,
+                return_path=return_path,
+                return_query_esewa=None,
+                success_reverse_name="portal-wallet-topup-esewa-success",
+                failure_reverse_name="portal-wallet-topup-esewa-failure",
+            )
+        )
+    try:
+        return Response(
+            wgt.build_khalti_initiate_response(
+                payer=payer,
+                wallet=w,
+                amount=amount,
+                method=method,
+                topup_target=wgt.TOPUP_TARGET_VENDOR,
+                return_path=return_path,
+                return_query_esewa=None,
+                purchase_order_id=f"KP-V-{uuid4().hex[:24]}",
+                purchase_order_name="Vendor wallet top-up",
+            )
+        )
+    except ValueError as e:
+        return validation_error(str(e), field="amount")
+    except KhaltiConfigError as e:
+        return Response({"detail": str(e)}, status=503)
+    except KhaltiApiError as e:
+        return Response(
+            {"detail": str(e), "khalti_error": (e.body or "")[:2000]},
+            status=502,
+        )
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def vendor_wallet_topup_khalti_verify(request):
+    vendor, err = vendor_or_error(request)
+    if err:
+        return err
+    del vendor
+    pidx = (request.query_params.get("pidx") or "").strip()
+    if not pidx:
+        return validation_error("pidx is required", field="pidx")
+    body, status = wgt.khalti_wallet_topup_verify_payload(user=request.user, pidx=pidx)
+    return Response(body, status=status)
 
 
 @api_view(["POST"])

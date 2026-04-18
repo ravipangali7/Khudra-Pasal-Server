@@ -698,6 +698,12 @@ class Vendor(models.Model):
     commission_rate = models.DecimalField(
         max_digits=5, decimal_places=2, default=Decimal("10.00")
     )
+    refund_commission_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("3.00"),
+        help_text="Percentage of the proportional commission slice retained by the platform on refunds (0–100).",
+    )
     rating = models.DecimalField(max_digits=3, decimal_places=2, default=Decimal("0.00"))
     is_verified = models.BooleanField(default=False)
     can_post = models.BooleanField(default=True)
@@ -2888,6 +2894,11 @@ class PaymentGatewaySettings(models.Model):
     callback_url = models.URLField(blank=True)
     environment = models.CharField(
         max_length=20, choices=Environment.choices, default=Environment.TEST
+    )
+    gateway_extras = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Gateway-specific options (eSewa: form_url, status_url_base; Khalti: api_base_url).",
     )
     certificate = models.FileField(upload_to="gateway_certs/", blank=True)
     qr_expiry_seconds = models.PositiveIntegerField(default=300)

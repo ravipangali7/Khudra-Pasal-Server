@@ -1,7 +1,18 @@
 from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 
-from django.db.models import Count, DecimalField, ExpressionWrapper, F, Prefetch, Q
+from django.db.models import (
+    Case,
+    Count,
+    DecimalField,
+    ExpressionWrapper,
+    F,
+    FloatField,
+    Prefetch,
+    Q,
+    Value,
+    When,
+)
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.authentication import SessionAuthentication, TokenAuthentication
@@ -37,6 +48,7 @@ from core.models import (
     Vendor,
 )
 from core.services import reel_service
+from core.services.reels_site_settings import get_reels_site_config
 from core.services.product_pricing import (
     flash_deal_ids_for_products,
     flash_override_prices_for_products,
@@ -49,6 +61,7 @@ from core.services.storefront_product_visibility import (
     storefront_active_product_q,
 )
 from core.services.portal_checkout_pricing import checkout_items_weight_kg
+from core.services.site_settings_policy import storefront_orders_gate_response
 from core.services.shipping_quote import compute_shipping_fee
 from core.views.admin.admin_write_utils import absolute_media_url
 from core.serializers import (
@@ -282,6 +295,7 @@ def store_info(request):
     logo_url = ""
     if site.site_logo:
         logo_url = request.build_absolute_uri(site.site_logo.url)
+    rcfg = get_reels_site_config()
     return Response(
         {
             "site_name": site.site_name,
@@ -292,7 +306,18 @@ def store_info(request):
             "currency": site.currency,
             "footer_text": site.footer_text,
             "site_logo_url": logo_url,
+            "maintenance_mode": site.maintenance_mode,
+            "temporary_shop_close": site.temporary_shop_close,
+            "new_registrations": site.new_registrations,
+            "kyc_required": site.kyc_required,
+            "pos_enabled": site.pos_enabled,
             "social_links": _public_social_links_from_site(site),
+            "reels_boost": {
+                "standardMultiplier": rcfg["standardMultiplier"],
+                "premiumMultiplier": rcfg["premiumMultiplier"],
+                "megaMultiplier": rcfg["megaMultiplier"],
+                "feedAlgorithm": rcfg["feedAlgorithm"],
+            },
         }
     )
 
@@ -339,6 +364,9 @@ def shipping_methods_list(request):
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def shipping_quote(request):
+    gate = storefront_orders_gate_response()
+    if gate:
+        return gate
     sh = ShippingSettings.load()
     raw_zone = request.data.get("zone_id") or request.data.get("zone")
     if not raw_zone and sh.default_zone_id:
@@ -735,18 +763,38 @@ def _apply_only_direct_mp4_param(qs, request):
 
 def order_public_reels(queryset, tab: str):
     """
-    trending: engagement (likes, views, shares) then recency.
-    popular: views then likes.
-    new: latest first.
+    Active boosts (non-expired window) rank by tier weight from site settings; expired
+    ``is_sponsored`` rows do not receive boost ordering. Tab selects tie-breakers;
+    trending also respects admin ``feedAlgorithm`` (chronological / popularity / mixed).
     """
+    now = timezone.now()
+    cfg = get_reels_site_config()
+    std = float(cfg["standardMultiplier"])
+    prem = float(cfg["premiumMultiplier"])
+    mega = float(cfg["megaMultiplier"])
+    algo = cfg["feedAlgorithm"]
+    sponsored_ok = Q(is_sponsored=True) & (
+        Q(boost_expires_at__isnull=True) | Q(boost_expires_at__gt=now)
+    )
+    boost_case = Case(
+        When(sponsored_ok & Q(boost_tier=Reel.BoostTier.MEGA), then=Value(mega)),
+        When(sponsored_ok & Q(boost_tier=Reel.BoostTier.PREMIUM), then=Value(prem)),
+        When(sponsored_ok & Q(boost_tier=Reel.BoostTier.STANDARD), then=Value(std)),
+        When(sponsored_ok, then=Value(std)),
+        default=Value(0.0),
+        output_field=FloatField(),
+    )
+    qs = queryset.annotate(_reel_boost_score=boost_case)
     t = (tab or "trending").lower()
     if t == "popular":
-        return queryset.order_by("-views", "-likes", "-created_at")
+        return qs.order_by("-_reel_boost_score", "-views", "-likes", "-created_at")
     if t == "new":
-        return queryset.order_by("-created_at")
-    return queryset.order_by(
-        "-is_sponsored", "-likes", "-views", "-shares", "-created_at"
-    )
+        return qs.order_by("-_reel_boost_score", "-created_at")
+    if algo == "chronological":
+        return qs.order_by("-_reel_boost_score", "-created_at")
+    if algo == "popularity":
+        return qs.order_by("-_reel_boost_score", "-views", "-likes", "-created_at")
+    return qs.order_by("-_reel_boost_score", "-likes", "-views", "-shares", "-created_at")
 
 
 def annotate_reels_comments(queryset):
@@ -999,6 +1047,9 @@ def cart_detail(request):
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 def cart_item_add(request):
+    gate = storefront_orders_gate_response()
+    if gate:
+        return gate
     product_id = request.data.get("product_id")
     quantity = int(request.data.get("quantity") or 1)
     if not product_id:
@@ -1045,6 +1096,10 @@ def cart_item_add(request):
 @permission_classes([IsAuthenticated])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 def cart_item_detail(request, pk):
+    if request.method == "PATCH":
+        gate = storefront_orders_gate_response()
+        if gate:
+            return gate
     cart = Cart.objects.filter(user=request.user).first()
     if not cart:
         return Response({"detail": "Cart not found."}, status=404)

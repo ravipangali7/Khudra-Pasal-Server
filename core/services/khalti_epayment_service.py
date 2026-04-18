@@ -22,16 +22,39 @@ class KhaltiApiError(RuntimeError):
         self.body = body
 
 
+def _khalti_from_payment_gateway_row() -> tuple[str, str]:
+    """Returns (secret, api_base_url) from DB row; api_base_url may be empty to mean 'use default'."""
+    from core.models import PaymentGatewaySettings
+
+    row = PaymentGatewaySettings.objects.filter(gateway=PaymentGatewaySettings.Gateway.KHALTI).first()
+    if not row:
+        return "", ""
+    extras = row.gateway_extras if isinstance(row.gateway_extras, dict) else {}
+    api_base = (extras.get("api_base_url") or "").strip().rstrip("/")
+    if row.environment == PaymentGatewaySettings.Environment.LIVE:
+        secret = (row.secret_key_live or row.secret_key_test or "").strip()
+    else:
+        secret = (row.secret_key_test or row.secret_key_live or "").strip()
+    return secret, api_base
+
+
 def _secret_and_base_url() -> tuple[str, str]:
+    default_base = (getattr(settings, "KHALTI_BASE_URL", "") or "https://khalti.com/api/v2").strip().rstrip("/")
+    secret, api_base = _khalti_from_payment_gateway_row()
+    if secret:
+        base = api_base if api_base else default_base
+        return secret, base
     secret = (getattr(settings, "KHALTI_SECRET_KEY", "") or "").strip()
-    base = (getattr(settings, "KHALTI_BASE_URL", "") or "https://khalti.com/api/v2").strip().rstrip("/")
-    return secret, base
+    return secret, default_base
 
 
 def require_khalti_secret() -> tuple[str, str]:
     secret, base = _secret_and_base_url()
     if not secret:
-        raise KhaltiConfigError("Khalti is not configured (missing KHALTI_SECRET_KEY).")
+        raise KhaltiConfigError(
+            "Khalti is not configured (add the secret key under Admin → Settings → Payment, "
+            "or set KHALTI_SECRET_KEY in the environment)."
+        )
     return secret, base
 
 

@@ -96,6 +96,7 @@ from core.services.reel_boost_patch import apply_reel_boost_from_data
 from core.services.kyc_portal import supersede_non_approved_kyc, validate_kyc_upload_file
 from core.services.kyc_service import sync_user_kyc_status
 from core.services.pos_order_service import create_pos_order
+from core.services.site_settings_policy import pos_checkout_allowed, pos_disabled_response
 from core.services.vendor_service import ensure_vendor_wallet
 from core.services.withdrawal_notifications import (
     notify_withdrawal_approved,
@@ -524,6 +525,7 @@ def admin_order_detail(request, pk):
                 "gross": float(remaining),
                 "platform_fee": float(rfin.fee_retained),
                 "net_credit": float(rfin.customer_credit),
+                "platform_retention_label": refund_service.commission_slice_retention_short_label(),
             }
         except ValueError:
             refund_preview = None
@@ -632,6 +634,7 @@ def admin_order_refund(request, pk):
             "gross_amount": float(remaining),
             "platform_fee": float(fin.fee_retained),
             "net_credit": float(fin.customer_credit),
+            "platform_retention_label": refund_service.commission_slice_retention_short_label(),
             "status": Refund.Status.PENDING,
             "message": "Pending Super Admin approval.",
         },
@@ -1421,10 +1424,9 @@ def admin_refunds_list(request):
                 "gross_amount": float(r.amount),
                 "platform_fee": float(fee),
                 "net_credit": float(net),
-                "deduction_summary": (
-                    "Vendor full share + commission returned (3% of commission slice retained)"
-                    if has_settlement
-                    else "Platform pool (no vendor settlement)"
+                "platform_retention_label": refund_service.commission_slice_retention_short_label(),
+                "deduction_summary": refund_service.commission_slice_refund_deduction_summary(
+                    has_vendor_settlement=has_settlement
                 ),
                 "reason": r.reason,
                 "status": r.status,
@@ -3859,6 +3861,8 @@ def admin_purchase_order_create(request):
 def admin_pos_checkout(request):
     if err := _forbidden(request):
         return err
+    if not pos_checkout_allowed():
+        return pos_disabled_response()
     items = request.data.get("items")
     if not isinstance(items, list) or not items:
         return validation_error("items must be a non-empty list", field="items")
@@ -5238,24 +5242,47 @@ def admin_site_settings_singleton(request):
 def admin_payment_gateways_list(request):
     if err := _forbidden(request):
         return err
+    wanted = (
+        PaymentGatewaySettings.Gateway.ESEWA,
+        PaymentGatewaySettings.Gateway.KHALTI,
+    )
+    by_gw = {r.gateway: r for r in PaymentGatewaySettings.objects.filter(gateway__in=wanted)}
     rows = []
-    for gw in PaymentGatewaySettings.objects.order_by("gateway"):
-        rows.append(
-            {
-                "gateway": gw.gateway,
-                "label": gw.get_gateway_display(),
-                "is_enabled": gw.is_enabled,
-                "environment": gw.environment,
-                "merchant_id": gw.merchant_id,
-                "merchant_name": gw.merchant_name,
-                "api_key_live": gw.api_key_live,
-                "api_key_test": gw.api_key_test,
-                "secret_key_live": gw.secret_key_live,
-                "secret_key_test": gw.secret_key_test,
-                "callback_url": gw.callback_url or "",
-                "qr_expiry_seconds": gw.qr_expiry_seconds,
-            }
-        )
+    for gw_key in wanted:
+        gw = by_gw.get(gw_key)
+        if not gw:
+            gw = PaymentGatewaySettings(
+                gateway=gw_key,
+                is_enabled=False,
+                environment=PaymentGatewaySettings.Environment.TEST,
+            )
+        extras = gw.gateway_extras if isinstance(gw.gateway_extras, dict) else {}
+        if gw_key == PaymentGatewaySettings.Gateway.ESEWA:
+            rows.append(
+                {
+                    "gateway": gw.gateway,
+                    "label": gw.get_gateway_display(),
+                    "is_enabled": gw.is_enabled,
+                    "environment": gw.environment,
+                    "product_code": gw.merchant_id or "",
+                    "secret_key_test": gw.secret_key_test or "",
+                    "secret_key_live": gw.secret_key_live or "",
+                    "form_url": str(extras.get("form_url") or ""),
+                    "status_url_base": str(extras.get("status_url_base") or ""),
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "gateway": gw.gateway,
+                    "label": gw.get_gateway_display(),
+                    "is_enabled": gw.is_enabled,
+                    "environment": gw.environment,
+                    "secret_key_test": gw.secret_key_test or "",
+                    "secret_key_live": gw.secret_key_live or "",
+                    "api_base_url": str(extras.get("api_base_url") or ""),
+                }
+            )
     return Response({"results": rows})
 
 
@@ -5277,17 +5304,33 @@ def admin_payment_gateway_write(request, gateway: str):
         env = request.data.get("environment")
         if env in {c[0] for c in PaymentGatewaySettings.Environment.choices}:
             row.environment = env
-    if "merchant_id" in request.data:
-        row.merchant_id = (request.data.get("merchant_id") or "")[:100]
-    if "merchant_name" in request.data:
-        row.merchant_name = (request.data.get("merchant_name") or "")[:150]
-    for f in ("api_key_live", "api_key_test", "secret_key_live", "secret_key_test"):
+    extras = dict(row.gateway_extras) if isinstance(row.gateway_extras, dict) else {}
+    if gateway == PaymentGatewaySettings.Gateway.ESEWA:
+        if "product_code" in request.data:
+            row.merchant_id = (request.data.get("product_code") or "")[:100]
+        if "form_url" in request.data:
+            extras["form_url"] = (request.data.get("form_url") or "").strip()[:500]
+        if "status_url_base" in request.data:
+            extras["status_url_base"] = (request.data.get("status_url_base") or "").strip()[:500]
+    elif gateway == PaymentGatewaySettings.Gateway.KHALTI:
+        if "api_base_url" in request.data:
+            extras["api_base_url"] = (request.data.get("api_base_url") or "").strip()[:500]
+    else:
+        if "merchant_id" in request.data:
+            row.merchant_id = (request.data.get("merchant_id") or "")[:100]
+        if "merchant_name" in request.data:
+            row.merchant_name = (request.data.get("merchant_name") or "")[:150]
+        for f in ("api_key_live", "api_key_test"):
+            if f in request.data:
+                setattr(row, f, (request.data.get(f) or "")[:255])
+        if "callback_url" in request.data:
+            row.callback_url = (request.data.get("callback_url") or "").strip()[:200]
+        if "qr_expiry_seconds" in request.data:
+            row.qr_expiry_seconds = max(30, int(request.data.get("qr_expiry_seconds") or 300))
+    for f in ("secret_key_live", "secret_key_test"):
         if f in request.data:
             setattr(row, f, (request.data.get(f) or "")[:255])
-    if "callback_url" in request.data:
-        row.callback_url = (request.data.get("callback_url") or "").strip()[:200]
-    if "qr_expiry_seconds" in request.data:
-        row.qr_expiry_seconds = max(30, int(request.data.get("qr_expiry_seconds") or 300))
+    row.gateway_extras = extras
     row.save()
     return Response({"gateway": row.gateway, "ok": True})
 
