@@ -106,8 +106,14 @@ def _product_image_prefetch(lookup: str = "images"):
 
 
 def _active_products_queryset():
+    """Active products visible on the storefront and purchasable at checkout.
+
+    Marketplace lines require an approved vendor; in-house products have no seller.
+    This matches ``resolve_checkout_lines`` in ``portal_checkout_pricing``.
+    """
     return (
         Product.objects.filter(status=Product.Status.ACTIVE)
+        .filter(Q(seller__isnull=True) | Q(seller__status=Vendor.Status.APPROVED))
         .select_related("category", "category__parent", "seller", "brand", "unit")
         .prefetch_related(_product_image_prefetch())
     )
@@ -964,7 +970,7 @@ def cart_item_add(request):
         return Response({"detail": "product_id is required."}, status=400)
     if quantity < 1:
         return Response({"detail": "quantity must be at least 1."}, status=400)
-    product = Product.objects.filter(pk=product_id, status=Product.Status.ACTIVE).first()
+    product = _active_products_queryset().filter(pk=product_id).first()
     if not product:
         return Response({"detail": "Product not found."}, status=404)
     try:
@@ -1040,7 +1046,7 @@ def wishlist_item_add(request):
     product_id = request.data.get("product_id")
     if not product_id:
         return Response({"detail": "product_id is required."}, status=400)
-    product = Product.objects.filter(pk=product_id, status=Product.Status.ACTIVE).first()
+    product = _active_products_queryset().filter(pk=product_id).first()
     if not product:
         return Response({"detail": "Product not found."}, status=404)
     item, _ = ProductWishlist.objects.get_or_create(user=request.user, product=product)
