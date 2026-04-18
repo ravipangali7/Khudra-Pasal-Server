@@ -97,4 +97,25 @@ class Command(BaseCommand):
                     )
                 )
 
+        seed_admin_keys = {k for (s, k, *_rest) in seed_rows if s == "admin"}
+        deprecated_admin_keys = {
+            "employees",
+            "employees-all",
+            "roles",
+            "delivery",
+            "wallet-loyalty",
+            "wallet-flagged",
+        }
+        to_remove_admin = sorted(deprecated_admin_keys - seed_admin_keys)
+        if to_remove_admin:
+            deleted, _ = NavigationItem.objects.filter(
+                surface="admin", key__in=to_remove_admin
+            ).delete()
+            if deleted:
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"Deleted {deleted} deprecated admin nav row(s): {', '.join(to_remove_admin)}"
+                    )
+                )
+
         self.stdout.write(self.style.SUCCESS(f"Navigation seeded. Created {created}, updated {updated}."))
