@@ -935,6 +935,9 @@ def portal_orders_list(request, list_placed_portal: str | None = None):
                     "gross": float(remaining),
                     "platform_fee": float(fe.fee_retained),
                     "net_credit": float(fe.customer_credit),
+                    "refund_commission_percent": float(
+                        refund_service.effective_refund_commission_percent(o)
+                    ),
                 }
             except ValueError:
                 refund_estimate = None
@@ -1038,6 +1041,9 @@ def portal_order_refund_request(request, pk: int, refund_surface: str):
             "gross_amount": float(amount),
             "platform_fee": float(fin.fee_retained),
             "net_credit": float(fin.customer_credit),
+            "refund_commission_percent": float(
+                refund_service.effective_refund_commission_percent(o)
+            ),
             "amount": float(amount),
             "status": rf.status,
         },

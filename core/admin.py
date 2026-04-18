@@ -680,6 +680,7 @@ class VendorAdmin(admin.ModelAdmin):
         "is_verified",
         "can_sell",
         "commission_rate",
+        "refund_commission_percent",
         "created_at",
     )
     list_filter = (VendorStatusFilter, "is_verified", "can_post", "can_sell")
