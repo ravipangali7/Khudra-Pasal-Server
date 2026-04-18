@@ -332,6 +332,21 @@ def vendor_stock_purchase_post(request, pk: int):
     return Response(_purchase_payload(p))
 
 
+def _vendor_ledger_amount_totals(qs):
+    """Sum credits (amount > 0) and debits (amount < 0) over the full queryset (not one page)."""
+    credit_sum = qs.filter(amount__gt=0).aggregate(s=Sum("amount"))["s"]
+    debit_sum = qs.filter(amount__lt=0).aggregate(s=Sum("amount"))["s"]
+    credit = Decimal(credit_sum or 0).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    neg_total = Decimal(debit_sum or 0)
+    debit = (-neg_total).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    balance = (credit - debit).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return {
+        "credit": float(credit),
+        "debit": float(debit),
+        "balance": float(balance),
+    }
+
+
 def _vendor_ledger_row(e: VendorLedgerEntry) -> dict:
     return {
         "id": str(e.pk),
@@ -358,9 +373,12 @@ def vendor_ledger(request):
     et = (request.query_params.get("entry_type") or "").strip()
     if et:
         qs = qs.filter(entry_type=et)
+    totals = _vendor_ledger_amount_totals(qs)
     paginator, page = _paginate(request, qs)
     rows = [_vendor_ledger_row(e) for e in page]
-    return paginator.get_paginated_response(rows)
+    resp = paginator.get_paginated_response(rows)
+    resp.data["ledger_totals"] = totals
+    return resp
 
 
 def _vendor_ledger_create(request, vendor):

@@ -247,6 +247,31 @@ class VendorInventoryApiTests(TestCase):
         self.assertEqual(r.status_code, status.HTTP_201_CREATED)
         self.assertEqual(float(r.data["amount"]), -10.0)
 
+    def test_vendor_ledger_get_includes_totals(self):
+        VendorLedgerEntry.objects.create(
+            vendor=self.vendor,
+            entry_type=VendorLedgerEntry.EntryType.ADJUSTMENT,
+            amount=Decimal("100.00"),
+            reference_type="",
+            reference_id="",
+            description="Credit adj",
+        )
+        VendorLedgerEntry.objects.create(
+            vendor=self.vendor,
+            entry_type=VendorLedgerEntry.EntryType.ADJUSTMENT,
+            amount=Decimal("-30.00"),
+            reference_type="",
+            reference_id="",
+            description="Debit adj",
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
+        r = self.client.get("/api/vendor/ledger/", {"page_size": 10}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertIn("ledger_totals", r.data)
+        self.assertEqual(r.data["ledger_totals"]["credit"], 100.0)
+        self.assertEqual(r.data["ledger_totals"]["debit"], 30.0)
+        self.assertEqual(r.data["ledger_totals"]["balance"], 70.0)
+
 
 class AdminVendorLedgerAllApiTests(TestCase):
     def setUp(self):
