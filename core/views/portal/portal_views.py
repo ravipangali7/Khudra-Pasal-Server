@@ -1,4 +1,4 @@
-"""Customer / family / child portal API (Token auth)."""
+"""Customer / family / child portal API (JWT, Token, or Session auth)."""
 
 import base64
 import hashlib
@@ -23,6 +23,7 @@ from django.urls import reverse
 from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.authentication import SessionAuthentication, TokenAuthentication
+from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.decorators import (
     api_view,
     authentication_classes,
@@ -33,6 +34,12 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, BasePermission, IsAuthenticated
 from rest_framework.response import Response
+
+PORTAL_API_AUTHENTICATION = [
+    JWTAuthentication,
+    TokenAuthentication,
+    SessionAuthentication,
+]
 
 from core.portal_roles import (
     PORTAL_CHILD,
@@ -798,7 +805,7 @@ def child_portal_login(request):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_me(request):
     u = request.user
@@ -826,7 +833,7 @@ def portal_me(request):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_summary(request):
     u = request.user
@@ -857,7 +864,7 @@ def portal_summary(request):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_orders_list(request, list_placed_portal: str | None = None):
     u = request.user
@@ -953,7 +960,7 @@ def portal_orders_list(request, list_placed_portal: str | None = None):
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_order_refund_request(request, pk: int, refund_surface: str):
     """Create a pending refund request; super admin approves via admin API."""
@@ -1039,7 +1046,7 @@ def portal_order_refund_request(request, pk: int, refund_surface: str):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_wallet_transactions(request):
     u = request.user
@@ -1093,7 +1100,7 @@ def portal_wallet_transactions(request):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_notifications_list(request):
     u = request.user
@@ -1121,7 +1128,7 @@ def portal_notifications_list(request):
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_notifications_mark_read(request):
     u = request.user
@@ -1150,7 +1157,7 @@ def portal_notifications_mark_read(request):
 
 
 @api_view(["DELETE"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_notification_detail_write(request, pk):
     row = Notification.objects.filter(pk=pk, recipient=request.user).first()
@@ -1161,7 +1168,7 @@ def portal_notification_detail_write(request, pk):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_children(request):
     """Child wallet rows for parent users (same family group)."""
@@ -1198,7 +1205,7 @@ def portal_family_children(request):
 
 
 @api_view(["GET", "POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_members(request):
     if request.method == "GET":
@@ -1239,7 +1246,7 @@ def portal_family_members(request):
 
 
 @api_view(["GET", "POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_join_requests(request):
     primary = _primary_family_group(request.user)
@@ -1299,7 +1306,7 @@ def _family_join_share_url(token: str) -> str:
 
 
 @api_view(["GET", "POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_join_share_link(request):
     primary = _primary_family_group(request.user)
@@ -1377,7 +1384,7 @@ def portal_family_join_share_link(request):
 
 
 @api_view(["PATCH"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_join_request_detail(request, pk: int):
     primary = _primary_family_group(request.user)
@@ -1412,7 +1419,7 @@ def portal_family_join_request_detail(request, pk: int):
 
 
 @api_view(["GET", "PUT", "PATCH"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_product_restrictions(request):
     primary = _primary_family_group(request.user)
@@ -1462,7 +1469,7 @@ def portal_family_product_restrictions(request):
 
 
 @api_view(["GET", "POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_auto_approval_rules(request):
     primary = _primary_family_group(request.user)
@@ -1495,7 +1502,7 @@ def portal_family_auto_approval_rules(request):
 
 
 @api_view(["GET", "PATCH", "DELETE"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_auto_approval_rule_detail(request, pk: int):
     primary = _primary_family_group(request.user)
@@ -1540,7 +1547,7 @@ def portal_family_auto_approval_rule_detail(request, pk: int):
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_members_batch(request):
     primary = _primary_family_group(request.user)
@@ -1585,7 +1592,7 @@ def portal_family_members_batch(request):
 
 
 @api_view(["PATCH", "DELETE"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_member_detail(request, pk: int):
     primary = _primary_family_group(request.user)
@@ -1680,7 +1687,7 @@ def portal_family_member_detail(request, pk: int):
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_wallet_load(request):
     primary = _primary_family_group(request.user)
@@ -1709,7 +1716,7 @@ def portal_family_wallet_load(request):
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_wallet_distribute(request):
     primary = _primary_family_group(request.user)
@@ -1837,7 +1844,7 @@ def _resolve_family_wallet_pk_for_transfer(group: FamilyGroup, raw):
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_wallet_transfer(request):
     primary = _primary_family_group(request.user)
@@ -2017,7 +2024,7 @@ def _family_parent_may_withdraw_wallet(
 
 
 @api_view(["GET", "POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 @parser_classes([JSONParser, MultiPartParser, FormParser])
 def portal_family_wallet_withdrawals(request):
@@ -2165,7 +2172,7 @@ def _family_wallet_category_create_meta_fields():
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_wallet_categories_meta(request):
     return Response({"fields": _family_wallet_category_create_meta_fields()})
@@ -2173,7 +2180,7 @@ def portal_family_wallet_categories_meta(request):
 
 @api_view(["GET", "POST"])
 @parser_classes([JSONParser, MultiPartParser, FormParser])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_wallet_categories(request):
     primary = _primary_family_group(request.user)
@@ -2272,7 +2279,7 @@ def _wallet_txn_status_ui(st: str) -> str:
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_transactions(request):
     u = request.user
@@ -2404,7 +2411,7 @@ def _child_portal_wallet(user):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalChild])
 def portal_child_summary(request):
     u = request.user
@@ -2448,7 +2455,7 @@ def portal_child_summary(request):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalChild])
 def portal_child_transactions(request):
     u = request.user
@@ -2464,7 +2471,7 @@ def portal_child_transactions(request):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalChild])
 def portal_child_peer_members(request):
     u = request.user
@@ -2501,7 +2508,7 @@ def portal_child_peer_members(request):
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalChild])
 def portal_child_wallet_peer_transfer(request):
     u = request.user
@@ -2603,7 +2610,7 @@ def _resolve_active_child_wallet_for_mutation(user: User):
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalChild])
 def portal_child_wallet_topup(request):
     pair, err = _resolve_active_child_wallet_for_mutation(request.user)
@@ -2636,7 +2643,7 @@ def portal_child_wallet_topup(request):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalChild])
 def portal_child_wallet_withdrawals_list(request):
     pair, err = _resolve_active_child_wallet_for_mutation(request.user)
@@ -2648,7 +2655,7 @@ def portal_child_wallet_withdrawals_list(request):
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalChild])
 def portal_child_wallet_withdraw(request):
     from core.services.kyc_service import sync_user_kyc_status
@@ -2704,7 +2711,7 @@ def portal_child_wallet_withdraw(request):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalChild])
 def portal_child_rules(request):
     u = request.user
@@ -2817,7 +2824,7 @@ def _primary_family_membership(user: User):
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalSelf])
 def portal_change_password(request):
     old_p = request.data.get("old_password") or ""
@@ -2919,7 +2926,7 @@ def _portal_self_profile_patch(request, u: User) -> Response | None:
 
 
 @api_view(["GET", "PATCH"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalSelf])
 def portal_self_profile(request):
     u = request.user
@@ -2945,7 +2952,7 @@ def portal_self_profile(request):
 
 
 @api_view(["GET", "PATCH"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalCustomer])
 def portal_customer_profile(request):
     u = request.user
@@ -3014,7 +3021,7 @@ def portal_customer_profile(request):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalSelf])
 def portal_reels_favourites(request):
     qs = (
@@ -3059,7 +3066,7 @@ def _portal_consume_otp_or_error(request, purpose: str) -> Response | None:
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalWalletOtpUser])
 def portal_wallet_otp_for_transfer(request):
     phone = (request.user.phone or "").strip()
@@ -3070,7 +3077,7 @@ def portal_wallet_otp_for_transfer(request):
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalWalletOtpUser])
 def portal_wallet_otp_for_withdraw(request):
     phone = (request.user.phone or "").strip()
@@ -3081,7 +3088,7 @@ def portal_wallet_otp_for_withdraw(request):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_wallet_public_settings(request):
     return Response(wallet_policy.public_settings_snapshot())
@@ -3118,7 +3125,7 @@ def _wallet_transfer_allowed_recipient_user_ids(user: User) -> set[int]:
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalCustomer])
 def portal_wallet_transfer_recipients(request):
     """Active family co-members only (same groups as the current user). Optional `q` filters the list."""
@@ -3167,7 +3174,7 @@ def portal_wallet_transfer_recipients(request):
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalCustomer])
 def portal_wallet_topup(request):
     w, err = _ensure_active_personal_wallet(request.user)
@@ -3424,7 +3431,7 @@ def portal_wallet_topup_esewa_failure(request):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalCustomer])
 def portal_wallet_topup_khalti_verify(request):
     """Confirm Khalti payment via lookup (idempotent). Call from SPA after return_url redirect."""
@@ -3592,7 +3599,7 @@ def portal_wallet_topup_khalti_verify(request):
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalCustomer])
 def portal_wallet_transfer(request):
     from_w, err = _ensure_active_personal_wallet(request.user)
@@ -3694,7 +3701,7 @@ def _serialize_withdrawal_row(w: WalletWithdrawal, request=None) -> dict:
 
 
 @api_view(["GET", "POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated])
 @parser_classes([JSONParser, MultiPartParser, FormParser])
 def portal_payout_accounts_list_create(request):
@@ -3725,7 +3732,7 @@ def portal_payout_accounts_list_create(request):
 
 
 @api_view(["PATCH", "DELETE"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated])
 @parser_classes([JSONParser, MultiPartParser, FormParser])
 def portal_payout_account_detail(request, pk: int):
@@ -3768,7 +3775,7 @@ def portal_payout_account_detail(request, pk: int):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalCustomer])
 def portal_wallet_withdrawals_list(request):
     w, err = _ensure_active_personal_wallet(request.user)
@@ -3779,7 +3786,7 @@ def portal_wallet_withdrawals_list(request):
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalCustomer])
 def portal_wallet_withdraw(request):
     from core.services.kyc_service import sync_user_kyc_status
@@ -3837,7 +3844,7 @@ def portal_wallet_withdraw(request):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalSelf])
 def portal_support_super_admin_contact(request):
     u = support_ticket_service.primary_super_admin_user()
@@ -3863,7 +3870,7 @@ def portal_support_super_admin_contact(request):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalSelf])
 def portal_support_faqs(request):
     qs = FAQ.objects.filter(
@@ -3886,7 +3893,7 @@ def portal_support_faqs(request):
 
 
 @api_view(["GET", "POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalSelf])
 def portal_support_tickets(request):
     if request.method == "GET":
@@ -3955,7 +3962,7 @@ def _portal_support_attachment_url(att_id: int) -> str:
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalSelf])
 def portal_support_ticket_detail(request, ticket_number):
     t = (
@@ -3996,7 +4003,7 @@ def portal_support_ticket_detail(request, ticket_number):
 
 
 @api_view(["GET", "POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalSelf])
 @parser_classes([JSONParser, MultiPartParser, FormParser])
 def portal_support_ticket_messages(request, ticket_number):
@@ -4067,7 +4074,7 @@ def portal_support_ticket_messages(request, ticket_number):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalSelf])
 def portal_support_attachment(request, attachment_id: int):
     att = support_ticket_service.get_attachment_or_none(attachment_id)
@@ -4082,7 +4089,7 @@ def portal_support_attachment(request, attachment_id: int):
 
 
 @api_view(["GET", "POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_delivery_default(request):
     """Saved default delivery location (GET) or reverse-geocode + save (POST)."""
@@ -4350,7 +4357,7 @@ def _payment_method_from_client(raw: str) -> str | None:
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_orders_checkout_wallet(request):
     """Default paying wallet and all payable buckets (same rules as POST checkout)."""
@@ -4398,7 +4405,7 @@ def _request_data_dict(request) -> dict:
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_orders_checkout_quote(request):
     """Read-only totals for checkout UI (pricing, flash, coupon, delivery) — no orders or stock changes."""
@@ -4495,7 +4502,7 @@ def portal_orders_checkout_quote(request):
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_orders_checkout(request):
     u = request.user
@@ -4766,7 +4773,7 @@ def portal_orders_checkout(request):
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_orders_payment_complete(request):
     """Mark pending gateway payment transactions successful; orders become paid and commissions settle."""
@@ -4866,7 +4873,7 @@ def portal_orders_payment_complete(request):
 
 
 @api_view(["GET"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalCustomer])
 def portal_switch_portal_context(request):
     u = request.user
@@ -4913,7 +4920,7 @@ _INVITE_ROLE_SET = frozenset(
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalCustomer])
 def portal_family_group_create(request):
     """NORMAL customer creates a family and becomes PARENT (use family portal after)."""
@@ -4937,7 +4944,7 @@ def portal_family_group_create(request):
 
 
 @api_view(["GET", "POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_invites(request):
     if request.method == "GET":
@@ -5003,7 +5010,7 @@ def portal_family_invites(request):
 
 
 @api_view(["POST"])
-@authentication_classes([TokenAuthentication, SessionAuthentication])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated])
 def portal_family_invites_accept(request):
     """Invitee verifies OTP and creates a pending join request; parent approves via portal."""

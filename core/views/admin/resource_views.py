@@ -2973,6 +2973,17 @@ def _to_decimal(v, default="0"):
         return Decimal(default)
 
 
+def _parse_coupon_usage_limit(raw) -> int | None:
+    """Positive limits only; 0 or invalid means unlimited (None)."""
+    if raw in (None, ""):
+        return None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
 def _make_unique_slug(model_cls, raw_value, instance_pk=None):
     base = slugify((raw_value or "").strip()) or uuid4().hex[:8]
     base = base[:280]
@@ -4074,7 +4085,7 @@ def admin_coupon_create(request):
         type=request.data.get("type") or Coupon.Type.PERCENTAGE,
         value=_to_decimal(request.data.get("value"), "0"),
         min_order=_to_decimal(request.data.get("min_order") or request.data.get("minOrder"), "0"),
-        usage_limit=int(request.data["usage_limit"]) if request.data.get("usage_limit") not in (None, "") else None,
+        usage_limit=_parse_coupon_usage_limit(request.data.get("usage_limit")),
         status=request.data.get("status") or Coupon.Status.ACTIVE,
         expires_at=expires_at,
         vendor=vendor,
@@ -4115,8 +4126,7 @@ def admin_coupon_detail_write(request, pk):
                     setattr(row, f, request.data.get(k))
                 break
     if "usage_limit" in request.data:
-        ul = request.data.get("usage_limit")
-        row.usage_limit = int(ul) if ul not in (None, "") else None
+        row.usage_limit = _parse_coupon_usage_limit(request.data.get("usage_limit"))
     if "expires_at" in request.data or "expires" in request.data:
         raw = request.data.get("expires_at") or request.data.get("expires")
         row.expires_at = _parse_admin_datetime(raw) if raw else None
