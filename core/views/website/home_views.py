@@ -119,6 +119,37 @@ def _active_products_queryset():
     )
 
 
+def _sync_cart_items_for_checkout(cart: Cart, user) -> None:
+    """Remove lines the customer cannot price or purchase (mirrors portal checkout / quote).
+
+    Prevents a stale website cart from causing repeated 400s on
+    ``POST /api/portal/orders/checkout-quote/`` when products, vendors, or child rules change.
+    """
+    product_ids = list(cart.items.values_list("product_id", flat=True).distinct())
+    if not product_ids:
+        return
+    active_ids = set(
+        _active_products_queryset()
+        .filter(pk__in=product_ids)
+        .values_list("pk", flat=True)
+    )
+    for item in list(
+        cart.items.select_related(
+            "product",
+            "product__category",
+            "product__category__parent",
+            "product__seller",
+        ).all()
+    ):
+        if item.product_id not in active_ids:
+            item.delete()
+            continue
+        try:
+            validate_child_may_purchase_product(user, item.product)
+        except ValueError:
+            item.delete()
+
+
 def _subtree_category_ids(root_id: int, children_map: dict[int, list[int]]) -> set[int]:
     out = {root_id}
     stack = [root_id]
@@ -957,6 +988,7 @@ def reel_comments(request, pk):
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 def cart_detail(request):
     cart, _ = Cart.objects.get_or_create(user=request.user)
+    _sync_cart_items_for_checkout(cart, request.user)
     return Response(CartSerializer(cart, context=_cart_serializer_context(request, cart)).data)
 
 
@@ -986,6 +1018,7 @@ def cart_item_add(request):
     if not created:
         item.quantity += quantity
         item.save(update_fields=["quantity", "updated_at"])
+    _sync_cart_items_for_checkout(cart, request.user)
     return Response(
         CartSerializer(cart, context=_cart_serializer_context(request, cart)).data,
         status=201 if created else 200,
