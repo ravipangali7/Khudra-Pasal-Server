@@ -14,12 +14,11 @@ from core.models import (
     FamilyGroup,
     FamilyJoinRequest,
     FlaggedActivity,
-    OTPVerification,
     Role,
     SecuritySettings,
     User,
 )
-from core.services import otp_service, wallet_service
+from core.services import wallet_service
 from core.services.family_portal_join_link_service import (
     create_or_rotate_link,
     submit_join_application,
@@ -150,7 +149,7 @@ class SecuritySettingsTests(TestCase):
         r = self.client.get("/api/admin/flagged/", {"page_size": 5})
         self.assertEqual(r.status_code, status.HTTP_200_OK, r.content)
 
-    def test_wallet_adjust_requires_sensitive_otp_when_enabled(self):
+    def test_wallet_adjust_succeeds_without_sensitive_otp(self):
         ss = SecuritySettings.load()
         ss.otp_sensitive_crud = True
         ss.save()
@@ -166,25 +165,7 @@ class SecuritySettingsTests(TestCase):
             },
             format="json",
         )
-        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST, r.content)
-        self.assertIn("sensitive_otp", str(r.data).lower())
-        row = otp_service.create_otp(
-            "9811111111",
-            OTPVerification.Purpose.ADMIN_SENSITIVE,
-            "",
-        )
-        r2 = self.client.post(
-            "/api/admin/wallets/adjust/",
-            {
-                "wallet_id": str(w.pk),
-                "amount": "1",
-                "direction": "credit",
-                "reason": "test2",
-                "sensitive_otp": row.otp,
-            },
-            format="json",
-        )
-        self.assertEqual(r2.status_code, status.HTTP_200_OK, r2.content)
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.content)
 
     def test_admin_login_auto_lock_after_failures(self):
         victim = User.objects.create_user(

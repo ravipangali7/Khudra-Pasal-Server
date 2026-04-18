@@ -85,7 +85,6 @@ from core.services import (
     product_service,
     refund_notification_service,
     refund_service,
-    security_service,
     support_notification_service,
     support_ticket_service,
 )
@@ -1975,8 +1974,6 @@ def admin_withdrawals_list(request):
 def admin_withdrawal_detail_write(request, pk):
     if err := _forbidden(request):
         return err
-    if otp_err := security_service.require_sensitive_admin_otp(request):
-        return otp_err
     row = WalletWithdrawal.objects.filter(pk=pk).select_related("wallet", "wallet__vendor").first()
     if not row:
         return Response({"detail": "Not found."}, status=404)
@@ -4899,8 +4896,6 @@ def admin_wallets_summary(request):
 def admin_wallet_adjust(request):
     if err := _forbidden(request):
         return err
-    if otp_err := security_service.require_sensitive_admin_otp(request):
-        return otp_err
     # Intentionally does not use wallet_service: allows balance correction while wallet is frozen.
     wid = request.data.get("wallet_id")
     w = Wallet.objects.filter(pk=wid).first()

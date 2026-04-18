@@ -99,34 +99,7 @@ def otp_send(request):
     name = (request.data.get("name") or "").strip()
 
     if purpose == OTPVerification.Purpose.ADMIN_SENSITIVE:
-        if not request.user.is_authenticated:
-            return Response({"detail": "Authentication required."}, status=401)
-        from core.views.admin.admin_access import enforce_admin_api_access
-
-        if err := enforce_admin_api_access(request):
-            return err
-        admin_phone = normalize_nepal_phone(request.user.phone or "")
-        if not admin_phone:
-            return Response(
-                {"detail": "Your account phone must be a valid Nepal mobile."},
-                status=400,
-            )
-        try:
-            otp_service.create_otp(admin_phone, purpose, signup_name="")
-        except otp_service.OTPError as e:
-            return Response({"detail": str(e)}, status=400)
-        payload = {"detail": "OTP sent."}
-        if settings.DEBUG:
-            latest = (
-                OTPVerification.objects.filter(
-                    phone=admin_phone, purpose=purpose, is_used=False
-                )
-                .order_by("-created_at")
-                .first()
-            )
-            if latest:
-                payload["debug_otp"] = latest.otp
-        return Response(payload)
+        return Response({"detail": "Invalid purpose."}, status=400)
 
     raw_phone = (request.data.get("phone") or "").strip()
     phone = normalize_nepal_phone(raw_phone)
