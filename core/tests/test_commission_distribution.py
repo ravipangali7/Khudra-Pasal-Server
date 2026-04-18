@@ -488,8 +488,8 @@ class GatewayPaymentCompleteTests(TestCase):
         self.assertEqual(OrderCommissionSettlement.objects.filter(order__order_number=onum).count(), 1)
 
 
-class CommissionSubtotalBaseTests(TestCase):
-    """Commission is taken from product subtotal; vendor keeps delivery allocation."""
+class CommissionTotalBaseTests(TestCase):
+    """Commission rate applies to the full paid order total (incl. delivery when present)."""
 
     def setUp(self):
         self.vendor_user = User.objects.create_user(
@@ -514,7 +514,7 @@ class CommissionSubtotalBaseTests(TestCase):
             role=User.Role.NORMAL,
         )
 
-    def test_commission_on_subtotal_delivery_to_vendor(self):
+    def test_commission_on_total_includes_delivery(self):
         Order.objects.create(
             order_number="SUB-DEL-1",
             customer=self.customer,
@@ -530,8 +530,8 @@ class CommissionSubtotalBaseTests(TestCase):
         )
         o = Order.objects.get(order_number="SUB-DEL-1")
         st = OrderCommissionSettlement.objects.get(order=o)
-        self.assertEqual(st.commission_amount, Decimal("10.00"))
-        self.assertEqual(st.vendor_amount, Decimal("100.00"))
+        self.assertEqual(st.commission_amount, Decimal("11.00"))
+        self.assertEqual(st.vendor_amount, Decimal("99.00"))
 
 
 class AdminMarkCodPaidTests(TestCase):

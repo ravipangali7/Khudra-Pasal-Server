@@ -43,7 +43,7 @@ def _commission_split_from_order(order: Order) -> tuple[Decimal, Decimal, Decima
     vendor = order.seller
     rate = vendor.commission_rate if vendor.commission_rate is not None else Decimal("0")
     total = order.total
-    commission_base = order.subtotal
+    commission_base = total
     commission = (commission_base * rate / Decimal("100")).quantize(Q2, rounding=ROUND_HALF_UP)
     vendor_amount = total - commission
     return total, vendor_amount, commission

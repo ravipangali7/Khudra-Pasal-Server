@@ -27,7 +27,7 @@ def settle_order_commission(order: Order) -> None:
     vendor = o.seller
     rate = vendor.commission_rate if vendor.commission_rate is not None else Decimal("0")
     total = o.total
-    commission_base = o.subtotal
+    commission_base = total
     commission = (commission_base * rate / Decimal("100")).quantize(
         Decimal("0.01"), rounding=ROUND_HALF_UP
     )
