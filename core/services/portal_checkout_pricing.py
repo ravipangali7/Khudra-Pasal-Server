@@ -32,16 +32,35 @@ class ResolvedCheckoutCart:
     stock_warnings: list[dict[str, Any]]
 
 
+def _parse_line_product_id(raw: dict[str, Any]) -> int | None:
+    """Accept product_id or productId; coerce numeric strings; reject non-positive."""
+    v = raw.get("product_id")
+    if v is None:
+        v = raw.get("productId")
+    if v is None or (isinstance(v, bool)):
+        return None
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
 def parse_checkout_items(items: Any) -> list[tuple[int, int]]:
     if not isinstance(items, list) or not items:
         raise ValueError("items must be a non-empty list")
     parsed: list[tuple[int, int]] = []
     for raw in items:
-        pid = raw.get("product_id")
-        qty = int(raw.get("quantity") or 0)
-        if not pid or qty < 1:
+        if not isinstance(raw, dict):
+            raise ValueError("each item must be an object with product_id and quantity")
+        pid = _parse_line_product_id(raw)
+        try:
+            qty = int(raw.get("quantity") or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if pid is None or qty < 1:
             raise ValueError("each item needs product_id and quantity")
-        parsed.append((int(pid), qty))
+        parsed.append((pid, qty))
     return parsed
 
 

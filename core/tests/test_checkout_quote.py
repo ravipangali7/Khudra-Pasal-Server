@@ -137,6 +137,18 @@ class CheckoutQuoteApiTests(TestCase):
         self.assertIsNone(r.data["coupon_applied"])
         self.assertEqual(r.data["total"], 120.0)
 
+    def test_quote_accepts_product_id_camel_case(self):
+        r = self.client.post(
+            "/api/portal/orders/checkout-quote/",
+            {
+                "items": [{"productId": self.p1.pk, "quantity": 1}],
+                "want_delivery": False,
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
+        self.assertEqual(r.data["subtotal"], 80.0)
+
     def test_quote_stock_warning_without_blocking(self):
         # Keep product ACTIVE (stock=0 flips status to out_of_stock via sync).
         self.p2.stock = 1
