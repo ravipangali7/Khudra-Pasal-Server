@@ -202,7 +202,9 @@ class FamilyPortalFlowTests(TestCase):
         self.assertEqual(r.status_code, status.HTTP_200_OK)
         self.assertEqual(r.data["has_family_portal_access"], False)
         self.assertEqual(r.data["has_child_portal_access"], False)
+        self.assertEqual(r.data["has_normal_portal_access"], True)
         self.assertEqual(r.data["can_create_family_group"], True)
+        self.assertIn("kyc_verified", r.data)
         self.assertGreaterEqual(len(r.data["family_group_types"]), 1)
 
     def test_switch_portal_context_disables_create_for_active_member(self):
@@ -228,6 +230,32 @@ class FamilyPortalFlowTests(TestCase):
         self.assertEqual(r.status_code, status.HTTP_200_OK)
         self.assertEqual(r.data["has_family_portal_access"], True)
         self.assertEqual(r.data["can_create_family_group"], False)
+        self.assertEqual(r.data["has_normal_portal_access"], True)
+
+    def test_switch_portal_context_for_parent_role(self):
+        group = FamilyGroup.objects.create(
+            name="Parent Fam",
+            leader=self.leader,
+            type=FamilyGroup.Type.FAMILY,
+            status=FamilyGroup.Status.ACTIVE,
+        )
+        FamilyMember.objects.create(
+            group=group,
+            user=self.leader,
+            role=FamilyMember.Role.PARENT,
+            status=FamilyMember.Status.ACTIVE,
+        )
+        User.objects.filter(pk=self.leader.pk).update(
+            role=User.Role.PARENT, kyc_status=User.KYCStatus.VERIFIED
+        )
+        self.leader.refresh_from_db()
+        tok, _ = Token.objects.get_or_create(user=self.leader)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {tok.key}")
+        r = self.client.get("/api/portal/switch-portal/context/")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertTrue(r.data["has_family_portal_access"])
+        self.assertTrue(r.data["has_normal_portal_access"])
+        self.assertTrue(r.data["kyc_verified"])
 
     def _login_leader_with_family(self):
         login = self.client.post(

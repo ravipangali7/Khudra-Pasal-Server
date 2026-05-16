@@ -4585,9 +4585,14 @@ def portal_orders_payment_complete(request):
 
 @api_view(["GET"])
 @authentication_classes(PORTAL_API_AUTHENTICATION)
-@permission_classes([IsAuthenticated, IsPortalCustomer])
+@permission_classes([IsAuthenticated, IsPortalShopper])
 def portal_switch_portal_context(request):
+    from core.services.kyc_service import sync_user_kyc_status
+    from core.services.site_settings_policy import user_kyc_required
+
     u = request.user
+    sync_user_kyc_status(u)
+    u.refresh_from_db()
     has_family = user_has_family_portal_access(u)
     has_child = bool(
         u.role == User.Role.CHILD
@@ -4596,6 +4601,11 @@ def portal_switch_portal_context(request):
             role=FamilyMember.Role.CHILD,
             status=FamilyMember.Status.ACTIVE,
         ).exists()
+    )
+    has_normal = u.role in (
+        User.Role.NORMAL,
+        User.Role.PARENT,
+        User.Role.CHILD,
     )
     can_create_family = bool(
         u.role == User.Role.NORMAL
@@ -4606,6 +4616,8 @@ def portal_switch_portal_context(request):
             user=u, status=FamilyMember.Status.ACTIVE
         ).exists()
     )
+    kyc_required = user_kyc_required(u)
+    kyc_verified = (not kyc_required) or u.kyc_status == User.KYCStatus.VERIFIED
     group_types = [
         {"value": value, "label": label} for value, label in FamilyGroup.Type.choices
     ]
@@ -4613,7 +4625,11 @@ def portal_switch_portal_context(request):
         {
             "has_family_portal_access": has_family,
             "has_child_portal_access": has_child,
+            "has_normal_portal_access": has_normal,
             "can_create_family_group": can_create_family,
+            "kyc_status": u.kyc_status,
+            "kyc_required": kyc_required,
+            "kyc_verified": kyc_verified,
             "family_group_types": group_types,
             "create_family_defaults": {"status": FamilyGroup.Status.ACTIVE},
         }
