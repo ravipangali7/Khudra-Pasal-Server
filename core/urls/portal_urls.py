@@ -118,6 +118,11 @@ urlpatterns = [
         name="portal-switch-portal-context",
     ),
     path(
+        "switch-portal/apply/",
+        portal_views.portal_switch_portal_apply,
+        name="portal-switch-portal-apply",
+    ),
+    path(
         "orders/<int:pk>/refund-request/",
         portal_views.portal_order_refund_request,
         {"refund_surface": Order.PlacedPortal.PORTAL_MAIN},

@@ -39,6 +39,7 @@ from core.services.family_portal_wallet_service import (
 )
 from rest_framework.authtoken.models import Token
 
+from core.portal_roles import user_has_family_portal_access
 from core.tests.wallet_test_settings import relax_wallet_settings_for_tests
 
 
@@ -256,6 +257,74 @@ class FamilyPortalFlowTests(TestCase):
         self.assertTrue(r.data["has_family_portal_access"])
         self.assertTrue(r.data["has_normal_portal_access"])
         self.assertTrue(r.data["kyc_verified"])
+        self.assertEqual(r.data["active_target"], "parent")
+
+    def test_switch_portal_apply_normal_keeps_family_membership(self):
+        group = FamilyGroup.objects.create(
+            name="Keep Fam",
+            leader=self.leader,
+            type=FamilyGroup.Type.FAMILY,
+            status=FamilyGroup.Status.ACTIVE,
+        )
+        FamilyMember.objects.create(
+            group=group,
+            user=self.leader,
+            role=FamilyMember.Role.PARENT,
+            status=FamilyMember.Status.ACTIVE,
+        )
+        User.objects.filter(pk=self.leader.pk).update(
+            role=User.Role.PARENT, kyc_status=User.KYCStatus.VERIFIED
+        )
+        self.leader.refresh_from_db()
+        tok, _ = Token.objects.get_or_create(user=self.leader)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {tok.key}")
+        r = self.client.post(
+            "/api/portal/switch-portal/apply/",
+            {"target": "normal"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertEqual(r.data["role"], User.Role.NORMAL)
+        self.assertEqual(r.data["active_target"], "normal")
+        self.assertEqual(r.data["redirect"], "/portal/dashboard")
+        self.leader.refresh_from_db()
+        self.assertEqual(self.leader.role, User.Role.NORMAL)
+        self.assertTrue(
+            FamilyMember.objects.filter(
+                user=self.leader,
+                group=group,
+                status=FamilyMember.Status.ACTIVE,
+            ).exists()
+        )
+        self.assertTrue(user_has_family_portal_access(self.leader))
+
+    def test_switch_portal_apply_parent_redirects_family_portal(self):
+        group = FamilyGroup.objects.create(
+            name="Back Parent",
+            leader=self.leader,
+            type=FamilyGroup.Type.FAMILY,
+            status=FamilyGroup.Status.ACTIVE,
+        )
+        FamilyMember.objects.create(
+            group=group,
+            user=self.leader,
+            role=FamilyMember.Role.PARENT,
+            status=FamilyMember.Status.ACTIVE,
+        )
+        User.objects.filter(pk=self.leader.pk).update(
+            role=User.Role.NORMAL, kyc_status=User.KYCStatus.VERIFIED
+        )
+        self.leader.refresh_from_db()
+        tok, _ = Token.objects.get_or_create(user=self.leader)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {tok.key}")
+        r = self.client.post(
+            "/api/portal/switch-portal/apply/",
+            {"target": "parent"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertEqual(r.data["role"], User.Role.PARENT)
+        self.assertEqual(r.data["redirect"], "/family-portal/dashboard")
 
     def _login_leader_with_family(self):
         login = self.client.post(

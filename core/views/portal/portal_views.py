@@ -4583,25 +4583,32 @@ def portal_orders_payment_complete(request):
     )
 
 
-@api_view(["GET"])
-@authentication_classes(PORTAL_API_AUTHENTICATION)
-@permission_classes([IsAuthenticated, IsPortalShopper])
-def portal_switch_portal_context(request):
+def _user_has_child_portal_access(u: User) -> bool:
+    if u.role == User.Role.CHILD:
+        return True
+    return FamilyMember.objects.filter(
+        user=u,
+        role=FamilyMember.Role.CHILD,
+        status=FamilyMember.Status.ACTIVE,
+    ).exists()
+
+
+def _active_portal_switch_target(u: User) -> str:
+    if u.role == User.Role.PARENT:
+        return "parent"
+    if u.role == User.Role.CHILD:
+        return "child"
+    return "normal"
+
+
+def _portal_switch_portal_payload(u: User) -> dict:
     from core.services.kyc_service import sync_user_kyc_status
     from core.services.site_settings_policy import user_kyc_required
 
-    u = request.user
     sync_user_kyc_status(u)
     u.refresh_from_db()
     has_family = user_has_family_portal_access(u)
-    has_child = bool(
-        u.role == User.Role.CHILD
-        or FamilyMember.objects.filter(
-            user=u,
-            role=FamilyMember.Role.CHILD,
-            status=FamilyMember.Status.ACTIVE,
-        ).exists()
-    )
+    has_child = _user_has_child_portal_access(u)
     has_normal = u.role in (
         User.Role.NORMAL,
         User.Role.PARENT,
@@ -4621,17 +4628,105 @@ def portal_switch_portal_context(request):
     group_types = [
         {"value": value, "label": label} for value, label in FamilyGroup.Type.choices
     ]
+    return {
+        "has_family_portal_access": has_family,
+        "has_child_portal_access": has_child,
+        "has_normal_portal_access": has_normal,
+        "can_create_family_group": can_create_family,
+        "kyc_status": u.kyc_status,
+        "kyc_required": kyc_required,
+        "kyc_verified": kyc_verified,
+        "active_target": _active_portal_switch_target(u),
+        "family_group_types": group_types,
+        "create_family_defaults": {"status": FamilyGroup.Status.ACTIVE},
+    }
+
+
+@api_view(["GET"])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
+@permission_classes([IsAuthenticated, IsPortalShopper])
+def portal_switch_portal_context(request):
+    return Response(_portal_switch_portal_payload(request.user))
+
+
+@api_view(["POST"])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
+@permission_classes([IsAuthenticated, IsPortalShopper])
+def portal_switch_portal_apply(request):
+    """Switch active portal mode by updating User.role; family memberships are unchanged."""
+    from core.services.kyc_service import sync_user_kyc_status
+    from core.services.site_settings_policy import user_kyc_required
+
+    raw = (request.data.get("target") or "").strip().lower()
+    aliases = {
+        "parent": "parent",
+        "family": "parent",
+        "child": "child",
+        "normal": "normal",
+        "customer": "normal",
+        "main": "normal",
+    }
+    target = aliases.get(raw, raw)
+    if target not in ("parent", "child", "normal"):
+        return validation_error(
+            'target must be "parent", "child", or "normal".',
+            field="target",
+        )
+
+    with transaction.atomic():
+        u = User.objects.select_for_update().get(pk=request.user.pk)
+        sync_user_kyc_status(u)
+        u.refresh_from_db()
+        kyc_required = user_kyc_required(u)
+        if kyc_required and u.kyc_status != User.KYCStatus.VERIFIED:
+            return Response(
+                {
+                    "detail": "Complete KYC verification before switching portals.",
+                    "code": "kyc_required",
+                },
+                status=403,
+            )
+
+        has_family = user_has_family_portal_access(u)
+        has_child = _user_has_child_portal_access(u)
+
+        if target == "normal":
+            if u.role not in (
+                User.Role.NORMAL,
+                User.Role.PARENT,
+                User.Role.CHILD,
+            ):
+                return Response(
+                    {"detail": "Customer portal is not available for this account."},
+                    status=400,
+                )
+            User.objects.filter(pk=u.pk).update(role=User.Role.NORMAL)
+            redirect = "/portal/dashboard"
+        elif target == "parent":
+            if not has_family:
+                return Response(
+                    {"detail": "You do not have parent (family portal) access."},
+                    status=400,
+                )
+            User.objects.filter(pk=u.pk).update(role=User.Role.PARENT)
+            redirect = "/family-portal/dashboard"
+        else:
+            if not has_child:
+                return Response(
+                    {"detail": "You do not have child portal access."},
+                    status=400,
+                )
+            User.objects.filter(pk=u.pk).update(role=User.Role.CHILD)
+            redirect = "/child-portal/dashboard"
+
+        u.refresh_from_db()
+
     return Response(
         {
-            "has_family_portal_access": has_family,
-            "has_child_portal_access": has_child,
-            "has_normal_portal_access": has_normal,
-            "can_create_family_group": can_create_family,
-            "kyc_status": u.kyc_status,
-            "kyc_required": kyc_required,
-            "kyc_verified": kyc_verified,
-            "family_group_types": group_types,
-            "create_family_defaults": {"status": FamilyGroup.Status.ACTIVE},
+            "ok": True,
+            "role": u.role,
+            "active_target": _active_portal_switch_target(u),
+            "redirect": redirect,
         }
     )
 
