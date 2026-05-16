@@ -166,6 +166,9 @@ urlpatterns = [
     path("cms-pages/", resource_views.admin_cms_pages_list, name="admin-cms-pages"),
     path("cms-pages/create/", resource_views.admin_cms_page_create, name="admin-cms-pages-create"),
     path("cms-pages/<int:pk>/", resource_views.admin_cms_page_detail_write, name="admin-cms-pages-write"),
+    path("blog-posts/", resource_views.admin_blog_posts_list, name="admin-blog-posts"),
+    path("blog-posts/create/", resource_views.admin_blog_post_create, name="admin-blog-posts-create"),
+    path("blog-posts/<int:pk>/", resource_views.admin_blog_post_detail_write, name="admin-blog-posts-write"),
     path(
         "notifications/broadcast/",
         resource_views.admin_notification_broadcast,

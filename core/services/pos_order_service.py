@@ -35,9 +35,7 @@ def create_pos_order(
     if not items:
         raise ValueError("items must be a non-empty list")
 
-    lines: list[tuple[Product, int, Decimal, Decimal]] = []
-    subtotal = Decimal("0")
-
+    parsed_items: list[tuple[int, int, dict]] = []
     for raw in items:
         if not isinstance(raw, dict):
             raise ValueError("each item must be an object")
@@ -48,11 +46,19 @@ def create_pos_order(
             raise ValueError("invalid quantity") from e
         if pid is None or qty < 1:
             raise ValueError("each item needs product_id and quantity >= 1")
+        parsed_items.append((int(pid), qty, raw))
 
-        qs = Product.objects.select_for_update().filter(pk=pid)
-        if acting_vendor is not None:
-            qs = qs.filter(seller=acting_vendor)
-        p = qs.first()
+    pids = list({pid for pid, _, _ in parsed_items})
+    qs = Product.objects.select_for_update().filter(pk__in=pids).order_by("pk")
+    if acting_vendor is not None:
+        qs = qs.filter(seller=acting_vendor)
+    products_by_id = {p.pk: p for p in qs}
+
+    lines: list[tuple[Product, int, Decimal, Decimal]] = []
+    subtotal = Decimal("0")
+
+    for pid, qty, raw in parsed_items:
+        p = products_by_id.get(pid)
         if not p:
             raise ValueError(
                 f"Product {pid} not found"
@@ -105,7 +111,6 @@ def create_pos_order(
         )
         product_service.decrease_product_stock_for_pos(p.pk, qty)
         seen_product_ids.add(p.pk)
-    for pid in seen_product_ids:
-        p_sync = Product.objects.get(pk=pid)
+    for p_sync in Product.objects.filter(pk__in=seen_product_ids):
         product_service.sync_stock_status(p_sync)
     return order

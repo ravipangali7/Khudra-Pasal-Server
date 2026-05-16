@@ -13,8 +13,11 @@ from django.db.models import (
     Value,
     When,
 )
+from django.conf import settings
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from xml.sax.saxutils import escape
 from rest_framework.authentication import SessionAuthentication, TokenAuthentication
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
@@ -288,6 +291,32 @@ def _public_social_links_from_site(site: SiteSettings) -> dict[str, str]:
     return {k: str(social.get(k) or "").strip() for k in keys}
 
 
+def _public_chabot_script_from_site(site: SiteSettings) -> str:
+    raw = site.admin_extras or {}
+    chatbot = raw.get("chatbot") if isinstance(raw, dict) else None
+    if not isinstance(chatbot, dict):
+        return ""
+    return str(chatbot.get("chabot_script") or "").strip()
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def firebase_messaging_config(request):
+    """Public Firebase web push config for the SPA (VAPID key for token registration)."""
+    import os
+
+    from core.services.fcm_push_service import _resolve_credentials_path
+
+    vapid_key = (getattr(settings, "FIREBASE_WEB_VAPID_KEY", "") or "").strip()
+    cred_path = _resolve_credentials_path()
+    return Response(
+        {
+            "vapid_key": vapid_key,
+            "firebase_configured": bool(cred_path and os.path.isfile(cred_path)),
+        }
+    )
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def store_info(request):
@@ -300,6 +329,7 @@ def store_info(request):
         {
             "site_name": site.site_name,
             "site_description": site.site_description,
+            "meta_keywords": site.meta_keywords or "",
             "site_email": site.site_email,
             "phone": site.phone,
             "address": site.address,
@@ -312,6 +342,7 @@ def store_info(request):
             "kyc_required": site.kyc_required,
             "pos_enabled": site.pos_enabled,
             "social_links": _public_social_links_from_site(site),
+            "chabot_script": _public_chabot_script_from_site(site),
             "reels_boost": {
                 "standardMultiplier": rcfg["standardMultiplier"],
                 "premiumMultiplier": rcfg["premiumMultiplier"],
@@ -680,6 +711,75 @@ def blog_post_public(request, slug):
         status=BlogPost.Status.PUBLISHED,
     )
     return Response(BlogPostDetailSerializer(post, context={"request": request}).data)
+
+
+def _sitemap_frontend_base(request) -> str:
+    base = (getattr(settings, "FRONTEND_URL", None) or "").strip().rstrip("/")
+    if base:
+        return base
+    return request.build_absolute_uri("/").rstrip("/")
+
+
+def _sitemap_url_entry(loc: str, lastmod: str = "", changefreq: str = "", priority: str = "") -> str:
+    parts = [f"  <url>\n    <loc>{escape(loc)}</loc>"]
+    if lastmod:
+        parts.append(f"    <lastmod>{escape(lastmod)}</lastmod>")
+    if changefreq:
+        parts.append(f"    <changefreq>{escape(changefreq)}</changefreq>")
+    if priority:
+        parts.append(f"    <priority>{escape(priority)}</priority>")
+    parts.append("  </url>")
+    return "\n".join(parts)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def sitemap_xml(request):
+    """XML sitemap for storefront crawlers (products, CMS, blog, categories)."""
+    base = _sitemap_frontend_base(request)
+    today = timezone.now().date().isoformat()
+    entries: list[str] = []
+
+    static_paths = [
+        ("/", "daily", "1.0"),
+        ("/products", "daily", "0.9"),
+        ("/blog", "weekly", "0.8"),
+        ("/brands", "weekly", "0.7"),
+    ]
+    for path, freq, pri in static_paths:
+        entries.append(_sitemap_url_entry(f"{base}{path}", today, freq, pri))
+
+    for slug in Category.objects.filter(status=Category.Status.ACTIVE).values_list("slug", flat=True):
+        entries.append(_sitemap_url_entry(f"{base}/category/{slug}", today, "weekly", "0.7"))
+
+    cms_qs = CMSPage.objects.filter(status=CMSPage.Status.PUBLISHED).only("slug", "last_updated")
+    for row in cms_qs:
+        lm = row.last_updated.date().isoformat() if row.last_updated else today
+        entries.append(_sitemap_url_entry(f"{base}/page/{row.slug}", lm, "monthly", "0.6"))
+
+    blog_qs = BlogPost.objects.filter(status=BlogPost.Status.PUBLISHED).only("slug", "published_at", "created_at")
+    for row in blog_qs:
+        dt = row.published_at or row.created_at
+        lm = dt.date().isoformat() if dt else today
+        entries.append(_sitemap_url_entry(f"{base}/blog/{row.slug}", lm, "weekly", "0.7"))
+
+    product_qs = (
+        _active_products_queryset()
+        .only("slug", "updated_at")
+        .order_by("-updated_at")[:5000]
+    )
+    for row in product_qs:
+        lm = row.updated_at.date().isoformat() if row.updated_at else today
+        entries.append(_sitemap_url_entry(f"{base}/product/{row.slug}", lm, "weekly", "0.8"))
+
+    body = "\n".join(entries)
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        f"{body}\n"
+        "</urlset>"
+    )
+    return HttpResponse(xml, content_type="application/xml")
 
 
 @api_view(["GET"])

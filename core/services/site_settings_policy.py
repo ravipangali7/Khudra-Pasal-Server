@@ -5,7 +5,7 @@ from __future__ import annotations
 from rest_framework import status
 from rest_framework.response import Response
 
-from core.models import SiteSettings, User
+from core.models import SiteSettings, User, Vendor
 
 
 def _site() -> SiteSettings:
@@ -16,8 +16,20 @@ def site_kyc_required_flag() -> bool:
     return bool(_site().kyc_required)
 
 
+def user_kyc_required(user: User) -> bool:
+    """KYC is mandatory for parent accounts regardless of site settings."""
+    if user.role == User.Role.PARENT:
+        return True
+    return site_kyc_required_flag()
+
+
 def pos_checkout_allowed() -> bool:
     return bool(_site().pos_enabled)
+
+
+def vendor_pos_checkout_allowed(vendor: Vendor) -> bool:
+    """Site POS on and this vendor allowed to run POS checkout."""
+    return pos_checkout_allowed() and bool(vendor.pos_enabled)
 
 
 def storefront_orders_gate_response() -> Response | None:
@@ -89,6 +101,16 @@ def pos_disabled_response() -> Response:
         {
             "detail": "The POS system is disabled in site settings.",
             "code": "pos_disabled",
+        },
+        status=status.HTTP_403_FORBIDDEN,
+    )
+
+
+def vendor_pos_disabled_response() -> Response:
+    return Response(
+        {
+            "detail": "POS is disabled for this vendor.",
+            "code": "vendor_pos_disabled",
         },
         status=status.HTTP_403_FORBIDDEN,
     )

@@ -109,7 +109,8 @@ from core.services.child_spending_service import (
     validate_child_spending_limits,
 )
 from core.services.purchase_approval_service import consume_purchase_approvals_after_checkout
-from core.services.site_settings_policy import site_kyc_required_flag, storefront_orders_gate_response
+from core.services.kyc_withdraw import becoming_parent_kyc_block_payload, kyc_mandatory_block_payload
+from core.services.site_settings_policy import user_kyc_required, storefront_orders_gate_response
 from core.services import (
     family_join_request_service,
     family_member_provision_service,
@@ -241,6 +242,13 @@ def _paginate(request, queryset):
     paginator = PortalPagination()
     page = paginator.paginate_queryset(queryset, request)
     return paginator, page
+
+
+def _portal_kyc_mandatory_response(user: User) -> Response | None:
+    block = kyc_mandatory_block_payload(user)
+    if block:
+        return Response(block, status=403)
+    return None
 
 
 def _orders_surface_q(list_placed_portal: str) -> Q:
@@ -779,7 +787,7 @@ def portal_me(request):
             "email": u.email or "",
             "role": u.role,
             "kyc_status": u.kyc_status,
-            "kyc_required": site_kyc_required_flag(),
+            "kyc_required": user_kyc_required(u),
             "kyc_rejection_reason": latest_kyc_rejection_reason(u),
             "wallet_id": str(w.pk) if w else None,
             "wallet_balance": float(w.balance) if w else 0.0,
@@ -1121,6 +1129,10 @@ def portal_family_members(request):
     if request.method == "GET":
         return Response(_family_portal_overview_payload(request.user, request))
 
+    blocked = _portal_kyc_mandatory_response(request.user)
+    if blocked:
+        return blocked
+
     primary = _primary_family_group(request.user)
     if not primary:
         return Response({"detail": "No family group found."}, status=400)
@@ -1171,6 +1183,9 @@ def portal_family_join_requests(request):
             .order_by("-created_at")[:100]
         )
         return Response({"results": FamilyJoinRequestReadSerializer(qs, many=True).data})
+    blocked = _portal_kyc_mandatory_response(request.user)
+    if blocked:
+        return blocked
     ser = PortalFamilyAddMemberSerializer(data=request.data)
     if not ser.is_valid():
         return Response(ser.errors, status=400)
@@ -1264,6 +1279,9 @@ def portal_family_join_share_link(request):
             }
         )
 
+    blocked = _portal_kyc_mandatory_response(request.user)
+    if blocked:
+        return blocked
     ser = PortalFamilyJoinShareLinkCreateSerializer(data=request.data)
     if not ser.is_valid():
         return Response(ser.errors, status=400)
@@ -1297,6 +1315,9 @@ def portal_family_join_share_link(request):
 @authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_join_request_detail(request, pk: int):
+    blocked = _portal_kyc_mandatory_response(request.user)
+    if blocked:
+        return blocked
     primary = _primary_family_group(request.user)
     if not primary:
         return Response({"detail": "No family group found."}, status=400)
@@ -1342,6 +1363,9 @@ def portal_family_product_restrictions(request):
         return Response(
             {"results": PortalProductRestrictionReadSerializer(rows, many=True).data}
         )
+    blocked = _portal_kyc_mandatory_response(request.user)
+    if blocked:
+        return blocked
     if request.method == "PUT":
         ser = PortalProductRestrictionsReplaceSerializer(data=request.data)
         if not ser.is_valid():
@@ -1396,6 +1420,9 @@ def portal_family_auto_approval_rules(request):
         return Response(
             {"results": PortalAutoApprovalRuleReadSerializer(qs, many=True).data}
         )
+    blocked = _portal_kyc_mandatory_response(request.user)
+    if blocked:
+        return blocked
     if not family_service.user_can_manage_family_invites(request.user, primary):
         return Response(
             {"detail": "You do not have permission to manage auto-approval rules."},
@@ -1460,6 +1487,9 @@ def portal_family_auto_approval_rule_detail(request, pk: int):
 @authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_members_batch(request):
+    blocked = _portal_kyc_mandatory_response(request.user)
+    if blocked:
+        return blocked
     primary = _primary_family_group(request.user)
     if not primary:
         return Response({"detail": "No family group found."}, status=400)
@@ -1505,6 +1535,9 @@ def portal_family_members_batch(request):
 @authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_member_detail(request, pk: int):
+    blocked = _portal_kyc_mandatory_response(request.user)
+    if blocked:
+        return blocked
     primary = _primary_family_group(request.user)
     if not primary:
         return Response({"detail": "No family group found."}, status=400)
@@ -1600,6 +1633,9 @@ def portal_family_member_detail(request, pk: int):
 @authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_wallet_load(request):
+    blocked = _portal_kyc_mandatory_response(request.user)
+    if blocked:
+        return blocked
     primary = _primary_family_group(request.user)
     if not primary:
         return Response({"detail": "No family group found."}, status=400)
@@ -1669,6 +1705,9 @@ def portal_family_wallet_load(request):
 @authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_wallet_distribute(request):
+    blocked = _portal_kyc_mandatory_response(request.user)
+    if blocked:
+        return blocked
     primary = _primary_family_group(request.user)
     if not primary:
         return Response({"detail": "No family group found."}, status=400)
@@ -1797,6 +1836,9 @@ def _resolve_family_wallet_pk_for_transfer(group: FamilyGroup, raw):
 @authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalParent])
 def portal_family_wallet_transfer(request):
+    blocked = _portal_kyc_mandatory_response(request.user)
+    if blocked:
+        return blocked
     primary = _primary_family_group(request.user)
     if not primary:
         return Response({"detail": "No family group found."}, status=400)
@@ -4594,6 +4636,9 @@ _INVITE_ROLE_SET = frozenset(
 def portal_family_group_create(request):
     """NORMAL customer creates a family and becomes PARENT (use family portal after)."""
     u = request.user
+    block = becoming_parent_kyc_block_payload(u)
+    if block:
+        return Response(block, status=403)
     if not isinstance(request.data, Mapping):
         return validation_error(
             'Expected a JSON object with a "name" field (not a bare JSON string).',
@@ -4639,6 +4684,9 @@ def portal_family_invites(request):
         ]
         return Response({"results": rows})
 
+    blocked = _portal_kyc_mandatory_response(request.user)
+    if blocked:
+        return blocked
     primary = _primary_family_group(request.user)
     if not primary:
         return Response({"detail": "No family group found."}, status=400)

@@ -131,6 +131,33 @@ class SecuritySettingsTests(TestCase):
         ).count()
         self.assertEqual(after - before, 1)
 
+    def test_flag_resolve_high_requires_resolution_note(self):
+        flag = FlaggedActivity.objects.create(
+            activity_type="High risk",
+            detail="suspicious",
+            severity=FlaggedActivity.Severity.HIGH,
+            status=FlaggedActivity.Status.OPEN,
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self._token(self.super_admin)}")
+        r = self.client.patch(
+            f"/api/admin/flagged/{flag.pk}/",
+            {"status": "resolved"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST, r.content)
+        r = self.client.patch(
+            f"/api/admin/flagged/{flag.pk}/",
+            {
+                "status": "resolved",
+                "resolution_note": "Investigated duplicate login attempts; cleared.",
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.content)
+        flag.refresh_from_db()
+        self.assertEqual(flag.status, FlaggedActivity.Status.RESOLVED)
+        self.assertIn("Investigated", flag.detail)
+
     def test_security_module_rbac_employee_with_security_can_list_flagged(self):
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {self._token(self.staff_sec)}")
         r = self.client.get("/api/admin/flagged/", {"page_size": 5})

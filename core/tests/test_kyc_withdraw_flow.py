@@ -380,3 +380,45 @@ class KycWithdrawFlowTests(TestCase):
         )
         self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(r.data.get("code"), "kyc_required")
+
+    def test_parent_kyc_required_when_site_kyc_disabled(self):
+        ss = SiteSettings.load()
+        ss.kyc_required = False
+        ss.save(update_fields=["kyc_required"])
+        parent = User.objects.create_user(
+            username="kyc_parent",
+            password=self.pw,
+            phone="9855555556",
+            name="Parent KYC",
+            role=User.Role.PARENT,
+            kyc_status=User.KYCStatus.PENDING,
+        )
+        self._login(parent)
+        r = self.client.get("/api/portal/me/")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertTrue(r.data["kyc_required"])
+
+        r2 = self.client.get("/api/portal/kyc/status/")
+        self.assertTrue(r2.data["kyc_required"])
+
+    def test_normal_kyc_not_required_when_site_disabled(self):
+        ss = SiteSettings.load()
+        ss.kyc_required = False
+        ss.save(update_fields=["kyc_required"])
+        self._login(self.customer)
+        r = self.client.get("/api/portal/me/")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertFalse(r.data["kyc_required"])
+
+    def test_family_group_create_blocked_without_verified_kyc(self):
+        ss = SiteSettings.load()
+        ss.kyc_required = False
+        ss.save(update_fields=["kyc_required"])
+        self._login(self.customer)
+        r = self.client.post(
+            "/api/portal/family/group/",
+            {"name": "Blocked Fam"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(r.data.get("code"), "kyc_required")

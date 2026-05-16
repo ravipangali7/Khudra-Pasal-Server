@@ -174,6 +174,9 @@ class ProductSerializer(serializers.ModelSerializer):
             "image_url",
             "images",
             "seller",
+            "seo_title",
+            "seo_description",
+            "seo_keywords",
             "created_at",
         ]
 
@@ -818,7 +821,17 @@ class BlogPostListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = BlogPost
-        fields = ["id", "title", "slug", "excerpt", "cover_image_url", "author_name", "published_at"]
+        fields = [
+            "id",
+            "title",
+            "slug",
+            "excerpt",
+            "cover_image_url",
+            "author_name",
+            "published_at",
+            "seo_title",
+            "seo_description",
+        ]
 
     def get_cover_image_url(self, obj):
         if not obj.cover_image:
@@ -845,5 +858,7 @@ class BlogPostDetailSerializer(BlogPostListSerializer):
             "cover_image_url",
             "author_name",
             "published_at",
+            "seo_title",
+            "seo_description",
         ]
 

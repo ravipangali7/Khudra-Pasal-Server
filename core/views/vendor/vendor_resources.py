@@ -52,7 +52,12 @@ from core.services.product_pricing import effective_unit_price, validate_and_set
 from core.services import otp_service, support_notification_service, support_ticket_service, wallet_policy
 from core.services.user_presence import online_user_ids_for
 from core.services.pos_order_service import create_pos_order, gen_pos_order_number as _gen_order_number
-from core.services.site_settings_policy import pos_checkout_allowed, pos_disabled_response
+from core.services.site_settings_policy import (
+    pos_checkout_allowed,
+    pos_disabled_response,
+    vendor_pos_checkout_allowed,
+    vendor_pos_disabled_response,
+)
 from core.services.refund_service import breakdown_for_refund
 from core.services.kyc_service import sync_user_kyc_status
 from core.services.kyc_withdraw import kyc_withdraw_block_payload
@@ -656,6 +661,8 @@ def vendor_pos_checkout(request):
         return err
     if not pos_checkout_allowed():
         return pos_disabled_response()
+    if not vendor_pos_checkout_allowed(vendor):
+        return vendor_pos_disabled_response()
     items = request.data.get("items")
     if not isinstance(items, list) or not items:
         return validation_error("items must be a non-empty list", field="items")

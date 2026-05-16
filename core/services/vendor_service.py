@@ -25,7 +25,7 @@ def apply_vendor_suspension(vendor: Vendor) -> None:
     ):
         return
     Wallet.objects.filter(vendor=vendor).update(status=Wallet.Status.FROZEN)
-    Vendor.objects.filter(pk=vendor.pk).update(can_sell=False, can_post=False)
+    Vendor.objects.filter(pk=vendor.pk).update(can_sell=False, can_post=False, pos_enabled=False)
     Product.objects.filter(seller=vendor).exclude(status=Product.Status.DRAFT).update(
         status=Product.Status.DRAFT
     )

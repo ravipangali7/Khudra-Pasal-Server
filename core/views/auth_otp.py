@@ -10,7 +10,7 @@ from rest_framework.response import Response
 from core.models import FamilyInvite, OTPVerification, User
 from core.throttles import OtpSendThrottle
 from core.phone_auth import find_user_by_phone_input, normalize_nepal_phone
-from core.services import family_service, otp_service
+from core.services import otp_service
 from core.services.base import get_or_create_personal_wallet
 from core.portal_roles import (
     PORTAL_ADMIN,
@@ -163,10 +163,11 @@ def otp_send(request):
                 },
                 status=400,
             )
-        if signup_portal and signup_portal not in (PORTAL_MAIN, PORTAL_FAMILY):
+        if signup_portal and signup_portal not in (PORTAL_MAIN, None):
             return Response(
                 {
-                    "detail": "Sign up with portal \"portal\" (customer) or \"family-portal\" (family head).",
+                    "detail": "Sign up creates a normal customer account. "
+                    "After sign-in, use Switch Portal to set up parent or child access.",
                 },
                 status=400,
             )
@@ -249,10 +250,11 @@ def otp_verify(request):
     if gate:
         return gate
 
-    portal_key = normalize_portal_key(
+    portal_key = PORTAL_MAIN
+    signup_portal = normalize_portal_key(
         request.data.get("portal") or request.data.get("surface")
-    ) or PORTAL_MAIN
-    if portal_key == PORTAL_CHILD:
+    )
+    if signup_portal == PORTAL_CHILD:
         return Response(
             {
                 "detail": "Child accounts are created when a parent adds you or sends an invite. "
@@ -260,15 +262,15 @@ def otp_verify(request):
             },
             status=400,
         )
-    if portal_key not in (PORTAL_MAIN, PORTAL_FAMILY):
+    if signup_portal and signup_portal not in (PORTAL_MAIN, None):
         return Response(
             {
-                "detail": "Sign up with portal \"portal\" (customer) or \"family-portal\" (family head).",
+                "detail": "Sign up creates a normal customer account. "
+                "After sign-in, use Switch Portal to set up parent or child access.",
             },
             status=400,
         )
 
-    family_name = (request.data.get("family_name") or "").strip()
     referrer, ref_err = _resolve_signup_referrer(request.data, phone)
     if ref_err:
         return ref_err
@@ -283,9 +285,6 @@ def otp_verify(request):
             )
             user.set_unusable_password()
             user.save()
-            if portal_key == PORTAL_FAMILY:
-                gname = family_name[:100] if family_name else f"{user.name}'s Family"
-                family_service.create_family_group_for_user(user, gname)
             get_or_create_personal_wallet(user)
     except ValueError as e:
         return Response({"detail": str(e)}, status=400)

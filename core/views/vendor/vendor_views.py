@@ -32,6 +32,7 @@ from core.models import (
 )
 from core.portal_roles import PORTAL_VENDOR, assert_portal_login_allowed
 from core.services import vendor_service, wallet_gateway_topup as wgt
+from core.services.site_settings_policy import vendor_pos_checkout_allowed
 from core.services.khalti_epayment_service import KhaltiApiError, KhaltiConfigError
 from core.services.wallet_txn_signed import signed_amount_for_wallet_transaction
 from core.services.product_pricing import effective_unit_price
@@ -159,7 +160,9 @@ def vendor_me(request):
         {
             "id": str(vendor.pk),
             "user_id": request.user.pk,
-            "pos_enabled": SiteSettings.load().pos_enabled,
+            "site_pos_enabled": SiteSettings.load().pos_enabled,
+            "pos_enabled": vendor_pos_checkout_allowed(vendor),
+            "vendor_pos_enabled": vendor.pos_enabled,
             "store_name": vendor.store_name,
             "store_slug": vendor.store_slug,
             "status": vendor.status,

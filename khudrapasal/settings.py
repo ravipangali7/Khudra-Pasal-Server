@@ -129,13 +129,27 @@ def _audience_from_spa_dotenv() -> str:
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-1y9yl!01-%0#$br&26om$p^xgz2p9mcj05f%5dd4sqk5ba43ps'
+# Production: set DJANGO_SECRET_KEY (see server/.env.example).
+SECRET_KEY = (
+    os.environ.get("DJANGO_SECRET_KEY", "").strip()
+    or "django-insecure-1y9yl!01-%0#$br&26om$p^xgz2p9mcj05f%5dd4sqk5ba43ps"
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# Production: DJANGO_DEBUG=false
+DEBUG = _env_bool("DJANGO_DEBUG", default=True)
 
-ALLOWED_HOSTS = ['*']
+_hosts_raw = os.environ.get("DJANGO_ALLOWED_HOSTS", "*").strip()
+ALLOWED_HOSTS = [h.strip() for h in _hosts_raw.split(",") if h.strip()] or ["*"]
 
 
 # Application definition
@@ -215,13 +229,13 @@ for _part in _extra_cors.split(","):
         CORS_ALLOWED_ORIGINS.append(_o)
 if not CORS_ALLOW_ALL_ORIGINS and not CORS_ALLOWED_ORIGINS:
     CORS_ALLOW_ALL_ORIGINS = True
-# Keep these explicit so large multipart admin uploads are controlled by env,
-# instead of failing with default low request-body limits.
+# Large multipart admin uploads — override via env on the host.
+_UPLOAD_DEFAULT_BYTES = str(100 * 1024 * 1024)
 DATA_UPLOAD_MAX_MEMORY_SIZE = int(
-    os.environ.get("DATA_UPLOAD_MAX_MEMORY_SIZE", str(25 * 1024 * 1024))
+    os.environ.get("DATA_UPLOAD_MAX_MEMORY_SIZE", _UPLOAD_DEFAULT_BYTES)
 )
 FILE_UPLOAD_MAX_MEMORY_SIZE = int(
-    os.environ.get("FILE_UPLOAD_MAX_MEMORY_SIZE", str(25 * 1024 * 1024))
+    os.environ.get("FILE_UPLOAD_MAX_MEMORY_SIZE", _UPLOAD_DEFAULT_BYTES)
 )
 SITE_ID = 1
 
@@ -471,14 +485,18 @@ CHILD_PORTAL_REQUIRE_MEMBERSHIP = os.environ.get(
 # Use KP_SMTP_PASSWORD for Gmail App Passwords in production instead of storing them in the database.
 
 # Aakash SMS (see core.services.aakash_sms). Set AAKASHSMS_AUTH_TOKEN on the server; never commit it.
-AAKASHSMS_AUTH_TOKEN = os.environ.get("AAKASHSMS_AUTH_TOKEN", "fb4be2a20ea56292d20fe52d8c65b3a67ededcd2879853f0a57562f5492f9697").strip()
+AAKASHSMS_AUTH_TOKEN = os.environ.get("AAKASHSMS_AUTH_TOKEN", "").strip()
 AAKASHSMS_API_URL = os.environ.get(
     "AAKASHSMS_API_URL", "https://sms.aakashsms.com/sms/v3/send"
 ).strip()
 
-DATA_UPLOAD_MAX_MEMORY_SIZE = 100 * 1024 * 1024
-FILE_UPLOAD_MAX_MEMORY_SIZE = 100 * 1024 * 1024
-
-# Firebase Admin SDK JSON for FCM server push (optional). Override with FIREBASE_CREDENTIALS_PATH.
+# Firebase Admin SDK JSON for FCM server push (optional).
+# Default: repo-root `firebase-service.json` (one level above `server/`).
 _default_fb = BASE_DIR.parent / "firebase-service.json"
-FIREBASE_CREDENTIALS_PATH = 'firebase-service.json'
+FIREBASE_CREDENTIALS_PATH = os.environ.get(
+    "FIREBASE_CREDENTIALS_PATH",
+    str(_default_fb),
+)
+# Web push VAPID public key (Firebase Console → Cloud Messaging → Web Push certificates).
+# Exposed read-only via GET /api/website/firebase-messaging/ for the SPA when VITE_FIREBASE_VAPID_KEY is unset.
+FIREBASE_WEB_VAPID_KEY = os.environ.get("FIREBASE_WEB_VAPID_KEY", "").strip()

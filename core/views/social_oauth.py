@@ -374,9 +374,6 @@ def google_oauth_callback(request):
     if not user.is_active:
         return _redirect_to_frontend({"oauth_error": "Account disabled."}, error_return)
     if created_new:
-        err = _maybe_provision_family_for_new_oauth_user(user, next_path)
-        if err:
-            return _redirect_to_frontend({"oauth_error": err}, error_return)
         get_or_create_personal_wallet(user)
 
     if not user.oauth_phone_completed:
@@ -516,9 +513,6 @@ def facebook_oauth_callback(request):
     if not user.is_active:
         return _redirect_to_frontend({"oauth_error": "Account disabled."}, error_return)
     if created_new:
-        err = _maybe_provision_family_for_new_oauth_user(user, next_path)
-        if err:
-            return _redirect_to_frontend({"oauth_error": err}, error_return)
         get_or_create_personal_wallet(user)
 
     if not user.oauth_phone_completed:

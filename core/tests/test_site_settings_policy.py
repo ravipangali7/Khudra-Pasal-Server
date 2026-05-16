@@ -71,6 +71,16 @@ class SiteSettingsPolicyTests(TestCase):
         self.assertEqual(r.status_code, status.HTTP_200_OK)
         self.assertIn("maintenance_mode", r.data)
         self.assertIn("pos_enabled", r.data)
+        self.assertIn("chabot_script", r.data)
+
+    def test_store_info_chabot_script_from_admin_extras(self):
+        extras = dict(self.site.admin_extras or {})
+        extras["chatbot"] = {"chabot_script": '<script>window.__kp_test=1</script>'}
+        self.site.admin_extras = extras
+        self.site.save(update_fields=["admin_extras"])
+        r = self.client.get("/api/website/store-info/")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertIn("window.__kp_test=1", r.data["chabot_script"])
 
     def test_shipping_quote_blocked_when_maintenance(self):
         self.site.maintenance_mode = True
@@ -109,6 +119,33 @@ class SiteSettingsPolicyTests(TestCase):
         )
         self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(r.data.get("code"), "pos_disabled")
+
+    def test_vendor_pos_blocked_when_vendor_pos_disabled(self):
+        self.vendor.pos_enabled = False
+        self.vendor.save(update_fields=["pos_enabled"])
+        tok, _ = Token.objects.get_or_create(user=self.vendor_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {tok.key}")
+        r = self.client.post(
+            "/api/vendor/pos/checkout/",
+            {
+                "items": [{"product_id": self.product.pk, "quantity": 1}],
+                "payment_method": "cash",
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(r.data.get("code"), "vendor_pos_disabled")
+
+    def test_vendor_me_pos_enabled_reflects_vendor_flag(self):
+        self.vendor.pos_enabled = False
+        self.vendor.save(update_fields=["pos_enabled"])
+        tok, _ = Token.objects.get_or_create(user=self.vendor_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {tok.key}")
+        r = self.client.get("/api/vendor/me/")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertTrue(r.data.get("site_pos_enabled"))
+        self.assertFalse(r.data.get("pos_enabled"))
+        self.assertFalse(r.data.get("vendor_pos_enabled"))
 
     def test_cart_add_blocked_when_shop_closed(self):
         cust = User.objects.create_user(

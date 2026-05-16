@@ -44,6 +44,7 @@ ADMIN_NAV: list[tuple] = [
     ("admin", "coupons", "Coupons", "Ticket", "marketing", 2, "", ""),
     ("admin", "notifications", "Notifications", "Bell", "marketing", 3, "", ""),
     ("admin", "cms", "CMS", "FileText", "", 70, "", ""),
+    ("admin", "blog", "Blog", "Newspaper", "", 71, "", ""),
     ("admin", "finance", "Finance", "CreditCard", "", 80, "admin_finance_attention", ""),
     ("admin", "transactions", "Transactions", "CreditCard", "finance", 0, "", ""),
     ("admin", "refunds", "Refunds", "RefreshCw", "finance", 1, "admin_pending_refunds", ""),

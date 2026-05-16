@@ -7,6 +7,8 @@ import os
 from dataclasses import dataclass
 from typing import Iterable
 
+from pathlib import Path
+
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
@@ -16,6 +18,31 @@ _init_attempted = False
 _warned_missing_credentials = False
 
 
+def _resolve_credentials_path() -> str:
+    """Return an existing service-account JSON path, or '' if none found."""
+    raw = (getattr(settings, "FIREBASE_CREDENTIALS_PATH", "") or "").strip()
+    candidates: list[Path] = []
+    if raw:
+        p = Path(raw)
+        candidates.append(p if p.is_absolute() else Path.cwd() / p)
+    base = Path(getattr(settings, "BASE_DIR", Path.cwd()))
+    candidates.extend(
+        [
+            base.parent / "firebase-service.json",
+            base / "firebase-service.json",
+        ]
+    )
+    seen: set[str] = set()
+    for c in candidates:
+        key = str(c.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        if c.is_file():
+            return key
+    return raw
+
+
 def _ensure_app() -> bool:
     global _app_ready, _init_attempted, _warned_missing_credentials
     if _app_ready:
@@ -23,7 +50,7 @@ def _ensure_app() -> bool:
     if _init_attempted:
         return False
     _init_attempted = True
-    path = getattr(settings, "FIREBASE_CREDENTIALS_PATH", "") or ""
+    path = _resolve_credentials_path()
     if not path or not os.path.isfile(path):
         if not _warned_missing_credentials:
             _warned_missing_credentials = True
@@ -108,6 +135,9 @@ def send_fcm_to_tokens(tokens: Iterable[str], title: str, body: str) -> FcmPushS
             default_vibrate_timings=True,
         ),
     )
+    webpush = messaging.WebpushConfig(
+        notification=messaging.WebpushNotification(title=title, body=body),
+    )
 
     total_success = 0
     total_failure = 0
@@ -119,6 +149,7 @@ def send_fcm_to_tokens(tokens: Iterable[str], title: str, body: str) -> FcmPushS
         msg = messaging.MulticastMessage(
             notification=messaging.Notification(title=title, body=body),
             android=android,
+            webpush=webpush,
             tokens=chunk,
         )
         try:
@@ -133,7 +164,8 @@ def send_fcm_to_tokens(tokens: Iterable[str], title: str, body: str) -> FcmPushS
         total_success += br.success_count
         total_failure += br.failure_count
 
-        for resp in br.responses:
+        stale_tokens: list[str] = []
+        for idx, resp in enumerate(br.responses):
             if resp.success:
                 continue
             ex = resp.exception
@@ -141,6 +173,13 @@ def send_fcm_to_tokens(tokens: Iterable[str], title: str, body: str) -> FcmPushS
                 first_err = str(ex)[:500]
             if ex is not None:
                 logger.warning("FCM token send failed: %s", ex)
+                code = getattr(ex, "code", "") or ""
+                if code in ("UNREGISTERED", "INVALID_ARGUMENT", "NOT_FOUND"):
+                    stale_tokens.append(chunk[idx])
+        if stale_tokens:
+            from core.models import User
+
+            User.objects.filter(fcm_token__in=stale_tokens).update(fcm_token="")
 
     if total_failure:
         logger.warning(

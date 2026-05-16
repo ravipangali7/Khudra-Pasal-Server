@@ -64,6 +64,22 @@ def parse_checkout_items(items: Any) -> list[tuple[int, int]]:
     return parsed
 
 
+def _products_by_id_for_checkout(
+    parsed: list[tuple[int, int]],
+    *,
+    select_for_update: bool,
+) -> dict[int, Product]:
+    pids = list({pid for pid, _ in parsed})
+    if not pids:
+        return {}
+    qs = Product.objects.filter(
+        pk__in=pids, status=Product.Status.ACTIVE
+    ).select_related("seller", "category")
+    if select_for_update:
+        qs = qs.select_for_update().order_by("pk")
+    return {p.pk: p for p in qs}
+
+
 def resolve_checkout_lines(
     parsed: list[tuple[int, int]],
     user,
@@ -75,6 +91,9 @@ def resolve_checkout_lines(
     flash_rows = flash_pricing_for_products([a for a, _ in parsed], now_ts)
     flash_overrides = {pid: row.unit for pid, row in flash_rows.items()}
     flash_deal_by_product_id = {pid: row.flash_deal_id for pid, row in flash_rows.items()}
+    products_by_id = _products_by_id_for_checkout(
+        parsed, select_for_update=select_for_update
+    )
     groups: dict[int | None, list[tuple[Product, int, Decimal, Decimal]]] = defaultdict(
         list
     )
@@ -83,12 +102,7 @@ def resolve_checkout_lines(
     stock_warnings: list[dict[str, Any]] = []
 
     for pid, qty in parsed:
-        qs = Product.objects.filter(pk=pid, status=Product.Status.ACTIVE).select_related(
-            "seller", "category"
-        )
-        if select_for_update:
-            qs = qs.select_for_update()
-        p = qs.first()
+        p = products_by_id.get(pid)
         if not p:
             raise ValueError(f"Product {pid} not available.")
         if p.seller_id is not None and p.seller.status != Vendor.Status.APPROVED:
@@ -400,6 +414,10 @@ def build_orders_plan(
             Decimal,
         ]
     ] = []
+    seller_ids = [sid for sid in groups if sid is not None]
+    vendors_by_id = {
+        v.pk: v for v in Vendor.objects.filter(pk__in=seller_ids)
+    }
     for seller_id in sorted(groups.keys(), key=seller_sort_key):
         lines = groups[seller_id]
         v_sub = seller_subtotals[seller_id]
@@ -408,7 +426,7 @@ def build_orders_plan(
         v_total = (v_sub - d_amt + v_delivery).quantize(Decimal("0.01"))
         if v_total < 0:
             v_total = Decimal("0")
-        vendor = None if seller_id is None else Vendor.objects.get(pk=seller_id)
+        vendor = None if seller_id is None else vendors_by_id[seller_id]
         orders_plan.append((vendor, lines, v_sub, v_delivery, d_amt, v_total))
     grand_total = sum((p[5] for p in orders_plan), Decimal("0"))
     return orders_plan, grand_total

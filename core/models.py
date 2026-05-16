@@ -708,6 +708,10 @@ class Vendor(models.Model):
     is_verified = models.BooleanField(default=False)
     can_post = models.BooleanField(default=True)
     can_sell = models.BooleanField(default=True)
+    pos_enabled = models.BooleanField(
+        default=True,
+        help_text="When false, this vendor cannot use the POS module (site-wide POS must also be on).",
+    )
     portal_email_notifications = models.BooleanField(default=True)
     portal_sms_notifications = models.BooleanField(default=False)
     portal_language = models.CharField(max_length=10, default="en")
@@ -1615,6 +1619,8 @@ class BlogPost(models.Model):
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.DRAFT
     )
+    seo_title = models.CharField(max_length=70, blank=True)
+    seo_description = models.TextField(max_length=160, blank=True)
     published_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

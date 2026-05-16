@@ -23,6 +23,7 @@ from core.portal_roles import (
     user_allowed_for_vendor_portal,
     user_has_family_portal_access,
 )
+from core.services.site_settings_policy import vendor_pos_checkout_allowed
 from core.views.admin.admin_access import admin_allowed_nav_keys, user_can_access_audit_logs
 
 # Legacy nav keys no longer shown in vendor portal sidebar (not in nav_seed VENDOR_NAV).
@@ -174,7 +175,14 @@ def vendor_navigation(request):
     if not vendor:
         return Response({"items": _build_tree(NavigationItem.Surface.VENDOR, {}, user=None)})
     badges = _vendor_nav_badges(vendor)
-    return Response({"items": _build_tree(NavigationItem.Surface.VENDOR, badges, user=None)})
+    items = _build_tree(NavigationItem.Surface.VENDOR, badges, user=None)
+    if not vendor_pos_checkout_allowed(vendor):
+        items = [
+            n
+            for n in items
+            if n.get("id") != "pos" and (n.get("viewKey") or "") != "pos"
+        ]
+    return Response({"items": items})
 
 
 def _portal_nav_badges(user: User):

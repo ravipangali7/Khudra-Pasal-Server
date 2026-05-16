@@ -70,6 +70,29 @@ def flag_and_log_security_event(
     return flag
 
 
+def validate_flag_resolution_note(severity: str, note: str) -> str | None:
+    """Return an error message when a resolution note is required but missing/short."""
+    trimmed = (note or "").strip()
+    if severity == FlaggedActivity.Severity.HIGH and len(trimmed) < 10:
+        return "resolution_note required (min 10 characters) for high severity."
+    if severity == FlaggedActivity.Severity.MEDIUM and len(trimmed) < 5:
+        return "resolution_note required (min 5 characters) for medium severity."
+    return None
+
+
+def append_resolution_note(flag: FlaggedActivity, note: str) -> None:
+    """Append an admin resolution note to the flag detail field (max 2000 chars)."""
+    trimmed = (note or "").strip()
+    if not trimmed:
+        return
+    from django.utils import timezone
+
+    stamp = timezone.now().strftime("%Y-%m-%d %H:%M UTC")
+    block = f"[Resolution {stamp}]\n{trimmed}"
+    combined = f"{flag.detail}\n\n{block}".strip() if flag.detail else block
+    flag.detail = combined[:2000]
+
+
 def record_resolution(flag: FlaggedActivity) -> None:
     if flag.status not in (
         FlaggedActivity.Status.REVIEWED,

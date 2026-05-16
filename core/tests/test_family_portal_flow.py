@@ -63,6 +63,7 @@ class FamilyPortalFlowTests(TestCase):
             phone="9811111111",
             name="Leader",
             role=User.Role.NORMAL,
+            kyc_status=User.KYCStatus.VERIFIED,
         )
         self.child = User.objects.create_user(
             username="childu",
@@ -756,6 +757,7 @@ class FamilyPortalFlowTests(TestCase):
             phone="9855555555",
             name="OtherLead",
             role=User.Role.NORMAL,
+            kyc_status=User.KYCStatus.VERIFIED,
         )
         self.client.credentials()
         login2 = self.client.post(
@@ -824,6 +826,7 @@ class FamilyPortalFlowTests(TestCase):
             phone="9777777777",
             name="FlatUser",
             role=User.Role.NORMAL,
+            kyc_status=User.KYCStatus.VERIFIED,
         )
         login = self.client.post(
             "/api/portal/auth/login/",
@@ -1607,6 +1610,7 @@ class FamilyPortalFlowTests(TestCase):
             phone="9822222222",
             name="Rich Lead",
             role=User.Role.NORMAL,
+            kyc_status=User.KYCStatus.VERIFIED,
         )
         w = get_or_create_personal_wallet(rich)
         Wallet.objects.filter(pk=w.pk).update(balance=Decimal("2000.00"))
@@ -1629,7 +1633,20 @@ class PortalSignupOtpAndTransferPolicyTests(TestCase):
         relax_wallet_settings_for_tests()
         self.client = APIClient()
 
-    def test_otp_signup_family_portal_creates_group(self):
+    def test_otp_signup_rejects_family_portal_at_send(self):
+        r = self.client.post(
+            "/api/auth/otp/send/",
+            {
+                "phone": "9817654321",
+                "purpose": "signup",
+                "name": "Head",
+                "portal": "family-portal",
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_otp_signup_creates_normal_member_only(self):
         phone = "9817654321"
         self.assertFalse(User.objects.filter(phone=phone).exists())
         r = self.client.post(
@@ -1638,7 +1655,6 @@ class PortalSignupOtpAndTransferPolicyTests(TestCase):
                 "phone": phone,
                 "purpose": "signup",
                 "name": "Head",
-                "portal": "family-portal",
             },
             format="json",
         )
@@ -1653,18 +1669,14 @@ class PortalSignupOtpAndTransferPolicyTests(TestCase):
                 "otp": otp,
                 "purpose": "signup",
                 "name": "Head",
-                "portal": "family-portal",
-                "family_name": "House Test",
             },
             format="json",
         )
         self.assertEqual(r2.status_code, status.HTTP_200_OK)
-        self.assertEqual(r2.data.get("portal"), "family-portal")
+        self.assertEqual(r2.data.get("portal"), "portal")
         u = User.objects.get(phone=phone)
-        self.assertEqual(u.role, User.Role.PARENT)
-        self.assertTrue(
-            FamilyGroup.objects.filter(leader=u, name="House Test").exists()
-        )
+        self.assertEqual(u.role, User.Role.NORMAL)
+        self.assertFalse(FamilyGroup.objects.filter(leader=u).exists())
 
     def test_otp_signup_child_portal_rejected_on_send(self):
         r = self.client.post(
@@ -1722,6 +1734,7 @@ class PortalSignupOtpAndTransferPolicyTests(TestCase):
             phone="9811111881",
             name="L",
             role=User.Role.NORMAL,
+            kyc_status=User.KYCStatus.VERIFIED,
         )
         child = User.objects.create_user(
             username="spc",

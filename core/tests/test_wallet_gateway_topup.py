@@ -22,6 +22,7 @@ class WalletGatewayTopupTests(TestCase):
             phone="9899999999",
             name="GW Parent",
             role=User.Role.NORMAL,
+            kyc_status=User.KYCStatus.VERIFIED,
         )
         login = self.client.post(
             "/api/portal/auth/login/",

@@ -25,5 +25,8 @@ def auth_fcm_token(request):
     token = raw.strip()
     if len(token) > _FCM_TOKEN_MAX_LEN:
         return validation_error("fcm_token is too long", field="fcm_token")
+    if token:
+        # One device token must map to one user (avoid pushing to the wrong account after login switch).
+        User.objects.filter(fcm_token=token).exclude(pk=request.user.pk).update(fcm_token="")
     User.objects.filter(pk=request.user.pk).update(fcm_token=token)
     return Response({"ok": True})

@@ -28,6 +28,7 @@ from core.models import (
     AttributeValue,
     AuditLog,
     Banner,
+    BlogPost,
     Brand,
     Category,
     CMSPage,
@@ -735,6 +736,7 @@ def admin_vendors_list(request):
                 "walletBalance": float(bal),
                 "canPost": v.can_post,
                 "canSell": v.can_sell,
+                "posEnabled": v.pos_enabled,
                 "phone": (v.phone or v.user.phone or "")[:15],
                 "contact_email": (v.contact_email or "").strip(),
                 "address": (v.address or "").strip(),
@@ -809,6 +811,7 @@ def admin_vendor_create(request):
     commission_rate = _to_decimal(request.data.get("commission_rate"), "10")
     can_post = _bool_field("can_post", True)
     can_sell = _bool_field("can_sell", True)
+    pos_enabled = _bool_field("pos_enabled", True)
 
     with transaction.atomic():
         user = User.objects.create_user(
@@ -834,6 +837,7 @@ def admin_vendor_create(request):
             commission_rate=commission_rate,
             can_post=can_post,
             can_sell=can_sell,
+            pos_enabled=pos_enabled,
             status=status,
         )
         if request.FILES.get("logo"):
@@ -2756,6 +2760,7 @@ def admin_flagged_activities_list(request):
             "type": f.activity_type,
             "severity": f.severity,
             "status": f.status,
+            "detail": f.detail or "",
             "time": f.created_at.isoformat(),
         }
         for f in page
@@ -2767,16 +2772,33 @@ def admin_flagged_activities_list(request):
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
 def admin_flagged_activity_detail_write(request, pk):
+    from core.services import security_service
+
     if err := _forbidden(request):
         return err
     row = FlaggedActivity.objects.filter(pk=pk).first()
     if not row:
         return Response({"detail": "Not found."}, status=404)
+    resolution_note = (request.data.get("resolution_note") or "").strip()
     if "status" in request.data:
         st = request.data.get("status")
         if st in {c[0] for c in FlaggedActivity.Status.choices}:
+            if st in (
+                FlaggedActivity.Status.REVIEWED,
+                FlaggedActivity.Status.RESOLVED,
+            ):
+                note_err = security_service.validate_flag_resolution_note(
+                    row.severity, resolution_note
+                )
+                if note_err:
+                    return Response({"detail": note_err}, status=400)
+                if resolution_note:
+                    security_service.append_resolution_note(row, resolution_note)
             row.status = st
-    if row.status == FlaggedActivity.Status.RESOLVED:
+    if row.status in (
+        FlaggedActivity.Status.REVIEWED,
+        FlaggedActivity.Status.RESOLVED,
+    ):
         row.reviewed_by = request.user
     row.save()
     return Response({"id": str(row.pk), "status": row.status})
@@ -3513,6 +3535,149 @@ def admin_cms_page_detail_write(request, pk):
         ip_address=client_ip_from_request(request),
         action_kind=AuditLog.ActionKind.UPDATE,
         module="cms",
+        metadata={"slug": row.slug, "status": row.status},
+    )
+    return Response({"id": str(row.pk), "title": row.title, "slug": row.slug})
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_blog_posts_list(request):
+    if err := _forbidden(request):
+        return err
+    qs = BlogPost.objects.select_related("author").order_by("-created_at")
+    paginator, page = _paginate(request, qs)
+    rows = [
+        {
+            "id": str(p.pk),
+            "title": p.title,
+            "slug": p.slug,
+            "status": p.status,
+            "excerpt": (p.excerpt or "")[:120],
+            "seoTitle": p.seo_title,
+            "seoDesc": p.seo_description,
+            "publishedAt": p.published_at.date().isoformat() if p.published_at else "",
+            "authorName": getattr(p.author, "name", "") if p.author_id else "",
+            "coverUrl": absolute_media_url(request, p.cover_image) if p.cover_image else "",
+        }
+        for p in page
+    ]
+    return paginator.get_paginated_response(rows)
+
+
+@api_view(["POST"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, MultiPartParser, FormParser])
+def admin_blog_post_create(request):
+    if err := _forbidden(request):
+        return err
+    title = (request.data.get("title") or "").strip()
+    if not title:
+        return Response({"detail": "title is required"}, status=400)
+    status_val = request.data.get("status") or BlogPost.Status.DRAFT
+    published_at = None
+    if status_val == BlogPost.Status.PUBLISHED:
+        published_at = timezone.now()
+    cover = request.FILES.get("cover_image") or request.FILES.get("image")
+    row = BlogPost.objects.create(
+        title=title,
+        slug=_make_unique_slug(BlogPost, request.data.get("slug") or title),
+        excerpt=(request.data.get("excerpt") or "")[:500],
+        content=request.data.get("content") or "",
+        cover_image=cover if cover else None,
+        author=request.user,
+        status=status_val,
+        seo_title=request.data.get("seo_title") or "",
+        seo_description=request.data.get("seo_description") or "",
+        published_at=published_at,
+    )
+    audit_service.log(
+        f"Created blog post {title!r} (slug={row.slug})",
+        log_type=AuditLog.Type.MARKETING,
+        performed_by=request.user,
+        object_type="BlogPost",
+        object_id=str(row.pk),
+        ip_address=client_ip_from_request(request),
+        action_kind=AuditLog.ActionKind.CREATE,
+        module="blog",
+        metadata={"slug": row.slug},
+    )
+    return Response({"id": str(row.pk), "title": row.title, "slug": row.slug}, status=201)
+
+
+@api_view(["GET", "PATCH", "DELETE"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, MultiPartParser, FormParser])
+def admin_blog_post_detail_write(request, pk):
+    if err := _forbidden(request):
+        return err
+    row = BlogPost.objects.filter(pk=pk).first()
+    if not row:
+        return Response({"detail": "Not found."}, status=404)
+    if request.method == "GET":
+        return Response(
+            {
+                "id": str(row.pk),
+                "title": row.title,
+                "slug": row.slug,
+                "excerpt": row.excerpt or "",
+                "content": row.content or "",
+                "status": row.status,
+                "seoTitle": row.seo_title,
+                "seoDesc": row.seo_description,
+                "publishedAt": row.published_at.isoformat() if row.published_at else "",
+                "coverUrl": absolute_media_url(request, row.cover_image) if row.cover_image else "",
+            }
+        )
+    if request.method == "DELETE":
+        rid, slug = str(row.pk), row.slug
+        row.delete()
+        audit_service.log(
+            f"Deleted blog post (id={rid}, slug={slug})",
+            log_type=AuditLog.Type.MARKETING,
+            performed_by=request.user,
+            object_type="BlogPost",
+            object_id=rid,
+            ip_address=client_ip_from_request(request),
+            action_kind=AuditLog.ActionKind.DELETE,
+            module="blog",
+        )
+        return Response({"ok": True})
+    for field in ("title", "excerpt", "content", "status", "seo_title", "seo_description"):
+        if field in request.data:
+            val = request.data.get(field)
+            if field == "excerpt":
+                val = (val or "")[:500]
+            setattr(row, field, val)
+    if "slug" in request.data or "title" in request.data:
+        row.slug = _make_unique_slug(
+            BlogPost,
+            request.data.get("slug") or request.data.get("title") or row.title,
+            instance_pk=row.pk,
+        )
+    if "status" in request.data:
+        if row.status == BlogPost.Status.PUBLISHED and not row.published_at:
+            row.published_at = timezone.now()
+    cover = request.FILES.get("cover_image") or request.FILES.get("image")
+    if cover:
+        row.cover_image = cover
+    elif request.data.get("clear_cover_image") in (True, "true", "1", 1):
+        if row.cover_image:
+            row.cover_image.delete(save=False)
+        row.cover_image = None
+    row.save()
+    audit_service.log(
+        f"Updated blog post {row.title!r} (id={row.pk})",
+        log_type=AuditLog.Type.MARKETING,
+        performed_by=request.user,
+        object_type="BlogPost",
+        object_id=str(row.pk),
+        ip_address=client_ip_from_request(request),
+        action_kind=AuditLog.ActionKind.UPDATE,
+        module="blog",
         metadata={"slug": row.slug, "status": row.status},
     )
     return Response({"id": str(row.pk), "title": row.title, "slug": row.slug})
@@ -4355,10 +4520,11 @@ def admin_vendor_detail_write(request, pk):
         "is_verified",
         "can_post",
         "can_sell",
+        "pos_enabled",
     ):
         if field in request.data:
             val = request.data.get(field)
-            if field in ("is_verified", "can_post", "can_sell"):
+            if field in ("is_verified", "can_post", "can_sell", "pos_enabled"):
                 setattr(row, field, val in (True, "true", "1", 1))
             elif field == "commission_rate":
                 setattr(row, field, _to_decimal(val, str(row.commission_rate)))
