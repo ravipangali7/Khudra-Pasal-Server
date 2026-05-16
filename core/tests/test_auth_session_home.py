@@ -62,6 +62,23 @@ class PrimarySpaRedirectTests(TestCase):
         )
         self.assertEqual(primary_spa_redirect(u), "/child-portal")
 
+    def test_normal_role_family_leader_prefers_customer_portal(self):
+        """After switch-portal to Normal, session-home must not force family-portal."""
+        u = User.objects.create_user(
+            username="normlead",
+            password=self.pw,
+            phone="9860606060",
+            name="NormLead",
+            role=User.Role.NORMAL,
+        )
+        FamilyGroup.objects.create(
+            name="NL Fam",
+            leader=u,
+            type=FamilyGroup.Type.FAMILY,
+            status=FamilyGroup.Status.ACTIVE,
+        )
+        self.assertEqual(primary_spa_redirect(u), "/portal")
+
 
 class AuthSessionHomeApiTests(TestCase):
     def setUp(self):
@@ -104,3 +121,23 @@ class AuthSessionHomeApiTests(TestCase):
         r = self.client.get("/api/auth/session-home/")
         self.assertEqual(r.status_code, status.HTTP_200_OK)
         self.assertEqual(r.data.get("redirect"), "/vendor")
+
+    def test_session_home_normal_role_with_family_is_portal(self):
+        leader = User.objects.create_user(
+            username="sh_lead",
+            password=self.pw,
+            phone="9870707070",
+            name="Lead",
+            role=User.Role.NORMAL,
+        )
+        FamilyGroup.objects.create(
+            name="SH Fam",
+            leader=leader,
+            type=FamilyGroup.Type.FAMILY,
+            status=FamilyGroup.Status.ACTIVE,
+        )
+        token, _ = Token.objects.get_or_create(user=leader)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        r = self.client.get("/api/auth/session-home/")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertEqual(r.data.get("redirect"), "/portal")

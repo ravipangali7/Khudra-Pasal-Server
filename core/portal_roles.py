@@ -86,13 +86,25 @@ def user_has_family_portal_access(user: User) -> bool:
 
 def primary_spa_redirect(user: User) -> str:
     """
-    Canonical SPA entry path for this user (priority: admin, vendor, family, child, customer).
-    Matches login redirect ordering and session-home guard.
+    Canonical SPA entry path for this user.
+
+    Admin and vendor win first. For shoppers, active portal follows User.role
+    (switch-portal) so Normal mode stays on /portal even with family membership.
     """
     if user_allowed_for_portal_key(user, PORTAL_ADMIN):
         return "/admin"
     if user_allowed_for_portal_key(user, PORTAL_VENDOR):
         return "/vendor"
+    if user.role == User.Role.PARENT:
+        if user_has_family_portal_access(user):
+            return "/family-portal"
+        return "/portal"
+    if user.role == User.Role.CHILD:
+        if user_allowed_for_portal_key(user, PORTAL_CHILD):
+            return "/child-portal"
+        return "/portal"
+    if user.role == User.Role.NORMAL:
+        return "/portal"
     if user_has_family_portal_access(user):
         return "/family-portal"
     if user_allowed_for_portal_key(user, PORTAL_CHILD):
