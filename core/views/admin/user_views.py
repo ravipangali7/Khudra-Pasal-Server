@@ -15,7 +15,9 @@ from rest_framework.response import Response
 
 from core.models import AuditLog, EmployeeProfile, KYCDocument, Order, SecuritySettings, User, Vendor, Wallet
 from core.phone_auth import (
+    authenticate_user_by_email,
     authenticate_user_by_phone,
+    find_user_by_email,
     find_user_by_phone_input,
     normalize_nepal_phone,
 )
@@ -105,20 +107,39 @@ ADMIN_LOGIN_FAIL_TTL = 1800
 ADMIN_LOGIN_FAIL_MAX = int(os.environ.get("ADMIN_LOGIN_FAIL_MAX", "5"))
 
 
-def _admin_login_fail_cache_key(phone_input: str) -> str:
-    n = normalize_nepal_phone(phone_input)
-    ident = n or "".join(c for c in phone_input if c.isdigit())[-12:] or phone_input[:24]
+def _admin_login_fail_cache_key(identifier: str, *, use_email: bool) -> str:
+    if use_email:
+        ident = (identifier or "").strip().lower()[:254] or "unknown"
+        return f"{ADMIN_LOGIN_FAIL_PREFIX}email:{ident}"
+    n = normalize_nepal_phone(identifier)
+    ident = n or "".join(c for c in identifier if c.isdigit())[-12:] or identifier[:24]
     return f"{ADMIN_LOGIN_FAIL_PREFIX}{ident}"
+
+
+def _admin_login_identifier(request) -> tuple[str, bool]:
+    """Return (identifier, use_email) from POST body (email preferred when present)."""
+    email = (request.data.get("email") or "").strip()
+    phone = (request.data.get("phone") or "").strip()
+    if email and "@" in email:
+        return email, True
+    if phone and "@" in phone:
+        return phone, True
+    return phone or email, False
 
 
 @api_view(["POST"])
 @throttle_classes([AdminLoginThrottle])
 @permission_classes([AllowAny])
 def admin_login(request):
-    phone = request.data.get("phone", "").strip()
+    identifier, use_email = _admin_login_identifier(request)
     password = request.data.get("password", "")
-    fail_key = _admin_login_fail_cache_key(phone)
-    user = authenticate_user_by_phone(request, phone, password)
+    fail_key = _admin_login_fail_cache_key(identifier, use_email=use_email)
+    if use_email:
+        user = authenticate_user_by_email(request, identifier, password)
+        find_guessed = lambda: find_user_by_email(identifier)
+    else:
+        user = authenticate_user_by_phone(request, identifier, password)
+        find_guessed = lambda: find_user_by_phone_input(identifier)
     ip = client_ip_from_request(request)
     ss = SecuritySettings.load()
 
@@ -126,7 +147,7 @@ def admin_login(request):
         cache.delete(fail_key)
     elif (
         ss.auto_lock_failed_logins
-        and (guessed_user := find_user_by_phone_input(phone))
+        and (guessed_user := find_guessed())
         and guessed_user.is_active
         and not getattr(guessed_user, "is_superuser", False)
     ):
@@ -148,7 +169,7 @@ def admin_login(request):
             )
 
     if not user:
-        guessed_user = find_user_by_phone_input(phone)
+        guessed_user = find_guessed()
         security_service.flag_and_log_security_event(
             activity_type="Admin login failed",
             detail="Invalid admin credentials supplied.",
@@ -158,7 +179,11 @@ def admin_login(request):
             performed_by=guessed_user,
             action_kind=AuditLog.ActionKind.LOGIN,
             module="auth",
-            metadata={"portal": "admin", "phone_input": phone[:30]},
+            metadata={
+                "portal": "admin",
+                "login_method": "email" if use_email else "phone",
+                "identifier": identifier[:30],
+            },
         )
         return Response({"detail": "Invalid credentials."}, status=400)
     denied = assert_portal_login_allowed(user, PORTAL_ADMIN)

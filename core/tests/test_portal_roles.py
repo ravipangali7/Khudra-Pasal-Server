@@ -161,6 +161,17 @@ class PortalRoleLoginTests(TestCase):
             format="json",
         )
         self.assertEqual(r.status_code, status.HTTP_200_OK)
+
+    def test_admin_login_super_admin_by_email(self):
+        self.u_super.email = "super@example.com"
+        self.u_super.save(update_fields=["email"])
+        r = self.client.post(
+            "/api/admin/auth/login/",
+            {"email": "super@example.com", "password": self.pw},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertIn("token", r.data)
         r2 = self.client.post(
             "/api/admin/auth/login/",
             {"phone": self.u_normal.phone, "password": self.pw},

@@ -102,3 +102,23 @@ def authenticate_user_by_phone(request, phone_input: str, password: str) -> User
     if not user.check_password(password):
         return None
     return user
+
+
+def find_user_by_email(email_input: str) -> User | None:
+    """Find user by email (case-insensitive)."""
+    email = (email_input or "").strip().lower()
+    if not email or "@" not in email:
+        return None
+    return User.objects.filter(email__iexact=email).exclude(email="").first()
+
+
+def authenticate_user_by_email(request, email_input: str, password: str) -> User | None:
+    """Match user by email, then verify password and is_active."""
+    user = find_user_by_email(email_input)
+    if user is None:
+        return None
+    if not user.is_active:
+        return None
+    if not user.check_password(password):
+        return None
+    return user
