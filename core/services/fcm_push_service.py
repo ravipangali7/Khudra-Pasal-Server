@@ -144,13 +144,10 @@ def send_fcm_to_tokens(tokens: Iterable[str], title: str, body: str) -> FcmPushS
     first_err: str | None = None
     chunk_size = 500
 
-    data = {"title": title, "body": body}
-
     for i in range(0, len(uniq), chunk_size):
         chunk = uniq[i : i + chunk_size]
         msg = messaging.MulticastMessage(
             notification=messaging.Notification(title=title, body=body),
-            data=data,
             android=android,
             webpush=webpush,
             tokens=chunk,
