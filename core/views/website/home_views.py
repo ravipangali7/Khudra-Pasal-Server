@@ -299,6 +299,12 @@ def _public_chabot_script_from_site(site: SiteSettings) -> str:
     return str(chatbot.get("chabot_script") or "").strip()
 
 
+def _public_app_promotion_banner_from_site(site: SiteSettings):
+    from core.services.app_promotion_banner import public_app_promotion_banner_from_site
+
+    return public_app_promotion_banner_from_site(site)
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def firebase_messaging_config(request):
@@ -343,6 +349,7 @@ def store_info(request):
             "pos_enabled": site.pos_enabled,
             "social_links": _public_social_links_from_site(site),
             "chabot_script": _public_chabot_script_from_site(site),
+            "app_promotion_banner": _public_app_promotion_banner_from_site(site),
             "reels_boost": {
                 "standardMultiplier": rcfg["standardMultiplier"],
                 "premiumMultiplier": rcfg["premiumMultiplier"],

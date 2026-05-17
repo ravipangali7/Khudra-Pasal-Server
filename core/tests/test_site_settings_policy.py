@@ -82,6 +82,31 @@ class SiteSettingsPolicyTests(TestCase):
         self.assertEqual(r.status_code, status.HTTP_200_OK)
         self.assertIn("window.__kp_test=1", r.data["chabot_script"])
 
+    def test_store_info_app_promotion_banner_null_without_headline(self):
+        r = self.client.get("/api/website/store-info/")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertIsNone(r.data.get("app_promotion_banner"))
+
+    def test_store_info_app_promotion_banner_when_configured(self):
+        extras = dict(self.site.admin_extras or {})
+        extras["app_promotion_banner"] = {
+            "headline": "Download the app and get 20% discount offer",
+            "subline": "Exclusive deals on Android",
+            "cta_label": "Get app",
+            "store_url": "https://play.google.com/store/apps/details?id=test",
+            "gradient_from": "#ff6600",
+            "gradient_to": "#6d28d9",
+        }
+        self.site.admin_extras = extras
+        self.site.save(update_fields=["admin_extras"])
+        r = self.client.get("/api/website/store-info/")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        banner = r.data.get("app_promotion_banner")
+        self.assertIsInstance(banner, dict)
+        self.assertEqual(banner["headline"], extras["app_promotion_banner"]["headline"])
+        self.assertEqual(banner["subline"], "Exclusive deals on Android")
+        self.assertEqual(banner["cta_label"], "Get app")
+
     def test_shipping_quote_blocked_when_maintenance(self):
         self.site.maintenance_mode = True
         self.site.save(update_fields=["maintenance_mode"])
