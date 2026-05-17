@@ -1147,6 +1147,7 @@ def vendor_support_ticket_detail(request, ticket_number):
         msgs = support_ticket_service.serialize_ticket_messages(
             list(t.messages.all()),
             _vendor_support_attachment_url,
+            ticket=t,
             sender_avatar_url_fn=_av,
             viewer_user_id=request.user.pk,
             viewer_is_staff=False,
@@ -1210,6 +1211,9 @@ def vendor_support_ticket_messages(request, ticket_number):
             limit = 50
         sa_ids = support_ticket_service.super_admin_user_ids()
         counterpart_online = bool(online_user_ids_for(sa_ids))
+        read_at = support_ticket_service.get_counterpart_last_read_at(
+            t, viewer_is_staff=False
+        )
         results, has_more = support_ticket_service.messages_page_before(
             t,
             before_id,
@@ -1219,6 +1223,7 @@ def vendor_support_ticket_messages(request, ticket_number):
             viewer_user_id=request.user.pk,
             viewer_is_staff=False,
             counterpart_online=counterpart_online,
+            counterpart_read_at=read_at,
         )
         return Response({"results": results, "has_more": has_more})
 
@@ -1237,11 +1242,13 @@ def vendor_support_ticket_messages(request, ticket_number):
     )
     sa_ids = support_ticket_service.super_admin_user_ids()
     counterpart_online = bool(online_user_ids_for(sa_ids))
+    read_at = support_ticket_service.get_counterpart_last_read_at(t, viewer_is_staff=False)
     tick = support_ticket_service.delivery_tick_for_message(
         msg,
         viewer_user_id=request.user.pk,
         viewer_is_staff=False,
         counterpart_online=counterpart_online,
+        counterpart_last_read_at=read_at,
     )
     return Response(
         {

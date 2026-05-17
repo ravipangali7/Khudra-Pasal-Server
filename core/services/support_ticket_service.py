@@ -226,32 +226,60 @@ def last_message_preview_text(ticket: SupportTicket) -> str:
     return "…"
 
 
+def get_counterpart_last_read_at(
+    ticket: SupportTicket,
+    *,
+    viewer_is_staff: bool,
+):
+    """Latest read cursor for the chat counterpart (submitter or any staff)."""
+    if viewer_is_staff:
+        return (
+            SupportTicketReaderState.objects.filter(
+                ticket=ticket, reader_id=ticket.submitter_id
+            )
+            .values_list("last_read_at", flat=True)
+            .first()
+        )
+    return (
+        SupportTicketReaderState.objects.filter(
+            ticket=ticket, reader__is_staff=True
+        )
+        .order_by("-last_read_at")
+        .values_list("last_read_at", flat=True)
+        .first()
+    )
+
+
 def delivery_tick_for_message(
     m: SupportTicketMessage,
     *,
     viewer_user_id: int,
     viewer_is_staff: bool,
     counterpart_online: bool,
+    counterpart_last_read_at=None,
 ) -> int | None:
-    tick = 2 if counterpart_online else 1
     if viewer_is_staff:
         if sender_role_kind(m.sender) != "staff":
             return None
     else:
         if m.sender_id != viewer_user_id:
             return None
-    return tick
+    if counterpart_last_read_at is not None and m.created_at <= counterpart_last_read_at:
+        return 3
+    return 2 if counterpart_online else 1
 
 
 def serialize_ticket_messages(
     messages: Sequence[SupportTicketMessage],
     attachment_url_fn: Callable[[int], str],
     *,
+    ticket: SupportTicket,
     sender_avatar_url_fn: Callable[[User], str] | None,
     viewer_user_id: int,
     viewer_is_staff: bool,
     counterpart_online: bool,
 ) -> list[dict]:
+    lr = get_counterpart_last_read_at(ticket, viewer_is_staff=viewer_is_staff)
     out: list[dict] = []
     for m in messages:
         tick = delivery_tick_for_message(
@@ -259,6 +287,7 @@ def serialize_ticket_messages(
             viewer_user_id=viewer_user_id,
             viewer_is_staff=viewer_is_staff,
             counterpart_online=counterpart_online,
+            counterpart_last_read_at=lr,
         )
         out.append(
             message_to_row(
@@ -323,6 +352,7 @@ def messages_page_before(
     viewer_user_id: int | None = None,
     viewer_is_staff: bool = False,
     counterpart_online: bool = False,
+    counterpart_read_at=None,
 ) -> tuple[list[dict], bool]:
     """Older messages with pk < before_id, chronological within the page."""
     lim = max(1, min(limit, 100))
@@ -337,6 +367,9 @@ def messages_page_before(
     raw = raw[:lim]
     raw.reverse()
     tick_meta = viewer_user_id is not None
+    lr_at = counterpart_read_at
+    if tick_meta and lr_at is None:
+        lr_at = get_counterpart_last_read_at(ticket, viewer_is_staff=viewer_is_staff)
     out: list[dict] = []
     for m in raw:
         tick = None
@@ -346,6 +379,7 @@ def messages_page_before(
                 viewer_user_id=viewer_user_id,
                 viewer_is_staff=viewer_is_staff,
                 counterpart_online=counterpart_online,
+                counterpart_last_read_at=lr_at,
             )
         out.append(
             message_to_row(

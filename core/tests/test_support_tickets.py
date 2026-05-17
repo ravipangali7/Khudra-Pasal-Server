@@ -11,9 +11,12 @@ from core.models import (
     Notification,
     SupportTicket,
     SupportTicketMessage,
+    SupportTicketReaderState,
     User,
     Vendor,
 )
+from core.services import support_ticket_service
+from django.utils import timezone
 
 
 class SupportTicketApiTests(TestCase):
@@ -330,6 +333,74 @@ class SupportTicketApiTests(TestCase):
         self.assertIn("ticket=", n.action_url)
         self.assertIn(tid, n.action_url)
         self.assertTrue(n.action_url.startswith("/vendor/tickets"))
+
+    def test_delivery_ticks_sent_delivered_read(self):
+        tok = self._portal_token(self.customer)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {tok}")
+        r = self.client.post(
+            "/api/portal/support/tickets/",
+            {"subject": "Ticks", "description": "Hi"},
+            format="json",
+        )
+        tid = r.data["id"]
+        t = SupportTicket.objects.get(ticket_number=tid)
+        user_msg = t.messages.filter(sender=self.customer).order_by("pk").first()
+        self.assertIsNotNone(user_msg)
+
+        tick_offline = support_ticket_service.delivery_tick_for_message(
+            user_msg,
+            viewer_user_id=self.customer.pk,
+            viewer_is_staff=False,
+            counterpart_online=False,
+            counterpart_last_read_at=None,
+        )
+        self.assertEqual(tick_offline, 1)
+
+        tick_online = support_ticket_service.delivery_tick_for_message(
+            user_msg,
+            viewer_user_id=self.customer.pk,
+            viewer_is_staff=False,
+            counterpart_online=True,
+            counterpart_last_read_at=None,
+        )
+        self.assertEqual(tick_online, 2)
+
+        now = timezone.now()
+        SupportTicketReaderState.objects.create(
+            ticket=t, reader=self.admin, last_read_at=now
+        )
+        read_at = support_ticket_service.get_counterpart_last_read_at(
+            t, viewer_is_staff=False
+        )
+        tick_read = support_ticket_service.delivery_tick_for_message(
+            user_msg,
+            viewer_user_id=self.customer.pk,
+            viewer_is_staff=False,
+            counterpart_online=True,
+            counterpart_last_read_at=read_at,
+        )
+        self.assertEqual(tick_read, 3)
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self._admin_token()}")
+        r_admin = self.client.post(
+            f"/api/admin/tickets/{tid}/messages/",
+            {"body": "Staff reply"},
+            format="json",
+        )
+        self.assertEqual(r_admin.status_code, status.HTTP_201_CREATED)
+        staff_tick = r_admin.data["message"].get("delivery_ticks")
+        self.assertEqual(staff_tick, 1)
+
+        support_ticket_service.mark_ticket_read(t, self.customer)
+        r_detail = self.client.get(f"/api/admin/tickets/{tid}/")
+        self.assertEqual(r_detail.status_code, status.HTTP_200_OK)
+        staff_msgs = [
+            m
+            for m in r_detail.data["messages"]
+            if m.get("sender_role_kind") == "staff"
+        ]
+        self.assertTrue(staff_msgs)
+        self.assertEqual(staff_msgs[-1].get("delivery_ticks"), 3)
 
     def test_reject_disallowed_extension(self):
         tok = self._portal_token(self.customer)
