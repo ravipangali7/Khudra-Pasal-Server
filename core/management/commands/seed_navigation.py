@@ -98,6 +98,20 @@ class Command(BaseCommand):
                     )
                 )
 
+        seed_portal_main_keys = {k for (s, k, *_rest) in seed_rows if s == "portal_main"}
+        deprecated_portal_main_keys = {"switch-portal"}
+        to_remove_portal_main = sorted(deprecated_portal_main_keys - seed_portal_main_keys)
+        if to_remove_portal_main:
+            deleted, _ = NavigationItem.objects.filter(
+                surface="portal_main", key__in=to_remove_portal_main
+            ).delete()
+            if deleted:
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"Deleted {deleted} deprecated customer portal nav row(s): {', '.join(to_remove_portal_main)}"
+                    )
+                )
+
         seed_admin_keys = {k for (s, k, *_rest) in seed_rows if s == "admin"}
         deprecated_admin_keys = {
             "employees",

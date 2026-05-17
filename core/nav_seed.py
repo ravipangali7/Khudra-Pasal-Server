@@ -113,7 +113,7 @@ PORTAL_MAIN_NAV: list[tuple] = [
     ("portal_main", "wishlist", "Wishlist", "Heart", "", 37, "", ""),
     ("portal_main", "orders", "Orders", "ShoppingBag", "", 40, "", ""),
     ("portal_main", "transactions", "Transactions", "Receipt", "", 50, "", ""),
-    ("portal_main", "switch-portal", "Switch Portal", "RefreshCcw", "", 60, "", ""),
+    ("portal_main", "notifications", "Notifications", "Bell", "", 60, "portal_notifications", ""),
     ("portal_main", "profile", "Profile", "User", "", 70, "", ""),
     ("portal_main", "support", "Support", "HelpCircle", "", 80, "", ""),
 ]
