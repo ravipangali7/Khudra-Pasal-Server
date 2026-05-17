@@ -51,7 +51,8 @@ from core.models import (
     Vendor,
 )
 from core.services import reel_service
-from core.services.reels_site_settings import get_reels_site_config
+from core.services import reel_feed_service
+from core.services.reels_site_settings import get_reels_feed_mix, get_reels_site_config
 from core.services.product_pricing import (
     flash_deal_ids_for_products,
     flash_override_prices_for_products,
@@ -355,6 +356,7 @@ def store_info(request):
                 "premiumMultiplier": rcfg["premiumMultiplier"],
                 "megaMultiplier": rcfg["megaMultiplier"],
                 "feedAlgorithm": rcfg["feedAlgorithm"],
+                "feedMix": rcfg["feedMix"],
             },
         }
     )
@@ -908,6 +910,72 @@ def annotate_reels_comments(queryset):
     return queryset.annotate(comments_count=Count("comments", distinct=True))
 
 
+def _public_reels_list_response(request, qs, *, tab: str):
+    """
+    Blended slot feed when feedAlgorithm=personalized or ?feed=blended;
+    otherwise legacy boost + tab ordering.
+    """
+    cfg = get_reels_site_config()
+    if reel_feed_service.should_use_blended_feed(request, cfg["feedAlgorithm"]):
+        audience = reel_feed_service.detect_audience(request)
+        paginator = ProductPagination()
+        page_size = paginator.get_page_size(request) or paginator.page_size
+        try:
+            page_num = int(request.query_params.get(paginator.page_query_param, 1))
+        except (TypeError, ValueError):
+            page_num = 1
+        user = request.user if request.user.is_authenticated else None
+        reels, has_more = reel_feed_service.build_blended_feed_page(
+            qs,
+            user=user,
+            audience=audience,
+            page=page_num,
+            page_size=page_size,
+            mix=get_reels_feed_mix(audience),
+        )
+        if reels:
+            hydrated = annotate_reels_comments(
+                Reel.objects.filter(pk__in=[r.pk for r in reels])
+                .select_related("vendor", "product", "product__category", "product__seller")
+                .prefetch_related("comments")
+            )
+            by_id = {r.pk: r for r in hydrated}
+            ordered = [by_id[r.pk] for r in reels if r.pk in by_id]
+        else:
+            ordered = []
+        serializer = ReelPublicSerializer(ordered, many=True, context={"request": request})
+        next_page = page_num + 1 if has_more else None
+        prev_page = page_num - 1 if page_num > 1 else None
+
+        def _page_url(p: int | None):
+            if p is None:
+                return None
+            q = request.query_params.copy()
+            q[paginator.page_query_param] = str(p)
+            return request.build_absolute_uri(f"{request.path}?{q.urlencode()}")
+
+        return Response(
+            {
+                "count": None,
+                "next": _page_url(next_page),
+                "previous": _page_url(prev_page),
+                "results": serializer.data,
+                "feed_meta": {
+                    "mode": "blended",
+                    "audience": audience,
+                    "tab": tab,
+                    "slot_mix": get_reels_feed_mix(audience),
+                },
+            }
+        )
+
+    queryset = annotate_reels_comments(order_public_reels(qs, tab))
+    paginator = ProductPagination()
+    page = paginator.paginate_queryset(queryset, request)
+    serializer = ReelPublicSerializer(page, many=True, context={"request": request})
+    return paginator.get_paginated_response(serializer.data)
+
+
 def _reel_public_statuses():
     return [Reel.Status.ACTIVE, Reel.Status.APPROVED]
 
@@ -937,12 +1005,7 @@ def reels_list(request):
     tab = request.query_params.get("tab") or "trending"
     qs = public_reels_queryset_for_request(request)
     qs = _apply_only_direct_mp4_param(qs, request)
-    queryset = annotate_reels_comments(order_public_reels(qs, tab))
-
-    paginator = ProductPagination()
-    page = paginator.paginate_queryset(queryset, request)
-    serializer = ReelPublicSerializer(page, many=True, context={"request": request})
-    return paginator.get_paginated_response(serializer.data)
+    return _public_reels_list_response(request, qs, tab=tab)
 
 
 @api_view(["GET"])
@@ -951,12 +1014,7 @@ def reels_trending_list(request):
     """Trending reels; optional vendor_ids / vendor_id / vendor_slug narrow the set (same as /website/reels/)."""
     qs = public_reels_queryset_for_request(request)
     qs = _apply_only_direct_mp4_param(qs, request)
-    queryset = annotate_reels_comments(order_public_reels(qs, "trending"))
-
-    paginator = ProductPagination()
-    page = paginator.paginate_queryset(queryset, request)
-    serializer = ReelPublicSerializer(page, many=True, context={"request": request})
-    return paginator.get_paginated_response(serializer.data)
+    return _public_reels_list_response(request, qs, tab="trending")
 
 
 def _abs_file_url(request, file_field):
