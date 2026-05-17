@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.core.cache import cache
-from django.db.models import Count, IntegerField, OuterRef, Q, Subquery, Sum, Value
+from django.db.models import Count, IntegerField, OuterRef, Prefetch, Q, Subquery, Sum, Value
 from django.db.models.fields import DecimalField
 from django.db.models.functions import Coalesce
 from rest_framework.authentication import SessionAuthentication, TokenAuthentication
@@ -13,7 +13,18 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from core.models import AuditLog, EmployeeProfile, KYCDocument, Order, SecuritySettings, User, Vendor, Wallet
+from core.models import (
+    AuditLog,
+    EmployeeProfile,
+    FamilyGroup,
+    FamilyMember,
+    KYCDocument,
+    Order,
+    SecuritySettings,
+    User,
+    Vendor,
+    Wallet,
+)
 from core.phone_auth import (
     authenticate_user_by_email,
     authenticate_user_by_phone,
@@ -484,6 +495,122 @@ def admin_user_detail_write(request, pk):
     data = AdminUserSerializer(u, context={"request": request}).data
     data["avatar"] = absolute_media_url(request, user.avatar) if user.avatar else ""
     return Response(data)
+
+
+_PARENT_MEMBER_ROLES = frozenset(
+    {
+        FamilyMember.Role.PARENT,
+        FamilyMember.Role.MANAGER,
+        FamilyMember.Role.SPOUSE,
+    }
+)
+
+
+def _admin_customer_user_row(request, user, *, membership_role=None):
+    data = AdminUserSerializer(user, context={"request": request}).data
+    if membership_role:
+        data["membership_role"] = membership_role
+    return data
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_customers_grouped(request):
+    """Family groups with parent accounts and nested child accounts for admin customers page."""
+    forbidden = _forbidden_if_not_admin(request)
+    if forbidden:
+        return forbidden
+
+    groups_qs = (
+        FamilyGroup.objects.filter(is_platform_hub=False)
+        .select_related("leader")
+        .prefetch_related(
+            Prefetch(
+                "members",
+                queryset=FamilyMember.objects.select_related("user").order_by("joined_at"),
+            )
+        )
+        .order_by("name")
+    )
+
+    user_ids: set[int] = set()
+    group_snapshots = []
+    for group in groups_qs:
+        members = list(group.members.all())
+        if not members:
+            continue
+        parent_members = [m for m in members if m.role in _PARENT_MEMBER_ROLES]
+        child_members = [m for m in members if m.role == FamilyMember.Role.CHILD]
+        if not parent_members and not child_members:
+            continue
+        for m in members:
+            user_ids.add(m.user_id)
+        user_ids.add(group.leader_id)
+        group_snapshots.append((group, parent_members, child_members))
+
+    users_by_id = {
+        u.pk: u
+        for u in _annotate_admin_user_customer_metrics(
+            User.objects.filter(pk__in=user_ids)
+        )
+    }
+
+    groups_out = []
+    for group, parent_members, child_members in group_snapshots:
+        children_payload = []
+        for m in child_members:
+            u = users_by_id.get(m.user_id)
+            if u:
+                children_payload.append(
+                    _admin_customer_user_row(request, u, membership_role=m.role)
+                )
+
+        primary_uid = group.leader_id
+        if parent_members and not any(m.user_id == primary_uid for m in parent_members):
+            primary_uid = parent_members[0].user_id
+
+        parents_payload = []
+        seen_parent_uids: set[int] = set()
+        for m in parent_members:
+            u = users_by_id.get(m.user_id)
+            if not u:
+                continue
+            node = _admin_customer_user_row(request, u, membership_role=m.role)
+            node["children"] = children_payload if m.user_id == primary_uid else []
+            parents_payload.append(node)
+            seen_parent_uids.add(m.user_id)
+
+        if child_members and group.leader_id and group.leader_id not in seen_parent_uids:
+            leader = users_by_id.get(group.leader_id)
+            if leader:
+                node = _admin_customer_user_row(
+                    request, leader, membership_role="leader"
+                )
+                node["children"] = children_payload
+                parents_payload.insert(0, node)
+                seen_parent_uids.add(group.leader_id)
+
+        if not parents_payload and child_members:
+            leader = users_by_id.get(group.leader_id)
+            if leader:
+                node = _admin_customer_user_row(
+                    request, leader, membership_role="leader"
+                )
+                node["children"] = children_payload
+                parents_payload.append(node)
+
+        groups_out.append(
+            {
+                "id": str(group.pk),
+                "name": group.name,
+                "type": group.type,
+                "status": group.status,
+                "parents": parents_payload,
+            }
+        )
+
+    return Response({"groups": groups_out})
 
 
 @api_view(["GET", "POST"])

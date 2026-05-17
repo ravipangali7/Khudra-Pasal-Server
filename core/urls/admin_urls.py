@@ -28,6 +28,11 @@ urlpatterns = [
         name="admin-me-notifications",
     ),
     path("users/", user_views.users_list, name="admin-users"),
+    path(
+        "customers/grouped/",
+        user_views.admin_customers_grouped,
+        name="admin-customers-grouped",
+    ),
     path("users/create/", user_views.admin_user_create, name="admin-users-create"),
     path(
         "users/<int:pk>/kyc-documents/",
