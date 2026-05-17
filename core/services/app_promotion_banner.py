@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from decimal import Decimal, InvalidOperation
 
 from core.models import SiteSettings
 
@@ -15,6 +15,7 @@ _PUBLIC_STRING_FIELDS = (
     "store_url",
     "gradient_from",
     "gradient_to",
+    "discount_percent",
 )
 
 
@@ -31,7 +32,34 @@ def normalize_app_promotion_banner(payload: dict | None) -> dict[str, str]:
         out[key] = str(src.get(key) or "").strip()
     if not out["cta_label"]:
         out["cta_label"] = "Get app"
+    if out.get("discount_percent"):
+        try:
+            pct = Decimal(out["discount_percent"])
+            if pct < 0:
+                pct = Decimal("0")
+            if pct > 100:
+                pct = Decimal("100")
+            out["discount_percent"] = str(pct.quantize(Decimal("0.01")))
+        except (InvalidOperation, ValueError):
+            out["discount_percent"] = ""
     return out
+
+
+def banner_discount_percent(site: SiteSettings | None = None) -> Decimal:
+    site = site or SiteSettings.load()
+    cfg = normalize_app_promotion_banner(_section(site.admin_extras))
+    raw = cfg.get("discount_percent") or ""
+    if not raw:
+        return Decimal("0")
+    try:
+        pct = Decimal(raw)
+    except (InvalidOperation, ValueError):
+        return Decimal("0")
+    if pct < 0:
+        return Decimal("0")
+    if pct > 100:
+        return Decimal("100")
+    return pct.quantize(Decimal("0.01"))
 
 
 def public_app_promotion_banner_from_site(site: SiteSettings) -> dict[str, str] | None:
@@ -47,6 +75,9 @@ def public_app_promotion_banner_from_site(site: SiteSettings) -> dict[str, str] 
     data["headline"] = headline
     if not data.get("cta_label"):
         data["cta_label"] = "Get app"
+    pct = banner_discount_percent(site)
+    if pct > 0:
+        data["discount_percent"] = str(pct)
     return data
 
 

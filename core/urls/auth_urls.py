@@ -11,9 +11,15 @@ from core.views.social_oauth import (
 )
 from core.views.device_views import auth_fcm_token
 from core.views.unified_auth import auth_session_home, unified_login
+from core.views.website import app_promo_views
 
 urlpatterns = [
     path("fcm-token/", auth_fcm_token, name="auth-fcm-token"),
+    path(
+        "app-promotion-banner/claim-install/",
+        app_promo_views.app_promotion_claim_install,
+        name="auth-app-promotion-claim-install",
+    ),
     path("session-home/", auth_session_home, name="auth-session-home"),
     path("login/", unified_login, name="unified-login"),
     path("google/", GoogleCredentialLoginView.as_view(), name="google-credential-login"),

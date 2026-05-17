@@ -52,8 +52,14 @@ def user_payload(user: User, surface: str) -> dict:
     return data
 
 
-def build_auth_success_response(user: User, portal_key: str) -> dict:
+def build_auth_success_response(
+    user: User, portal_key: str, request=None
+) -> dict:
     """Issue token only after portal_key is validated (caller must validate first)."""
+    if request is not None:
+        from core.services.app_promotion_attribution import merge_attribution_from_request
+
+        merge_attribution_from_request(user, request)
     surface, redirect = resolve_surface_and_redirect(user)
     if portal_key == PORTAL_FAMILY and user_has_family_portal_access(user):
         redirect = "/family-portal/dashboard"
@@ -69,11 +75,13 @@ def build_auth_success_response(user: User, portal_key: str) -> dict:
     }
 
 
-def build_auth_response_for_portal(user: User, portal_key: str) -> dict | Response:
+def build_auth_response_for_portal(
+    user: User, portal_key: str, request=None
+) -> dict | Response:
     denied = assert_portal_login_allowed(user, portal_key)
     if denied:
         return denied
-    return build_auth_success_response(user, portal_key)
+    return build_auth_success_response(user, portal_key, request=request)
 
 
 @api_view(["POST"])
@@ -98,7 +106,7 @@ def unified_login(request):
     if not user:
         return Response({"detail": "Invalid credentials."}, status=400)
 
-    out = build_auth_response_for_portal(user, portal_key)
+    out = build_auth_response_for_portal(user, portal_key, request=request)
     if isinstance(out, Response):
         return out
     return Response(out)

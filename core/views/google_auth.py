@@ -159,7 +159,7 @@ class GoogleCredentialLoginView(APIView):
 
         requested_portal = infer_portal_key_from_frontend_path(next_path)
         portal_key = _effective_portal_key_for_oauth(user, next_path)
-        out = build_auth_response_for_portal(user, portal_key)
+        out = build_auth_response_for_portal(user, portal_key, request=request)
         if isinstance(out, Response):
             detail = getattr(out, "data", None) or {}
             msg = detail.get("detail", "Sign-in not allowed for this portal.")

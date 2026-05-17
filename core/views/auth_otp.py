@@ -229,14 +229,18 @@ def otp_verify(request):
                 },
                 status=400,
             )
-        out = build_auth_response_for_portal(user, portal_key)
+        out = build_auth_response_for_portal(user, portal_key, request=request)
         if isinstance(out, Response):
             # For generic customer login, avoid hard-failing with 403 when the account
             # belongs to another allowed portal (family/child/vendor/admin).
             if out.status_code == 403 and portal_key == PORTAL_MAIN:
                 fallback_key = _fallback_portal_key_for_user(user)
                 if fallback_key:
-                    return Response(build_auth_success_response(user, fallback_key))
+                    return Response(
+                        build_auth_success_response(
+                            user, fallback_key, request=request
+                        )
+                    )
             return out
         return Response(out)
 
@@ -289,7 +293,7 @@ def otp_verify(request):
     except ValueError as e:
         return Response({"detail": str(e)}, status=400)
 
-    out = build_auth_response_for_portal(user, portal_key)
+    out = build_auth_response_for_portal(user, portal_key, request=request)
     if isinstance(out, Response):
         return out
     return Response(out)

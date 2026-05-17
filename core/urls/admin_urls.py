@@ -2,6 +2,7 @@ from django.urls import path
 
 from core.views.admin import (
     admin_vendor_inventory_views,
+    app_promo_views,
     dashboard_views,
     kyc_submissions_views,
     resource_views,
@@ -310,6 +311,11 @@ urlpatterns = [
     path("security-settings/", resource_views.admin_security_settings_singleton, name="admin-security-settings"),
     path("security/summary/", resource_views.admin_security_summary, name="admin-security-summary"),
     path("site-settings/", resource_views.admin_site_settings_singleton, name="admin-site-settings"),
+    path(
+        "app-promotion-attributions/",
+        app_promo_views.admin_app_promotion_attributions_list,
+        name="admin-app-promotion-attributions",
+    ),
     path(
         "payment-gateways/<str:gateway>/",
         resource_views.admin_payment_gateway_write,

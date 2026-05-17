@@ -123,7 +123,7 @@ def oauth_phone_verify(request):
 
     requested_portal = infer_portal_key_from_frontend_path(next_path)
     portal_key = _effective_portal_key_for_oauth(user, next_path)
-    data = build_auth_response_for_portal(user, portal_key)
+    data = build_auth_response_for_portal(user, portal_key, request=request)
     if isinstance(data, Response):
         detail = getattr(data, "data", None) or {}
         msg = detail.get("detail", "Sign-in not allowed for this portal.")

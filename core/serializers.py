@@ -300,6 +300,8 @@ class AdminUserSerializer(serializers.ModelSerializer):
     order_count = serializers.SerializerMethodField()
     total_spent = serializers.SerializerMethodField()
     wallet_balance = serializers.SerializerMethodField()
+    app_promo_status = serializers.SerializerMethodField()
+    app_promo_discount_percent = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -318,6 +320,8 @@ class AdminUserSerializer(serializers.ModelSerializer):
             "order_count",
             "total_spent",
             "wallet_balance",
+            "app_promo_status",
+            "app_promo_discount_percent",
         ]
 
     def get_customer_document(self, obj):
@@ -346,6 +350,22 @@ class AdminUserSerializer(serializers.ModelSerializer):
     def get_wallet_balance(self, obj):
         v = getattr(obj, "admin_wallet_balance", None)
         return float(v or 0)
+
+    def get_app_promo_status(self, obj):
+        from core.models import AppPromotionAttribution
+
+        try:
+            return str(obj.app_promotion_attribution.status or "")
+        except AppPromotionAttribution.DoesNotExist:
+            return ""
+
+    def get_app_promo_discount_percent(self, obj):
+        from core.models import AppPromotionAttribution
+
+        try:
+            return float(obj.app_promotion_attribution.discount_percent or 0)
+        except AppPromotionAttribution.DoesNotExist:
+            return 0.0
 
 
 class RecentOrderSerializer(serializers.ModelSerializer):

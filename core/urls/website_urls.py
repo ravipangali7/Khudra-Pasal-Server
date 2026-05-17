@@ -1,6 +1,6 @@
 from django.urls import path
 
-from core.views.website import family_portal_join_views, home_views
+from core.views.website import app_promo_views, family_portal_join_views, home_views
 
 urlpatterns = [
     path(
@@ -20,6 +20,11 @@ urlpatterns = [
         name="website-firebase-messaging",
     ),
     path("store-info/", home_views.store_info, name="website-store-info"),
+    path(
+        "app-promotion-banner/click/",
+        app_promo_views.app_promotion_banner_click,
+        name="website-app-promotion-banner-click",
+    ),
     path("shipping-zones/", home_views.shipping_zones_list, name="website-shipping-zones"),
     path("shipping-methods/", home_views.shipping_methods_list, name="website-shipping-methods"),
     path("shipping-quote/", home_views.shipping_quote, name="website-shipping-quote"),

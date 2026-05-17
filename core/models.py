@@ -1689,6 +1689,12 @@ class Order(models.Model):
     discount_amount = models.DecimalField(
         max_digits=8, decimal_places=2, default=Decimal("0.00")
     )
+    app_promo_discount_amount = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="First-order discount from app promotion banner attribution.",
+    )
     total = models.DecimalField(max_digits=10, decimal_places=2)
     want_delivery = models.BooleanField(default=True)
     coupon = models.ForeignKey(
@@ -2768,6 +2774,56 @@ class WalletSettings(models.Model):
 
     def __str__(self) -> str:
         return "Wallet settings (singleton)"
+
+
+class AppPromotionAttribution(models.Model):
+    """Tracks app-download banner clicks, install claims, and first-order discount redemption."""
+
+    class Status(models.TextChoices):
+        CLICKED = "clicked", "Banner clicked"
+        INSTALLED = "installed", "App install claimed"
+        REDEEMED = "redeemed", "First-order discount used"
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="app_promotion_attribution",
+    )
+    visit_token = models.CharField(max_length=64, unique=True, db_index=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.CLICKED,
+        db_index=True,
+    )
+    clicked_at = models.DateTimeField(auto_now_add=True)
+    installed_at = models.DateTimeField(null=True, blank=True)
+    redeemed_at = models.DateTimeField(null=True, blank=True)
+    discount_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Percent off merchandise on first order after install claim.",
+    )
+    first_order = models.ForeignKey(
+        "Order",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    banner_headline = models.CharField(max_length=255, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=512, blank=True)
+
+    class Meta:
+        ordering = ["-clicked_at"]
+
+    def __str__(self) -> str:
+        label = self.user.name if self.user_id else self.visit_token[:8]
+        return f"App promo — {label} ({self.status})"
 
 
 class SiteSettings(models.Model):

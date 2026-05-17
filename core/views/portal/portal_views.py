@@ -4148,6 +4148,19 @@ def portal_orders_checkout_quote(request):
         )
     )
 
+    from core.services.app_promotion_attribution import (
+        compute_app_promo_discount_split,
+        get_redeemable_attribution,
+    )
+
+    app_promo_total, app_promo_split = compute_app_promo_discount_split(
+        u, groups, discount_total, seller_discounts
+    )
+    seller_discounts_merged = {
+        sid: seller_discounts.get(sid, Decimal("0")) + app_promo_split.get(sid, Decimal("0"))
+        for sid in groups
+    }
+
     delivery_fee_total, delivery_alloc, _checkout_zone, d_err, delivery_weight_kg, shipping_method_id_echo = (
         compute_delivery_allocation(
             req_dict, want_delivery, resolved.cart_subtotal, groups
@@ -4164,7 +4177,7 @@ def portal_orders_checkout_quote(request):
         groups,
         seller_subtotals,
         delivery_alloc,
-        seller_discounts,
+        seller_discounts_merged,
         _portal_checkout_group_seller_sort_key,
     )
     savings = resolved.list_subtotal - resolved.cart_subtotal
@@ -4173,7 +4186,7 @@ def portal_orders_checkout_quote(request):
     flash_save = savings_from_flash_vs_product_sale(groups)
     line_rows = checkout_quote_line_rows(
         groups,
-        seller_discounts,
+        seller_discounts_merged,
         resolved.flash_deal_by_product_id,
         _portal_checkout_group_seller_sort_key,
     )
@@ -4185,6 +4198,14 @@ def portal_orders_checkout_quote(request):
             "value": float(coupon_obj.value),
         }
 
+    app_promo_attr = get_redeemable_attribution(u)
+    app_promo_applied = None
+    if app_promo_attr is not None and app_promo_total > 0:
+        app_promo_applied = {
+            "percent": float(app_promo_attr.discount_percent),
+            "headline": app_promo_attr.banner_headline or "",
+        }
+
     sh_quote = ShippingSettings.load()
     return Response(
         {
@@ -4194,10 +4215,12 @@ def portal_orders_checkout_quote(request):
             "savings_flash": float(flash_save),
             "delivery_fee": float(delivery_fee_total),
             "coupon_discount": float(discount_total),
+            "app_promo_discount": float(app_promo_total),
             "eligible_subtotal": float(eligible_subtotal),
             "total": float(grand_total),
             "coupon_error": coupon_err,
             "coupon_applied": coupon_applied,
+            "app_promo_applied": app_promo_applied,
             "flash_product_ids": resolved.flash_product_ids,
             "lines": line_rows,
             "stock_warnings": resolved.stock_warnings,
@@ -4269,6 +4292,20 @@ def portal_orders_checkout(request):
             except ValueError as e:
                 return Response({"detail": str(e)}, status=400)
 
+            from core.services.app_promotion_attribution import (
+                compute_app_promo_discount_split,
+                mark_attribution_redeemed,
+            )
+
+            _app_promo_total, app_promo_split = compute_app_promo_discount_split(
+                u, groups, _discount_total, seller_discounts
+            )
+            seller_discounts_merged = {
+                sid: seller_discounts.get(sid, Decimal("0"))
+                + app_promo_split.get(sid, Decimal("0"))
+                for sid in groups
+            }
+
             delivery_fee_total, delivery_alloc, checkout_zone, d_err, _dw_kg, _sm_echo = (
                 compute_delivery_allocation(
                     _request_data_dict(request),
@@ -4288,7 +4325,7 @@ def portal_orders_checkout(request):
                 groups,
                 seller_subtotals,
                 delivery_alloc,
-                seller_discounts,
+                seller_discounts_merged,
                 _portal_checkout_group_seller_sort_key,
             )
 
@@ -4320,7 +4357,10 @@ def portal_orders_checkout(request):
                 validate_child_spending_limits(u, pay_wallet, grand_total_plan)
 
             orders_created: list[Order] = []
-            for vendor, lines, v_sub, v_delivery, d_amt, v_total in orders_plan:
+            for vendor, lines, v_sub, v_delivery, d_amt_merged, v_total in orders_plan:
+                sid = None if vendor is None else vendor.pk
+                coupon_amt = seller_discounts.get(sid, Decimal("0"))
+                app_promo_amt = app_promo_split.get(sid, Decimal("0"))
                 order = Order.objects.create(
                     order_number=_gen_order_number(),
                     customer=u,
@@ -4330,7 +4370,8 @@ def portal_orders_checkout(request):
                     payment_status=Order.PaymentStatus.PENDING,
                     subtotal=v_sub,
                     delivery_fee=v_delivery,
-                    discount_amount=d_amt,
+                    discount_amount=coupon_amt,
+                    app_promo_discount_amount=app_promo_amt,
                     total=v_total,
                     want_delivery=bool(want_delivery),
                     notes=notes,
@@ -4344,7 +4385,7 @@ def portal_orders_checkout(request):
                     ),
                 )
 
-                line_coupons = split_seller_discount_across_lines(lines, d_amt)
+                line_coupons = split_seller_discount_across_lines(lines, coupon_amt)
                 for j, (p, qty, unit_price, line_total) in enumerate(lines):
                     coup_line = line_coupons[j]
                     fd_pk = resolved.flash_deal_by_product_id.get(p.pk)
@@ -4405,6 +4446,9 @@ def portal_orders_checkout(request):
             if coupon_obj is not None and orders_created:
                 canonical = min(orders_created, key=lambda o: o.pk)
                 Order.objects.filter(pk=canonical.pk).update(coupon_id=coupon_obj.pk)
+
+            if _app_promo_total > 0 and orders_created:
+                mark_attribution_redeemed(u, min(orders_created, key=lambda o: o.pk))
 
             if payment_method in PORTAL_GATEWAY_PAYMENT_METHODS:
                 for order in orders_created:
