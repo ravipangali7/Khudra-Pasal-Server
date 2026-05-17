@@ -499,4 +499,9 @@ FIREBASE_CREDENTIALS_PATH = os.environ.get(
 )
 # Web push VAPID public key (Firebase Console → Cloud Messaging → Web Push certificates).
 # Exposed read-only via GET /api/website/firebase-messaging/ for the SPA when VITE_FIREBASE_VAPID_KEY is unset.
-FIREBASE_WEB_VAPID_KEY = os.environ.get("FIREBASE_WEB_VAPID_KEY", "").strip()
+_DEFAULT_FIREBASE_WEB_VAPID = (
+    "BDOU99-h67HcA6JeFXHbSNMu7e2yNNu3RzoMj8TM4W88jITfq7ZmPvIM1Iv-4_l2LxQcYwhqby2xGpWwzjfAnG4"
+)
+FIREBASE_WEB_VAPID_KEY = (
+    os.environ.get("FIREBASE_WEB_VAPID_KEY") or _DEFAULT_FIREBASE_WEB_VAPID
+).strip()
