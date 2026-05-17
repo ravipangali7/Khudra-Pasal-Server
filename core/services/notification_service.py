@@ -25,20 +25,34 @@ def notify_user(
 
 def notify_order_delivered(order: Order) -> Notification:
     """In-app notice for the customer when an order reaches Delivered."""
+    from core.services.order_bill_service import (
+        bill_image_url_for_order,
+        portal_bill_action_url,
+        ensure_order_bill,
+    )
+
+    if not order.bill_image_id:
+        ensure_order_bill(order.pk)
+        order.refresh_from_db(fields=["bill_image"])
+
     store = order.seller.store_name if order.seller_id else "In-House"
     n_items = order.items.count()
     total = order.total
+    bill_url = bill_image_url_for_order(order)
     msg = (
         f"Order {order.order_number} is delivered. "
         f"Total Rs. {total} · {n_items} item(s) · {store}"
     )
+    if bill_url:
+        msg = f"{msg} Your bill is attached — tap to view or download."
     return Notification.objects.create(
         title="Order delivered",
         message=msg,
         type=Notification.Type.ORDER,
         target=Notification.Target.CUSTOMERS,
         recipient=order.customer,
-        action_url="/portal/orders",
+        action_url=portal_bill_action_url(order),
+        image_url=bill_url[:500] if bill_url else "",
     )
 
 
@@ -121,7 +135,18 @@ def notify_order_status_fcm_customer(
     new_label = labels.get(new_status, new_status)
     title = "Order update"
     body = f"{order.order_number} is now {new_label}."
-    send_fcm_to_tokens([token], title, body)
+    image_url = ""
+    if new_status == Order.Status.DELIVERED:
+        from core.services.order_bill_service import bill_image_url_for_order, ensure_order_bill
+
+        if not order.bill_image_id:
+            ensure_order_bill(order.pk)
+            order.refresh_from_db(fields=["bill_image"])
+        image_url = bill_image_url_for_order(order)
+        if image_url:
+            title = "Order delivered"
+            body = f"{order.order_number} was delivered. Your bill is ready — open the app to view it."
+    send_fcm_to_tokens([token], title, body, image_url=image_url)
 
 
 def notify_new_review(review: ProductReview) -> Optional[Notification]:

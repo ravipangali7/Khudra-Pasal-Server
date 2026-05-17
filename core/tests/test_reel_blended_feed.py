@@ -21,9 +21,8 @@ class ReelFeedMixTests(TestCase):
         self.assertEqual(sum(slots.values()), 20)
         self.assertEqual(slots["personalized"], 10)
         self.assertEqual(slots["boosted"], 4)
-        self.assertEqual(slots["trending"], 3)
-        self.assertEqual(slots["categoryFollow"], 2)
-        self.assertEqual(slots["experimental"], 1)
+        self.assertEqual(slots["trending"], 4)
+        self.assertEqual(slots["random"], 2)
 
 
 class ReelBlendedFeedApiTests(TestCase):

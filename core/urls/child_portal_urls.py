@@ -79,6 +79,18 @@ urlpatterns = [
         name="child-portal-order-refund-request",
     ),
     path(
+        "orders/<int:pk>/invoice/",
+        portal_views.portal_order_invoice,
+        {"list_placed_portal": Order.PlacedPortal.PORTAL_CHILD},
+        name="child-portal-order-invoice",
+    ),
+    path(
+        "orders/<int:pk>/bill/",
+        portal_views.portal_order_bill_image,
+        {"list_placed_portal": Order.PlacedPortal.PORTAL_CHILD},
+        name="child-portal-order-bill",
+    ),
+    path(
         "orders/<int:pk>/",
         portal_views.portal_order_detail,
         {"list_placed_portal": Order.PlacedPortal.PORTAL_CHILD},

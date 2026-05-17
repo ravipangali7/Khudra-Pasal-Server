@@ -361,6 +361,12 @@ def _serialize_portal_order_row(o: Order, order_settings: OrderSettings) -> dict
     if item_count is None:
         item_count = o.items.count()
 
+    bill_url = ""
+    if o.bill_image:
+        from core.services.order_bill_service import public_file_url
+
+        bill_url = public_file_url(o.bill_image)
+
     return {
         "id": o.order_number,
         "pk": o.pk,
@@ -375,6 +381,8 @@ def _serialize_portal_order_row(o: Order, order_settings: OrderSettings) -> dict
         "refunds": refund_rows,
         "refund_estimate": refund_estimate,
         "refund_allowed": refund_allowed,
+        "has_bill": bool(o.bill_image),
+        "bill_image_url": bill_url,
     }
 
 
@@ -876,6 +884,61 @@ def portal_order_detail(request, pk: int, list_placed_portal: str | None = None)
     return Response(_serialize_portal_order_row(o, order_settings))
 
 
+def _portal_order_for_surface(request, pk: int, surface: str) -> Order | None:
+    u = request.user
+    if not _user_may_use_placed_portal(u, surface):
+        return None
+    return (
+        Order.objects.filter(pk=pk, customer=u)
+        .filter(_orders_surface_q(surface))
+        .select_related("customer", "seller", "delivery_address")
+        .prefetch_related("items__product", "items__product__images", "refunds")
+        .first()
+    )
+
+
+@api_view(["GET"])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
+@permission_classes([IsAuthenticated, IsPortalShopper])
+def portal_order_invoice(request, pk: int, list_placed_portal: str | None = None):
+    """Invoice-shaped JSON for portal bill preview and HTML download."""
+    from core.services.order_bill_service import ensure_order_bill, serialize_order_invoice
+
+    surface = list_placed_portal or Order.PlacedPortal.PORTAL_MAIN
+    o = _portal_order_for_surface(request, pk, surface)
+    if not o:
+        return Response({"detail": "Order not found."}, status=404)
+    if not o.bill_image:
+        ensure_order_bill(o.pk)
+        o.refresh_from_db()
+    return Response(serialize_order_invoice(o, request))
+
+
+@api_view(["GET"])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
+@permission_classes([IsAuthenticated, IsPortalShopper])
+def portal_order_bill_image(request, pk: int, list_placed_portal: str | None = None):
+    """Serve the stored bill PNG (regenerates if missing)."""
+    from django.http import FileResponse, Http404
+
+    from core.services.order_bill_service import ensure_order_bill
+
+    surface = list_placed_portal or Order.PlacedPortal.PORTAL_MAIN
+    o = _portal_order_for_surface(request, pk, surface)
+    if not o:
+        return Response({"detail": "Order not found."}, status=404)
+    if not o.bill_image:
+        ensure_order_bill(o.pk)
+        o.refresh_from_db(fields=["bill_image"])
+    if not o.bill_image:
+        raise Http404("Bill not available")
+    try:
+        f = o.bill_image.open("rb")
+    except OSError:
+        raise Http404("Bill not available") from None
+    return FileResponse(f, content_type="image/png", filename=f"{o.order_number}-bill.png")
+
+
 @api_view(["POST"])
 @authentication_classes(PORTAL_API_AUTHENTICATION)
 @permission_classes([IsAuthenticated, IsPortalShopper])
@@ -1038,6 +1101,7 @@ def portal_notifications_list(request):
                 "created_at": n.created_at.isoformat(),
                 "is_read": bool(n.is_read),
                 "action_url": n.action_url or "",
+                "image_url": n.image_url or "",
                 "urgent": n.type == Notification.Type.SECURITY,
                 "preview": f"{n.title}: {body}"[:200],
             }

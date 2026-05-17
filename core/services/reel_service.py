@@ -48,10 +48,31 @@ def remove_interaction_counter(reel: Reel, interaction_type: str) -> None:
 
 
 @transaction.atomic
-def record_unique_view(reel: Reel, user, request=None) -> tuple[bool, int]:
+def record_unique_view(
+    reel: Reel,
+    user,
+    request=None,
+    *,
+    watch_seconds: int | None = None,
+    quick_skip: bool = False,
+    watch_completed: bool = False,
+) -> tuple[bool, int]:
     """Authenticated users: one counted view per user per reel. Anonymous: one per client IP per 24h (cache)."""
     if getattr(user, "is_authenticated", False):
-        _, created = ReelView.objects.get_or_create(reel=reel, user=user)
+        view, created = ReelView.objects.get_or_create(reel=reel, user=user)
+        update_fields: list[str] = []
+        if watch_seconds is not None:
+            prev = view.watch_seconds or 0
+            view.watch_seconds = max(prev, int(watch_seconds))
+            update_fields.append("watch_seconds")
+        if quick_skip:
+            view.quick_skip = True
+            update_fields.append("quick_skip")
+        if watch_completed:
+            view.watch_completed = True
+            update_fields.append("watch_completed")
+        if update_fields:
+            view.save(update_fields=update_fields)
         if created:
             Reel.objects.filter(pk=reel.pk).update(views=F("views") + 1)
         latest_views = Reel.objects.filter(pk=reel.pk).values_list("views", flat=True).first() or 0

@@ -965,6 +965,7 @@ def _public_reels_list_response(request, qs, *, tab: str):
                     "audience": audience,
                     "tab": tab,
                     "slot_mix": get_reels_feed_mix(audience),
+                    **reel_feed_service.get_feed_ranking_meta(),
                 },
             }
         )
@@ -1162,7 +1163,25 @@ def reel_view_record(request, pk):
     reel = _reel_for_user_interaction(request, pk)
     if not reel:
         return Response({"detail": "Reel not found."}, status=404)
-    created, views = reel_service.record_unique_view(reel, request.user, request)
+    watch_seconds = request.data.get("watch_seconds")
+    quick_skip = bool(request.data.get("quick_skip"))
+    watch_completed = bool(request.data.get("watch_completed"))
+    try:
+        ws = int(watch_seconds) if watch_seconds is not None else None
+    except (TypeError, ValueError):
+        ws = None
+    if ws is not None and ws < 0:
+        ws = 0
+    if ws is not None and ws > 3600:
+        ws = 3600
+    created, views = reel_service.record_unique_view(
+        reel,
+        request.user,
+        request,
+        watch_seconds=ws,
+        quick_skip=quick_skip or (ws is not None and ws < 2),
+        watch_completed=watch_completed,
+    )
     return Response({"created": created, "views": views})
 
 

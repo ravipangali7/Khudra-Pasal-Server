@@ -1720,6 +1720,11 @@ class Order(models.Model):
         related_name="orders_paid_from",
         help_text="Wallet debited for wallet checkout; used for refund credit.",
     )
+    bill_image = models.ImageField(
+        upload_to="orders/bills/",
+        blank=True,
+        help_text="Auto-generated order bill (PNG) for portal customers.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -2345,6 +2350,9 @@ class ReelView(models.Model):
         on_delete=models.CASCADE,
         related_name="reel_views",
     )
+    watch_seconds = models.PositiveSmallIntegerField(null=True, blank=True)
+    quick_skip = models.BooleanField(default=False)
+    watch_completed = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -2707,6 +2715,11 @@ class Notification(models.Model):
     )
     is_read = models.BooleanField(default=False)
     action_url = models.CharField(max_length=255, blank=True)
+    image_url = models.URLField(
+        max_length=500,
+        blank=True,
+        help_text="Optional image for rich notifications (e.g. order bill on delivery).",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

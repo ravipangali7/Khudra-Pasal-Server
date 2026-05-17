@@ -90,7 +90,13 @@ class FcmPushStats:
     first_error: str | None
 
 
-def send_fcm_to_tokens(tokens: Iterable[str], title: str, body: str) -> FcmPushStats:
+def send_fcm_to_tokens(
+    tokens: Iterable[str],
+    title: str,
+    body: str,
+    *,
+    image_url: str = "",
+) -> FcmPushStats:
     uniq: list[str] = []
     seen: set[str] = set()
     for t in tokens:
@@ -126,17 +132,25 @@ def send_fcm_to_tokens(tokens: Iterable[str], title: str, body: str) -> FcmPushS
 
     title = ((title or "").strip()[:200]) or "Notification"
     body = (body or "").strip()[:4000]
+    image_url = (image_url or "").strip()[:2000]
+
+    android_notif_kwargs: dict = {
+        "default_sound": True,
+        "default_vibrate_timings": True,
+    }
+    if image_url:
+        android_notif_kwargs["image"] = image_url
 
     # High priority helps delivery when the app is backgrounded / Doze (Android).
     android = messaging.AndroidConfig(
         priority="high",
-        notification=messaging.AndroidNotification(
-            default_sound=True,
-            default_vibrate_timings=True,
-        ),
+        notification=messaging.AndroidNotification(**android_notif_kwargs),
     )
+    webpush_notif_kwargs: dict = {"title": title, "body": body}
+    if image_url:
+        webpush_notif_kwargs["image"] = image_url
     webpush = messaging.WebpushConfig(
-        notification=messaging.WebpushNotification(title=title, body=body),
+        notification=messaging.WebpushNotification(**webpush_notif_kwargs),
     )
 
     total_success = 0
@@ -146,8 +160,11 @@ def send_fcm_to_tokens(tokens: Iterable[str], title: str, body: str) -> FcmPushS
 
     for i in range(0, len(uniq), chunk_size):
         chunk = uniq[i : i + chunk_size]
+        notif_kwargs: dict = {"title": title, "body": body}
+        if image_url:
+            notif_kwargs["image"] = image_url
         msg = messaging.MulticastMessage(
-            notification=messaging.Notification(title=title, body=body),
+            notification=messaging.Notification(**notif_kwargs),
             android=android,
             webpush=webpush,
             tokens=chunk,

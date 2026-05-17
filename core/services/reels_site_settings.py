@@ -11,8 +11,7 @@ class ReelsFeedMix(TypedDict):
     personalized: float
     boosted: float
     trending: float
-    categoryFollow: float
-    experimental: float
+    random: float
 
 
 class ReelsSiteConfig(TypedDict):
@@ -31,18 +30,16 @@ _DEFAULTS: ReelsSiteConfig = {
     "feedMix": {
         "personalized": 0.50,
         "boosted": 0.20,
-        "trending": 0.15,
-        "categoryFollow": 0.10,
-        "experimental": 0.05,
+        "trending": 0.20,
+        "random": 0.10,
     },
 }
 
 _CHILD_FEED_MIX: ReelsFeedMix = {
     "personalized": 0.40,
     "boosted": 0.10,
-    "trending": 0.25,
-    "categoryFollow": 0.20,
-    "experimental": 0.05,
+    "trending": 0.35,
+    "random": 0.15,
 }
 
 _VALID_ALGOS = frozenset({"chronological", "popularity", "mixed", "personalized"})
@@ -60,16 +57,37 @@ def _float_from(v: Any, default: float) -> float:
     return x
 
 
+def _legacy_mix_to_v2(raw: dict) -> dict[str, Any]:
+    """Map categoryFollow / experimental slots to trending + random."""
+    if "random" in raw:
+        return raw
+    out = {
+        "personalized": raw.get("personalized", _DEFAULTS["feedMix"]["personalized"]),
+        "boosted": raw.get("boosted", _DEFAULTS["feedMix"]["boosted"]),
+        "trending": raw.get("trending", _DEFAULTS["feedMix"]["trending"]),
+        "random": raw.get("random", _DEFAULTS["feedMix"]["random"]),
+    }
+    if "categoryFollow" in raw:
+        out["trending"] = _float_from(out["trending"], 0.2) + _float_from(
+            raw.get("categoryFollow"), 0.0
+        )
+    if "experimental" in raw:
+        out["random"] = _float_from(out["random"], 0.1) + _float_from(
+            raw.get("experimental"), 0.0
+        )
+    return out
+
+
 def _normalize_feed_mix(raw: Any) -> ReelsFeedMix:
     base = _DEFAULTS["feedMix"]
     if not isinstance(raw, dict):
         return dict(base)
+    raw = _legacy_mix_to_v2(raw)
     out: ReelsFeedMix = {
         "personalized": _float_from(raw.get("personalized"), base["personalized"]),
         "boosted": _float_from(raw.get("boosted"), base["boosted"]),
         "trending": _float_from(raw.get("trending"), base["trending"]),
-        "categoryFollow": _float_from(raw.get("categoryFollow"), base["categoryFollow"]),
-        "experimental": _float_from(raw.get("experimental"), base["experimental"]),
+        "random": _float_from(raw.get("random"), base["random"]),
     }
     total = sum(out.values())
     if total <= 0:

@@ -44,6 +44,7 @@ from core.services import (
     wallet_service,
 )
 from core.services import delivery_service, mail_service, notification_service
+from core.services.order_bill_service import ensure_order_bill
 
 
 def _grant_all_model_permissions_to_staff_users() -> None:
@@ -194,6 +195,7 @@ def order_post(sender, instance, created, **kwargs):
     if created:
         oid = instance.pk
         transaction.on_commit(lambda o=oid: mail_service.send_order_placed_emails(o))
+        transaction.on_commit(lambda o=oid: ensure_order_bill(o))
 
     prev = getattr(instance, "_previous_order_status", None)
     if prev is not None and prev != instance.status:
