@@ -5,8 +5,7 @@ from __future__ import annotations
 import json
 from html import escape
 
-from core.seo.media_urls import ensure_https_og_image
-from core.seo.resolvers import resolve_description, resolve_og_image, resolve_title
+from core.seo.og_image import resolve_share_og_image
 
 
 def render_share_html(
@@ -16,17 +15,16 @@ def render_share_html(
     canonical_spa_url: str,
     og_type: str,
     og_image: str = "",
-    share_url: str = "",
     site_name: str = "",
 ) -> str:
     t = escape(title)
     d = escape(description)
     canonical = escape(canonical_spa_url)
-    # og:url must be the public product/page URL users share and click — not the API share path.
     og_url = canonical
-    img = ensure_https_og_image(og_image)
+    img = (og_image or "").strip()
     img_escaped = escape(img) if img else ""
     site = escape(site_name) if site_name else ""
+    img_alt = escape(title)
 
     og_image_tags = ""
     twitter_image_tag = ""
@@ -34,6 +32,8 @@ def render_share_html(
         og_image_tags = (
             f'    <meta property="og:image" content="{img_escaped}" />\n'
             f'    <meta property="og:image:secure_url" content="{img_escaped}" />\n'
+            f'    <meta property="og:image:type" content="image/jpeg" />\n'
+            f'    <meta property="og:image:alt" content="{img_alt}" />\n'
         )
         twitter_image_tag = f'    <meta name="twitter:image" content="{img_escaped}" />\n'
 
@@ -68,13 +68,13 @@ def render_share_html(
 
 def share_context_from_entity(
     *,
+    request,
     meta_title: str,
     display_title: str,
     meta_description: str,
     excerpt: str,
     body: str,
     spa_path: str,
-    share_api_path: str,
     og_type: str,
     entity_image: str,
     site_name: str,
@@ -82,7 +82,7 @@ def share_context_from_entity(
     site_logo: str,
     cover_image: str,
 ) -> dict:
-    from core.seo.resolvers import spa_url as build_spa
+    from core.seo.resolvers import resolve_description, resolve_title, spa_url as build_spa
 
     title = resolve_title(meta_title, display_title, site_name)
     if site_name and title and site_name.lower() not in title.lower():
@@ -96,15 +96,17 @@ def share_context_from_entity(
         fallback=site_description,
     )
     canonical = build_spa(spa_path)
-    share_url = share_api_path if share_api_path else canonical
-    image = ensure_https_og_image(
-        resolve_og_image(entity_image, cover_image, site_logo)
+    image = resolve_share_og_image(
+        request,
+        entity_image=entity_image,
+        cover_image=cover_image,
+        site_logo=site_logo,
     )
     return {
         "title": page_title,
         "description": description,
         "canonical_spa_url": canonical,
-        "share_url": share_url,
+        "share_url": canonical,
         "og_type": og_type,
         "og_image": image,
         "site_name": site_name,

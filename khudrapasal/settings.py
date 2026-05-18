@@ -256,6 +256,11 @@ PUBLIC_SITE_URL = (
     os.environ.get("PUBLIC_SITE_URL", "").strip().rstrip("/")
     or FRONTEND_URL.rstrip("/")
 )
+# API origin for og:image /media URLs (must be reachable by Facebook/WhatsApp crawlers).
+PUBLIC_API_URL = (
+    os.environ.get("PUBLIC_API_URL", "").strip().rstrip("/")
+    or os.environ.get("API_PUBLIC_URL", "").strip().rstrip("/")
+)
 # Relative SPA path used when OAuth `next` is omitted (must match customer home from primary_spa_redirect).
 REDIRECT_AFTER_LOGIN = (os.environ.get("REDIRECT_AFTER_LOGIN", "/portal").strip() or "/portal")
 _frontend_origin = FRONTEND_URL.rstrip("/")

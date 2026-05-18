@@ -20,4 +20,19 @@ urlpatterns = [
         meta_views.product_share,
         name="website-product-share",
     ),
+    path(
+        "website/categories/<slug:slug>/share/",
+        meta_views.category_share,
+        name="website-category-share",
+    ),
+    path(
+        "website/brands/<int:brand_id>/share/",
+        meta_views.brand_share,
+        name="website-brand-share",
+    ),
+    path(
+        "website/stores/<slug:slug>/share/",
+        meta_views.vendor_store_share,
+        name="website-vendor-store-share",
+    ),
 ]

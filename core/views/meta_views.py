@@ -6,45 +6,28 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from core.models import BlogPost, CMSPage, SiteSettings
+from core.models import BlogPost, Brand, Category, CMSPage, SiteSettings, Vendor
+from core.seo.og_image import public_media_url, resolve_share_og_image
 from core.seo.share import render_share_html, share_context_from_entity
 from core.seo.sitemap import build_sitemap_xml
-from core.seo.resolvers import spa_url
-from core.seo.media_urls import ensure_https_og_image
-from core.views.admin.admin_write_utils import absolute_media_url, product_primary_image_url
+from core.views.admin.admin_write_utils import product_primary_image_url
 from core.views.website.home_views import _active_products_queryset
 
 
 def _site_seo_assets(request):
     site = SiteSettings.load()
-    logo = absolute_media_url(request, site.site_logo) if site.site_logo else ""
-    favicon = absolute_media_url(request, site.site_favicon) if getattr(site, "site_favicon", None) and site.site_favicon else ""
-    cover = absolute_media_url(request, site.cover_image) if getattr(site, "cover_image", None) and site.cover_image else ""
-    return site, logo, favicon, cover
-
-
-@api_view(["GET"])
-@permission_classes([AllowAny])
-def public_settings(request):
-    """GET /api/settings/public/ — SPA site SEO defaults (camelCase)."""
-    site, logo, favicon, cover = _site_seo_assets(request)
-    return Response(
-        {
-            "siteName": site.site_name,
-            "siteMetaDescription": site.site_description or "",
-            "siteLogo": logo,
-            "siteFavicon": favicon,
-            "coverImage": cover or logo,
-        }
+    logo = public_media_url(request, file_field=site.site_logo) if site.site_logo else ""
+    favicon = (
+        public_media_url(request, file_field=site.site_favicon)
+        if getattr(site, "site_favicon", None) and site.site_favicon
+        else ""
     )
-
-
-@api_view(["GET"])
-@permission_classes([AllowAny])
-def sitemap_xml(request):
-    """GET /api/meta/sitemap.xml"""
-    xml = build_sitemap_xml()
-    return HttpResponse(xml, content_type="application/xml; charset=utf-8")
+    cover = (
+        public_media_url(request, file_field=site.cover_image)
+        if getattr(site, "cover_image", None) and site.cover_image
+        else ""
+    )
+    return site, logo, favicon, cover or logo
 
 
 def _share_response(request, ctx: dict) -> HttpResponse:
@@ -53,11 +36,32 @@ def _share_response(request, ctx: dict) -> HttpResponse:
         description=ctx["description"],
         canonical_spa_url=ctx["canonical_spa_url"],
         og_type=ctx["og_type"],
-        og_image=ensure_https_og_image(ctx.get("og_image") or ""),
-        share_url=ctx["share_url"],
+        og_image=ctx.get("og_image") or "",
         site_name=ctx.get("site_name") or "",
     )
     return HttpResponse(html, content_type="text/html; charset=utf-8")
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def public_settings(request):
+    site, logo, favicon, cover = _site_seo_assets(request)
+    return Response(
+        {
+            "siteName": site.site_name,
+            "siteMetaDescription": site.site_description or "",
+            "siteLogo": logo,
+            "siteFavicon": favicon,
+            "coverImage": cover,
+        }
+    )
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def sitemap_xml(request):
+    xml = build_sitemap_xml()
+    return HttpResponse(xml, content_type="application/xml; charset=utf-8")
 
 
 @api_view(["GET"])
@@ -69,17 +73,15 @@ def blog_post_share(request, slug):
         status=BlogPost.Status.PUBLISHED,
     )
     site, logo, _, cover = _site_seo_assets(request)
-    image = ""
-    if post.cover_image:
-        image = absolute_media_url(request, post.cover_image)
+    image = public_media_url(request, file_field=post.cover_image) if post.cover_image else ""
     ctx = share_context_from_entity(
+        request=request,
         meta_title=post.seo_title or "",
         display_title=post.title,
         meta_description=post.seo_description or "",
         excerpt=post.excerpt or "",
         body=post.content or "",
         spa_path=f"/blog/{post.slug}",
-        share_api_path=request.build_absolute_uri(f"/api/website/blog-posts/{post.slug}/share/"),
         og_type="article",
         entity_image=image,
         site_name=site.site_name,
@@ -87,7 +89,6 @@ def blog_post_share(request, slug):
         site_logo=logo,
         cover_image=cover,
     )
-    ctx["canonical_spa_url"] = spa_url(f"/blog/{post.slug}")
     ctx["site_name"] = site.site_name
     return _share_response(request, ctx)
 
@@ -97,15 +98,15 @@ def blog_post_share(request, slug):
 def cms_page_share(request, slug):
     row = get_object_or_404(CMSPage, slug=slug, status=CMSPage.Status.PUBLISHED)
     site, logo, _, cover = _site_seo_assets(request)
-    image = absolute_media_url(request, row.featured_image) if row.featured_image else ""
+    image = public_media_url(request, file_field=row.featured_image) if row.featured_image else ""
     ctx = share_context_from_entity(
+        request=request,
         meta_title=row.seo_title or "",
         display_title=row.title,
         meta_description=row.seo_description or "",
         excerpt="",
         body=row.content or "",
         spa_path=f"/page/{row.slug}",
-        share_api_path=request.build_absolute_uri(f"/api/website/cms-pages/{slug}/share/"),
         og_type="website",
         entity_image=image,
         site_name=site.site_name,
@@ -113,7 +114,6 @@ def cms_page_share(request, slug):
         site_logo=logo,
         cover_image=cover,
     )
-    ctx["canonical_spa_url"] = spa_url(f"/page/{row.slug}")
     ctx["site_name"] = site.site_name
     return _share_response(request, ctx)
 
@@ -126,16 +126,21 @@ def product_share(request, identifier):
     if not row:
         row = get_object_or_404(qs, pk=identifier)
     site, logo, _, cover = _site_seo_assets(request)
-    image = ensure_https_og_image(product_primary_image_url(request, row))
+    image = resolve_share_og_image(
+        request,
+        entity_image=product_primary_image_url(request, row),
+        cover_image=cover,
+        site_logo=logo,
+    )
     slug = row.slug or str(row.pk)
     ctx = share_context_from_entity(
+        request=request,
         meta_title=row.seo_title or "",
         display_title=row.name,
         meta_description=row.seo_description or "",
         excerpt=row.short_description or "",
         body=row.description or "",
         spa_path=f"/product/{slug}",
-        share_api_path=request.build_absolute_uri(f"/api/website/products/{slug}/share/"),
         og_type="product",
         entity_image=image,
         site_name=site.site_name,
@@ -143,6 +148,91 @@ def product_share(request, identifier):
         site_logo=logo,
         cover_image=cover,
     )
-    ctx["canonical_spa_url"] = spa_url(f"/product/{slug}")
+    ctx["site_name"] = site.site_name
+    return _share_response(request, ctx)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def category_share(request, slug):
+    row = get_object_or_404(Category, slug=slug, status=Category.Status.ACTIVE)
+    site, logo, _, cover = _site_seo_assets(request)
+    image = public_media_url(request, file_field=row.image) if row.image else ""
+    desc = row.seo_description or f"Shop {row.name} on {site.site_name}."
+    ctx = share_context_from_entity(
+        request=request,
+        meta_title=row.seo_title or "",
+        display_title=row.name,
+        meta_description=desc,
+        excerpt=desc,
+        body="",
+        spa_path=f"/category/{row.slug}",
+        og_type="website",
+        entity_image=image,
+        site_name=site.site_name,
+        site_description=site.site_description or "",
+        site_logo=logo,
+        cover_image=cover,
+    )
+    ctx["site_name"] = site.site_name
+    return _share_response(request, ctx)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def brand_share(request, brand_id):
+    row = get_object_or_404(Brand, pk=brand_id, status=Brand.Status.ACTIVE)
+    site, logo, _, cover = _site_seo_assets(request)
+    image = public_media_url(request, file_field=row.logo) if row.logo else ""
+    desc = f"Shop {row.name} on {site.site_name}."
+    ctx = share_context_from_entity(
+        request=request,
+        meta_title="",
+        display_title=row.name,
+        meta_description=desc,
+        excerpt=desc,
+        body="",
+        spa_path=f"/brands/{row.pk}",
+        og_type="website",
+        entity_image=image,
+        site_name=site.site_name,
+        site_description=site.site_description or "",
+        site_logo=logo,
+        cover_image=cover,
+    )
+    ctx["site_name"] = site.site_name
+    return _share_response(request, ctx)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def vendor_store_share(request, slug):
+    vendor = get_object_or_404(
+        Vendor,
+        store_slug=slug,
+        status=Vendor.Status.APPROVED,
+    )
+    site, logo, _, cover = _site_seo_assets(request)
+    image = ""
+    if vendor.logo:
+        image = public_media_url(request, file_field=vendor.logo)
+    elif vendor.banner:
+        image = public_media_url(request, file_field=vendor.banner)
+    desc = (vendor.description or "").strip() or f"Shop at {vendor.store_name} on {site.site_name}."
+    ctx = share_context_from_entity(
+        request=request,
+        meta_title="",
+        display_title=vendor.store_name,
+        meta_description=desc,
+        excerpt=desc[:160],
+        body=vendor.description or "",
+        spa_path=f"/store/{vendor.store_slug}",
+        og_type="website",
+        entity_image=image,
+        site_name=site.site_name,
+        site_description=site.site_description or "",
+        site_logo=logo,
+        cover_image=cover,
+    )
     ctx["site_name"] = site.site_name
     return _share_response(request, ctx)

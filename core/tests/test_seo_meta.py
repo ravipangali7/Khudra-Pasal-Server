@@ -3,7 +3,7 @@
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from core.models import BlogPost, CMSPage, SiteSettings
+from core.models import BlogPost, Brand, Category, CMSPage, SiteSettings
 
 
 @override_settings(PUBLIC_SITE_URL="https://www.example.com", FRONTEND_URL="https://www.example.com")
@@ -72,3 +72,27 @@ class SeoMetaTests(TestCase):
         r = self.client.get(url)
         self.assertEqual(r.status_code, 200)
         self.assertIn('property="og:type" content="website"', r.content.decode())
+
+    def test_category_share_canonical_and_og_url(self):
+        cat = Category.objects.create(
+            name="Snacks",
+            slug="snacks-seo",
+            status=Category.Status.ACTIVE,
+            seo_title="Snacks Category",
+        )
+        url = reverse("website-category-share", kwargs={"slug": cat.slug})
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 200)
+        html = r.content.decode()
+        self.assertIn('property="og:url" content="https://www.example.com/category/snacks-seo"', html)
+        self.assertIn('property="og:title"', html)
+
+    def test_brand_share_landing(self):
+        brand = Brand.objects.create(name="Test Brand", status=Brand.Status.ACTIVE)
+        url = reverse("website-brand-share", kwargs={"brand_id": brand.pk})
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 200)
+        html = r.content.decode()
+        self.assertIn(f'https://www.example.com/brands/{brand.pk}', html)
+        self.assertIn("Test Brand", html)
+        self.assertIn('property="og:title"', html)
