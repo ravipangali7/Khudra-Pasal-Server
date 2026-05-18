@@ -22,7 +22,8 @@ def render_share_html(
     t = escape(title)
     d = escape(description)
     canonical = escape(canonical_spa_url)
-    og_url = escape(share_url or canonical_spa_url)
+    # og:url must be the public product/page URL users share and click — not the API share path.
+    og_url = canonical
     img = ensure_https_og_image(og_image)
     img_escaped = escape(img) if img else ""
     site = escape(site_name) if site_name else ""
@@ -55,6 +56,7 @@ def render_share_html(
 {site_name_tag}{og_image_tags}  <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="{t}" />
   <meta name="twitter:description" content="{d}" />
+  <meta name="twitter:url" content="{og_url}" />
 {twitter_image_tag}  <meta http-equiv="refresh" content="0;url={canonical}" />
 </head>
 <body>

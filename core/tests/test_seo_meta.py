@@ -57,6 +57,7 @@ class SeoMetaTests(TestCase):
         self.assertIn('property="og:title"', html)
         self.assertIn("Custom Meta Title", html)
         self.assertIn('rel="canonical" href="https://www.example.com/blog/seo-test-post"', html)
+        self.assertIn('property="og:url" content="https://www.example.com/blog/seo-test-post"', html)
         self.assertIn('property="og:type" content="article"', html)
 
     def test_cms_share_landing(self):
