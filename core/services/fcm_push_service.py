@@ -194,9 +194,9 @@ def send_fcm_to_tokens(
                 if code in ("UNREGISTERED", "INVALID_ARGUMENT", "NOT_FOUND"):
                     stale_tokens.append(chunk[idx])
         if stale_tokens:
-            from core.models import User
+            from core.services.fcm_device_service import delete_fcm_tokens
 
-            User.objects.filter(fcm_token__in=stale_tokens).update(fcm_token="")
+            delete_fcm_tokens(stale_tokens)
 
     if total_failure:
         logger.warning(

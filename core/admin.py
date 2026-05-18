@@ -120,6 +120,14 @@ class KYCDocumentInline(admin.TabularInline):
     autocomplete_fields = ("reviewer",)
 
 
+class UserFcmDeviceInline(admin.TabularInline):
+    model = models.UserFcmDevice
+    fk_name = "user"
+    extra = 0
+    readonly_fields = ("token", "platform", "created_at", "updated_at")
+    can_delete = True
+
+
 class OrderItemInline(admin.TabularInline):
     model = models.OrderItem
     extra = 0
@@ -231,7 +239,7 @@ class UserAdmin(BaseUserAdmin):
     list_filter = ("role", KYCStatusFilter, "is_active", "is_staff", "is_superuser")
     search_fields = ("phone", "username", "name", "KID", "email")
     readonly_fields = ("KID", "fcm_token", "created_at", "updated_at", "last_login", "date_joined")
-    inlines = [KYCDocumentInline]
+    inlines = [KYCDocumentInline, UserFcmDeviceInline]
     autocomplete_fields = ()
 
     fieldsets = (
@@ -256,7 +264,7 @@ class UserAdmin(BaseUserAdmin):
             "FCM (push)",
             {
                 "fields": ("fcm_token",),
-                "description": "Web/mobile device token for Firebase Cloud Messaging; updated when the user signs in on a client.",
+                "description": "Legacy single token (see FCM devices inline for all registered devices).",
             },
         ),
         (

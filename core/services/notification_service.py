@@ -126,10 +126,12 @@ def notify_order_status_fcm_customer(
     if not order:
         return
     cust = order.customer
-    token = (getattr(cust, "fcm_token", "") or "").strip()
-    if not token:
-        return
+    from core.services.fcm_device_service import fcm_tokens_for_user
     from core.services.fcm_push_service import send_fcm_to_tokens
+
+    tokens = fcm_tokens_for_user(cust)
+    if not tokens:
+        return
 
     labels = dict(Order.Status.choices)
     new_label = labels.get(new_status, new_status)
@@ -146,7 +148,7 @@ def notify_order_status_fcm_customer(
         if image_url:
             title = "Order delivered"
             body = f"{order.order_number} was delivered. Your bill is ready — open the app to view it."
-    send_fcm_to_tokens([token], title, body, image_url=image_url)
+    send_fcm_to_tokens(tokens, title, body, image_url=image_url)
 
 
 def notify_new_review(review: ProductReview) -> Optional[Notification]:

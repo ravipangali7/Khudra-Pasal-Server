@@ -4331,6 +4331,8 @@ def admin_notification_broadcast(request):
     ntype = request.data.get("type") or Notification.Type.MARKETING
     if ntype not in dict(Notification.Type.choices):
         ntype = Notification.Type.MARKETING
+    from core.services.fcm_device_service import fcm_tokens_for_user
+
     qs = _notification_recipient_qs(target)
     MAX_ROWS = 2500
     batch = []
@@ -4347,9 +4349,7 @@ def admin_notification_broadcast(request):
                 is_read=False,
             )
         )
-        tok = (getattr(u, "fcm_token", "") or "").strip()
-        if tok:
-            fcm_tokens.append(tok)
+        fcm_tokens.extend(fcm_tokens_for_user(u))
         count += 1
         if len(batch) >= 400:
             Notification.objects.bulk_create(batch)
@@ -4388,17 +4388,15 @@ def admin_notification_push(request, pk):
     row = Notification.objects.select_related("recipient").filter(pk=pk).first()
     if not row:
         return Response({"detail": "Not found."}, status=404)
+    from core.services.fcm_device_service import fcm_tokens_for_user
+    from core.services.fcm_push_service import send_fcm_to_tokens
+
     fcm_tokens: list[str] = []
     if row.recipient_id:
-        tok = (getattr(row.recipient, "fcm_token", "") or "").strip()
-        if tok:
-            fcm_tokens.append(tok)
+        fcm_tokens.extend(fcm_tokens_for_user(row.recipient))
     else:
         for u in _notification_recipient_qs(row.target).iterator(chunk_size=500):
-            tok = (getattr(u, "fcm_token", "") or "").strip()
-            if tok:
-                fcm_tokens.append(tok)
-    from core.services.fcm_push_service import send_fcm_to_tokens
+            fcm_tokens.extend(fcm_tokens_for_user(u))
 
     push = send_fcm_to_tokens(
         fcm_tokens,

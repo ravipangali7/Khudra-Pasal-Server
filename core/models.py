@@ -127,6 +127,42 @@ class User(AbstractUser):
         return self.name
 
 
+class UserFcmDevice(models.Model):
+    """FCM registration token for one browser or app install (many per user)."""
+
+    class Platform(models.TextChoices):
+        WEB = "web", "Web"
+        ANDROID = "android", "Android"
+        IOS = "ios", "iOS"
+        UNKNOWN = "", "Unknown"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="fcm_devices",
+    )
+    token = models.CharField(max_length=8192, unique=True, db_index=True)
+    platform = models.CharField(
+        max_length=16,
+        choices=Platform.choices,
+        blank=True,
+        default="",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "FCM device"
+        verbose_name_plural = "FCM devices"
+        indexes = [
+            models.Index(fields=["user", "updated_at"]),
+        ]
+
+    def __str__(self) -> str:
+        plat = self.platform or "device"
+        return f"{plat} …{self.token[-12:]}" if len(self.token) > 12 else plat
+
+
 class OTPVerification(models.Model):
     class Purpose(models.TextChoices):
         LOGIN = "login", "Login"
