@@ -328,14 +328,16 @@ def firebase_messaging_config(request):
 @permission_classes([AllowAny])
 def store_info(request):
     site = SiteSettings.load()
-    logo_url = ""
-    if site.site_logo:
-        logo_url = request.build_absolute_uri(site.site_logo.url)
+    logo_url = absolute_media_url(request, site.site_logo) if site.site_logo else ""
+    favicon_url = absolute_media_url(request, site.site_favicon) if site.site_favicon else ""
+    cover_url = absolute_media_url(request, site.cover_image) if site.cover_image else ""
     rcfg = get_reels_site_config()
     return Response(
         {
             "site_name": site.site_name,
             "site_description": site.site_description,
+            "site_favicon_url": favicon_url,
+            "cover_image_url": cover_url or logo_url,
             "meta_keywords": site.meta_keywords or "",
             "site_email": site.site_email,
             "phone": site.phone,
@@ -681,19 +683,22 @@ def cms_page_public(request, slug):
     row = CMSPage.objects.filter(slug=slug, status=CMSPage.Status.PUBLISHED).first()
     if not row:
         return Response({"detail": "Not found."}, status=404)
-    return Response(
-        {
-            "title": row.title,
-            "slug": row.slug,
-            "content": row.content,
-            "seo_title": row.seo_title,
-            "seo_description": row.seo_description,
-            "last_updated": row.last_updated.isoformat() if row.last_updated else "",
-            "featured_image_url": absolute_media_url(request, row.featured_image)
-            if row.featured_image
-            else "",
-        }
-    )
+    from core.seo.api_aliases import with_seo_aliases
+
+    payload = {
+        "title": row.title,
+        "slug": row.slug,
+        "content": row.content,
+        "seo_title": row.seo_title,
+        "seo_description": row.seo_description,
+        "last_updated": row.last_updated.isoformat() if row.last_updated else "",
+        "featured_image_url": absolute_media_url(request, row.featured_image)
+        if row.featured_image
+        else "",
+    }
+    payload = with_seo_aliases(payload)
+    payload["featuredImage"] = payload.get("featured_image_url") or ""
+    return Response(payload)
 
 
 @api_view(["GET"])
@@ -722,73 +727,13 @@ def blog_post_public(request, slug):
     return Response(BlogPostDetailSerializer(post, context={"request": request}).data)
 
 
-def _sitemap_frontend_base(request) -> str:
-    base = (getattr(settings, "FRONTEND_URL", None) or "").strip().rstrip("/")
-    if base:
-        return base
-    return request.build_absolute_uri("/").rstrip("/")
-
-
-def _sitemap_url_entry(loc: str, lastmod: str = "", changefreq: str = "", priority: str = "") -> str:
-    parts = [f"  <url>\n    <loc>{escape(loc)}</loc>"]
-    if lastmod:
-        parts.append(f"    <lastmod>{escape(lastmod)}</lastmod>")
-    if changefreq:
-        parts.append(f"    <changefreq>{escape(changefreq)}</changefreq>")
-    if priority:
-        parts.append(f"    <priority>{escape(priority)}</priority>")
-    parts.append("  </url>")
-    return "\n".join(parts)
-
-
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def sitemap_xml(request):
-    """XML sitemap for storefront crawlers (products, CMS, blog, categories)."""
-    base = _sitemap_frontend_base(request)
-    today = timezone.now().date().isoformat()
-    entries: list[str] = []
+    """Legacy path — same XML as /api/meta/sitemap.xml."""
+    from core.seo.sitemap import build_sitemap_xml
 
-    static_paths = [
-        ("/", "daily", "1.0"),
-        ("/products", "daily", "0.9"),
-        ("/blog", "weekly", "0.8"),
-        ("/brands", "weekly", "0.7"),
-    ]
-    for path, freq, pri in static_paths:
-        entries.append(_sitemap_url_entry(f"{base}{path}", today, freq, pri))
-
-    for slug in Category.objects.filter(status=Category.Status.ACTIVE).values_list("slug", flat=True):
-        entries.append(_sitemap_url_entry(f"{base}/category/{slug}", today, "weekly", "0.7"))
-
-    cms_qs = CMSPage.objects.filter(status=CMSPage.Status.PUBLISHED).only("slug", "last_updated")
-    for row in cms_qs:
-        lm = row.last_updated.date().isoformat() if row.last_updated else today
-        entries.append(_sitemap_url_entry(f"{base}/page/{row.slug}", lm, "monthly", "0.6"))
-
-    blog_qs = BlogPost.objects.filter(status=BlogPost.Status.PUBLISHED).only("slug", "published_at", "created_at")
-    for row in blog_qs:
-        dt = row.published_at or row.created_at
-        lm = dt.date().isoformat() if dt else today
-        entries.append(_sitemap_url_entry(f"{base}/blog/{row.slug}", lm, "weekly", "0.7"))
-
-    product_qs = (
-        _active_products_queryset()
-        .only("slug", "updated_at")
-        .order_by("-updated_at")[:5000]
-    )
-    for row in product_qs:
-        lm = row.updated_at.date().isoformat() if row.updated_at else today
-        entries.append(_sitemap_url_entry(f"{base}/product/{row.slug}", lm, "weekly", "0.8"))
-
-    body = "\n".join(entries)
-    xml = (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
-        f"{body}\n"
-        "</urlset>"
-    )
-    return HttpResponse(xml, content_type="application/xml")
+    return HttpResponse(build_sitemap_xml(), content_type="application/xml; charset=utf-8")
 
 
 @api_view(["GET"])

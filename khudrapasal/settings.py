@@ -251,6 +251,11 @@ FRONTEND_URL = (
     or os.environ.get("BASE_URL", "").strip()
     or "http://localhost:8080"
 )
+# Canonical storefront origin for sitemap, share HTML, catalog exports (no trailing slash).
+PUBLIC_SITE_URL = (
+    os.environ.get("PUBLIC_SITE_URL", "").strip().rstrip("/")
+    or FRONTEND_URL.rstrip("/")
+)
 # Relative SPA path used when OAuth `next` is omitted (must match customer home from primary_spa_redirect).
 REDIRECT_AFTER_LOGIN = (os.environ.get("REDIRECT_AFTER_LOGIN", "/portal").strip() or "/portal")
 _frontend_origin = FRONTEND_URL.rstrip("/")

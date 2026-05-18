@@ -2878,6 +2878,12 @@ class AppPromotionAttribution(models.Model):
 class SiteSettings(models.Model):
     site_name = models.CharField(max_length=150, default="Khudra Pasal")
     site_logo = models.ImageField(upload_to="site/", blank=True)
+    site_favicon = models.ImageField(upload_to="site/", blank=True)
+    cover_image = models.ImageField(
+        upload_to="site/",
+        blank=True,
+        help_text="Default Open Graph image when a page has no featured image.",
+    )
     site_email = models.EmailField(blank=True)
     phone = models.CharField(max_length=20, blank=True)
     address = models.TextField(blank=True)

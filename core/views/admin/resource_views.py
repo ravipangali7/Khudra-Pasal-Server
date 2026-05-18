@@ -5362,6 +5362,12 @@ def admin_site_settings_singleton(request):
             {
                 "site_name": site.site_name,
                 "site_logo_url": absolute_media_url(request, site.site_logo),
+                "site_favicon_url": absolute_media_url(request, site.site_favicon)
+                if site.site_favicon
+                else "",
+                "cover_image_url": absolute_media_url(request, site.cover_image)
+                if site.cover_image
+                else "",
                 "site_email": site.site_email or "",
                 "phone": site.phone or "",
                 "address": site.address or "",
@@ -5445,6 +5451,16 @@ def admin_site_settings_singleton(request):
     logo = request.FILES.get("site_logo") or request.FILES.get("logo")
     if logo:
         site.site_logo = logo
+    favicon = request.FILES.get("site_favicon") or request.FILES.get("favicon")
+    if favicon:
+        site.site_favicon = favicon
+    cover = request.FILES.get("cover_image")
+    if cover:
+        site.cover_image = cover
+    elif request.data.get("clear_cover_image") in (True, "true", "1", 1):
+        if site.cover_image:
+            site.cover_image.delete(save=False)
+        site.cover_image = None
     site.save()
     return Response({"ok": True})
 

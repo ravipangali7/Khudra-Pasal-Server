@@ -5,6 +5,7 @@ from core.views.portal import portal_views
 from core.views.website import ai_pitch_views, home_views
 
 urlpatterns = [
+    path("", include("core.urls.meta_urls")),
     path("ai-pitch/", ai_pitch_views.ai_pitch, name="ai-pitch"),
     path("wallet-hub/", include("core.urls.wallet_hub_urls")),
     path("auth/", include("core.urls.auth_urls")),

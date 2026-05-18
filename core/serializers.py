@@ -63,7 +63,22 @@ class CategoryTreeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Category
-        fields = ["id", "name", "slug", "icon", "image_url", "sort_order", "children"]
+        fields = [
+            "id",
+            "name",
+            "slug",
+            "icon",
+            "image_url",
+            "sort_order",
+            "seo_title",
+            "seo_description",
+            "children",
+        ]
+
+    def to_representation(self, instance):
+        from core.seo.api_aliases import with_seo_aliases
+
+        return with_seo_aliases(super().to_representation(instance))
 
     def get_image_url(self, obj):
         if not obj.image:
@@ -229,6 +244,14 @@ class ProductSerializer(serializers.ModelSerializer):
         else:
             imgs = list(obj.images.order_by("sort_order", "id"))
         return ProductImageSerializer(imgs, many=True, context=self.context).data
+
+    def to_representation(self, instance):
+        from core.seo.api_aliases import with_seo_aliases
+
+        data = super().to_representation(instance)
+        data = with_seo_aliases(data)
+        data["featuredImage"] = data.get("image_url") or ""
+        return data
 
 
 class BannerSerializer(serializers.ModelSerializer):
@@ -852,6 +875,13 @@ class BlogPostListSerializer(serializers.ModelSerializer):
             "seo_title",
             "seo_description",
         ]
+
+    def to_representation(self, instance):
+        from core.seo.api_aliases import with_seo_aliases
+
+        data = with_seo_aliases(super().to_representation(instance))
+        data["featuredImage"] = data.get("cover_image_url") or ""
+        return data
 
     def get_cover_image_url(self, obj):
         if not obj.cover_image:
