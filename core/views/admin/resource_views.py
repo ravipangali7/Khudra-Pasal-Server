@@ -4378,6 +4378,48 @@ def admin_notification_broadcast(request):
     )
 
 
+@api_view(["POST"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_notification_push(request, pk):
+    """Resend FCM push for an existing notification (recipient or target audience)."""
+    if err := _forbidden(request):
+        return err
+    row = Notification.objects.select_related("recipient").filter(pk=pk).first()
+    if not row:
+        return Response({"detail": "Not found."}, status=404)
+    fcm_tokens: list[str] = []
+    if row.recipient_id:
+        tok = (getattr(row.recipient, "fcm_token", "") or "").strip()
+        if tok:
+            fcm_tokens.append(tok)
+    else:
+        for u in _notification_recipient_qs(row.target).iterator(chunk_size=500):
+            tok = (getattr(u, "fcm_token", "") or "").strip()
+            if tok:
+                fcm_tokens.append(tok)
+    from core.services.fcm_push_service import send_fcm_to_tokens
+
+    push = send_fcm_to_tokens(
+        fcm_tokens,
+        row.title,
+        row.message,
+        image_url=(row.image_url or "").strip(),
+    )
+    return Response(
+        {
+            "push": {
+                "firebase_configured": push.firebase_configured,
+                "device_tokens": push.unique_tokens,
+                "delivered": push.success_count,
+                "failed": push.failure_count,
+                "skip_reason": push.skip_reason,
+                "first_error": push.first_error,
+            },
+        }
+    )
+
+
 @api_view(["PATCH", "DELETE"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])

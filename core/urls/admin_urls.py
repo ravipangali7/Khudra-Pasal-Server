@@ -180,6 +180,11 @@ urlpatterns = [
         resource_views.admin_notification_broadcast,
         name="admin-notifications-broadcast",
     ),
+    path(
+        "notifications/<int:pk>/push/",
+        resource_views.admin_notification_push,
+        name="admin-notifications-push",
+    ),
     path("notifications/<int:pk>/", resource_views.admin_notification_detail_write, name="admin-notifications-write"),
     path("notifications/", resource_views.admin_notifications_list, name="admin-notifications"),
     path(
