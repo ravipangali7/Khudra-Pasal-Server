@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from html import escape
 
+from core.seo.media_urls import ensure_https_og_image
 from core.seo.resolvers import resolve_description, resolve_og_image, resolve_title
 
 
@@ -15,27 +17,34 @@ def render_share_html(
     og_type: str,
     og_image: str = "",
     share_url: str = "",
+    site_name: str = "",
 ) -> str:
     t = escape(title)
     d = escape(description)
     canonical = escape(canonical_spa_url)
     og_url = escape(share_url or canonical_spa_url)
-    img = (og_image or "").strip()
+    img = ensure_https_og_image(og_image)
     img_escaped = escape(img) if img else ""
+    site = escape(site_name) if site_name else ""
 
     og_image_tags = ""
     twitter_image_tag = ""
-    if img and img.lower().startswith("https://"):
+    if img:
         og_image_tags = (
             f'    <meta property="og:image" content="{img_escaped}" />\n'
             f'    <meta property="og:image:secure_url" content="{img_escaped}" />\n'
         )
         twitter_image_tag = f'    <meta name="twitter:image" content="{img_escaped}" />\n'
 
+    site_name_tag = (
+        f'    <meta property="og:site_name" content="{site}" />\n' if site else ""
+    )
+
     return f"""<!DOCTYPE html>
-<html lang="en">
+<html lang="en" prefix="og: https://ogp.me/ns#">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{t}</title>
   <meta name="description" content="{d}" />
   <link rel="canonical" href="{canonical}" />
@@ -43,13 +52,14 @@ def render_share_html(
   <meta property="og:description" content="{d}" />
   <meta property="og:url" content="{og_url}" />
   <meta property="og:type" content="{escape(og_type)}" />
-{og_image_tags}  <meta name="twitter:card" content="summary_large_image" />
+{site_name_tag}{og_image_tags}  <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="{t}" />
   <meta name="twitter:description" content="{d}" />
 {twitter_image_tag}  <meta http-equiv="refresh" content="0;url={canonical}" />
 </head>
 <body>
   <p><a href="{canonical}">{t}</a></p>
+  <script>window.location.replace({json.dumps(canonical_spa_url)});</script>
 </body>
 </html>"""
 
@@ -62,7 +72,7 @@ def share_context_from_entity(
     excerpt: str,
     body: str,
     spa_path: str,
-    share_api_path: str,  # absolute API share URL
+    share_api_path: str,
     og_type: str,
     entity_image: str,
     site_name: str,
@@ -85,7 +95,9 @@ def share_context_from_entity(
     )
     canonical = build_spa(spa_path)
     share_url = share_api_path if share_api_path else canonical
-    image = resolve_og_image(entity_image, cover_image, site_logo)
+    image = ensure_https_og_image(
+        resolve_og_image(entity_image, cover_image, site_logo)
+    )
     return {
         "title": page_title,
         "description": description,
@@ -93,4 +105,5 @@ def share_context_from_entity(
         "share_url": share_url,
         "og_type": og_type,
         "og_image": image,
+        "site_name": site_name,
     }

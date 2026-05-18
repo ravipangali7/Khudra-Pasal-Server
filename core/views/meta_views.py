@@ -10,6 +10,7 @@ from core.models import BlogPost, CMSPage, SiteSettings
 from core.seo.share import render_share_html, share_context_from_entity
 from core.seo.sitemap import build_sitemap_xml
 from core.seo.resolvers import spa_url
+from core.seo.media_urls import ensure_https_og_image
 from core.views.admin.admin_write_utils import absolute_media_url, product_primary_image_url
 from core.views.website.home_views import _active_products_queryset
 
@@ -52,8 +53,9 @@ def _share_response(request, ctx: dict) -> HttpResponse:
         description=ctx["description"],
         canonical_spa_url=ctx["canonical_spa_url"],
         og_type=ctx["og_type"],
-        og_image=ctx["og_image"],
+        og_image=ensure_https_og_image(ctx.get("og_image") or ""),
         share_url=ctx["share_url"],
+        site_name=ctx.get("site_name") or "",
     )
     return HttpResponse(html, content_type="text/html; charset=utf-8")
 
@@ -86,6 +88,7 @@ def blog_post_share(request, slug):
         cover_image=cover,
     )
     ctx["canonical_spa_url"] = spa_url(f"/blog/{post.slug}")
+    ctx["site_name"] = site.site_name
     return _share_response(request, ctx)
 
 
@@ -111,18 +114,19 @@ def cms_page_share(request, slug):
         cover_image=cover,
     )
     ctx["canonical_spa_url"] = spa_url(f"/page/{row.slug}")
+    ctx["site_name"] = site.site_name
     return _share_response(request, ctx)
 
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def product_share(request, identifier):
-    qs = _active_products_queryset()
+    qs = _active_products_queryset().prefetch_related("images")
     row = qs.filter(slug=identifier).first()
     if not row:
         row = get_object_or_404(qs, pk=identifier)
     site, logo, _, cover = _site_seo_assets(request)
-    image = product_primary_image_url(request, row)
+    image = ensure_https_og_image(product_primary_image_url(request, row))
     slug = row.slug or str(row.pk)
     ctx = share_context_from_entity(
         meta_title=row.seo_title or "",
@@ -140,4 +144,5 @@ def product_share(request, identifier):
         cover_image=cover,
     )
     ctx["canonical_spa_url"] = spa_url(f"/product/{slug}")
+    ctx["site_name"] = site.site_name
     return _share_response(request, ctx)
