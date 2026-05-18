@@ -6,6 +6,21 @@ urlpatterns = [
     path("settings/public/", meta_views.public_settings, name="settings-public"),
     path("meta/sitemap.xml", meta_views.sitemap_xml, name="meta-sitemap"),
     path(
+        "meta/catalog-export.json",
+        meta_views.catalog_export_json,
+        name="meta-catalog-export-json",
+    ),
+    path(
+        "meta/catalog-export.csv",
+        meta_views.catalog_export_csv,
+        name="meta-catalog-export-csv",
+    ),
+    path(
+        "meta/catalog-export.xml",
+        meta_views.catalog_export_xml,
+        name="meta-catalog-export-xml",
+    ),
+    path(
         "website/blog-posts/<slug:slug>/share/",
         meta_views.blog_post_share,
         name="website-blog-post-share",

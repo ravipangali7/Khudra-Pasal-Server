@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from core.models import BlogPost, Brand, Category, CMSPage, SiteSettings, Vendor
 from core.seo.og_image import public_media_url, resolve_share_og_image
 from core.seo.share import render_share_html, share_context_from_entity
+from core.seo.catalog_export import build_catalog_csv, build_catalog_json, build_catalog_xml
 from core.seo.sitemap import build_sitemap_xml
 from core.views.admin.admin_write_utils import product_primary_image_url
 from core.views.website.home_views import _active_products_queryset
@@ -62,6 +63,24 @@ def public_settings(request):
 def sitemap_xml(request):
     xml = build_sitemap_xml()
     return HttpResponse(xml, content_type="application/xml; charset=utf-8")
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def catalog_export_json(request):
+    return HttpResponse(build_catalog_json(), content_type="application/json; charset=utf-8")
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def catalog_export_csv(request):
+    return HttpResponse(build_catalog_csv(), content_type="text/csv; charset=utf-8")
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def catalog_export_xml(request):
+    return HttpResponse(build_catalog_xml(), content_type="application/xml; charset=utf-8")
 
 
 @api_view(["GET"])

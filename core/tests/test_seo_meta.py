@@ -1,9 +1,11 @@
 """SEO: sitemap, share landings, public settings (Part E4 / L)."""
 
-from django.test import TestCase, override_settings
-from django.urls import reverse
+from decimal import Decimal
 
-from core.models import BlogPost, Brand, Category, CMSPage, SiteSettings
+from django.test import TestCase, override_settings
+from django.urls import resolve, reverse
+
+from core.models import BlogPost, Brand, Category, CMSPage, Product, SiteSettings, User, Vendor
 
 
 @override_settings(PUBLIC_SITE_URL="https://www.example.com", FRONTEND_URL="https://www.example.com")
@@ -32,6 +34,46 @@ class SeoMetaTests(TestCase):
     def test_legacy_website_sitemap_still_works(self):
         r = self.client.get("/api/website/sitemap.xml")
         self.assertEqual(r.status_code, 200)
+
+    def test_catalog_export_json_public(self):
+        cat = Category.objects.create(name="Feed Cat", slug="feed-cat")
+        vendor_user = User.objects.create_user(
+            username="feed_vendor",
+            password="x",
+            phone="9812345678",
+            name="Vendor",
+            role=User.Role.NORMAL,
+        )
+        vendor = Vendor.objects.create(
+            user=vendor_user,
+            store_name="Feed Store",
+            store_slug="feed-store",
+            status=Vendor.Status.APPROVED,
+            commission_rate=Decimal("10.00"),
+        )
+        Product.objects.create(
+            seller=vendor,
+            category=cat,
+            name="Feed Product",
+            slug="feed-product",
+            sku="FEED1",
+            price=Decimal("250.00"),
+            stock=10,
+            status=Product.Status.ACTIVE,
+            short_description="Short feed description",
+        )
+        match = resolve("/api/meta/catalog-export.json")
+        self.assertEqual(match.url_name, "meta-catalog-export-json")
+        r = self.client.get("/api/meta/catalog-export.json")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("application/json", r["Content-Type"])
+        data = r.json()
+        self.assertGreaterEqual(len(data["items"]), 1)
+        row = next(i for i in data["items"] if i["title"] == "Feed Product")
+        self.assertEqual(row["link"], "https://www.example.com/product/feed-product")
+        self.assertIn("id", row)
+        self.assertIn("availability", row)
+        self.assertIn("price", row)
 
     def test_public_settings_camel_case(self):
         r = self.client.get("/api/settings/public/")
