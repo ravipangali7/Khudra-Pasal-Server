@@ -395,24 +395,44 @@ def exceeds_daily_impression_cap(ctx: UserFeedContext, reel_id: int) -> bool:
     return count >= MAX_REEL_IMPRESSIONS_PER_DAY
 
 
-def apply_diversity(feed: list[Reel], ctx: UserFeedContext) -> list[Reel]:
+def apply_diversity(
+    feed: list[Reel],
+    ctx: UserFeedContext,
+    *,
+    min_keep: int = 1,
+) -> list[Reel]:
     """Max 2 reels per vendor per 10; respect daily impression cap per reel."""
     if not feed:
         return feed
     out: list[Reel] = []
+    skipped_cap: list[Reel] = []
+    skipped_vendor: list[Reel] = []
     vendor_window: list[int] = []
 
     for reel in feed:
         if ctx.user and exceeds_daily_impression_cap(ctx, reel.pk):
+            skipped_cap.append(reel)
             continue
         vid = reel.vendor_id
         if vid:
             recent = vendor_window[-DIVERSITY_WINDOW:]
             if recent.count(vid) >= MAX_VENDOR_PER_WINDOW:
+                skipped_vendor.append(reel)
                 continue
         out.append(reel)
         if vid:
             vendor_window.append(vid)
+
+    target = max(1, min(min_keep, len(feed)))
+    if len(out) < target:
+        for reel in skipped_cap + skipped_vendor:
+            if len(out) >= target:
+                break
+            if any(r.pk == reel.pk for r in out):
+                continue
+            out.append(reel)
+    if len(out) < target:
+        return feed[:target]
     return out
 
 

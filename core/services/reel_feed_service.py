@@ -8,6 +8,7 @@ Boosted reels: one inserted after every four organic reels (20% cap, no dominati
 from __future__ import annotations
 
 import math
+import random as py_random
 from typing import TYPE_CHECKING
 
 from datetime import timedelta
@@ -20,7 +21,6 @@ from core.models import (
     OrderItem,
     Reel,
     ReelInteraction,
-    ReelView,
     User,
 )
 from core.services import reel_ranking_service as ranking
@@ -288,6 +288,35 @@ def _build_organic_from_pools(
     return picked
 
 
+def _shuffle_with_seed(reels: list[Reel], seed: str) -> list[Reel]:
+    if not reels or not seed:
+        return reels
+    out = list(reels)
+    py_random.Random(seed).shuffle(out)
+    return out
+
+
+def _fallback_feed_page(
+    base_qs: QuerySet,
+    ctx: ranking.UserFeedContext,
+    *,
+    page: int,
+    page_size: int,
+    explore_seed: str,
+    exclude_ids: set[int],
+) -> list[Reel]:
+    """Guarantee a non-empty page when slot/diversity filters remove every candidate."""
+    offset = (page - 1) * page_size
+    qs = ranking.filter_low_quality(base_qs)
+    if exclude_ids:
+        qs = qs.exclude(pk__in=exclude_ids)
+    rows = list(qs.order_by("-likes", "-views", "-created_at")[offset : offset + page_size + 12])
+    if not rows:
+        return []
+    ranked = ranking.rank_reels_in_memory(rows, ctx, explore_seed=explore_seed)
+    return ranked[:page_size]
+
+
 def build_blended_feed_page(
     base_qs: QuerySet,
     *,
@@ -296,6 +325,7 @@ def build_blended_feed_page(
     page: int,
     page_size: int,
     mix: dict[str, float] | None = None,
+    feed_seed: str | None = None,
 ) -> tuple[list[Reel], bool]:
     """
     Ranked blended feed page. Flow: filter → score → rank → inject boosted → diversity.
@@ -307,7 +337,8 @@ def build_blended_feed_page(
 
     u = user if user and user.is_authenticated else None
     ctx = ranking.build_user_feed_context(u)
-    explore_seed = f"{u.pk if u else 'anon'}:{page}:{audience}"
+    seed_suffix = (feed_seed or "").strip()[:64]
+    explore_seed = f"{u.pk if u else 'anon'}:{page}:{audience}:{seed_suffix}"
 
     qs = annotate_boost_score(base_qs)
     qs = ranking.filter_low_quality(qs)
@@ -350,10 +381,6 @@ def build_blended_feed_page(
     )
 
     random_qs = qs.filter(_experimental_q(now))
-    if u:
-        random_qs = random_qs.exclude(
-            pk__in=ReelView.objects.filter(user=u).values_list("reel_id", flat=True)
-        )
     explore_pool = _fetch_ranked_pool(
         random_qs,
         ctx,
@@ -390,11 +417,7 @@ def build_blended_feed_page(
         organic = _build_organic_from_pools(pools, slot_counts, audience=audience, page_size=page_size)
         picked = ranking.inject_boosted_reels(organic, boosted_pool, page_size=page_size)
 
-    picked = ranking.apply_diversity(picked, ctx)
-
-    if u:
-        for reel in picked:
-            ranking.record_feed_impression(u.id, reel.pk)
+    picked = ranking.apply_diversity(picked, ctx, min_keep=page_size)
 
     if len(picked) < page_size:
         backfill = _fetch_ranked_pool(
@@ -410,7 +433,23 @@ def build_blended_feed_page(
                 break
             if reel.pk not in {r.pk for r in picked}:
                 picked.append(reel)
-        picked = ranking.apply_diversity(picked[:page_size], ctx)
+        picked = ranking.apply_diversity(picked[:page_size], ctx, min_keep=page_size)
+
+    if not picked:
+        picked = _fallback_feed_page(
+            base_qs,
+            ctx,
+            page=page,
+            page_size=page_size,
+            explore_seed=explore_seed,
+            exclude_ids=set(),
+        )
+
+    picked = _shuffle_with_seed(picked[:page_size], explore_seed)
+
+    if u:
+        for reel in picked:
+            ranking.record_feed_impression(u.id, reel.pk)
 
     has_more = len(picked) >= page_size and qs.exclude(pk__in=[r.pk for r in picked]).exists()
     return picked[:page_size], has_more

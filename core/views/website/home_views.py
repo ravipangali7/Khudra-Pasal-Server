@@ -870,6 +870,11 @@ def _public_reels_list_response(request, qs, *, tab: str):
         except (TypeError, ValueError):
             page_num = 1
         user = request.user if request.user.is_authenticated else None
+        feed_seed = (
+            request.query_params.get("feed_seed")
+            or request.query_params.get("shuffle")
+            or ""
+        ).strip()[:64]
         reels, has_more = reel_feed_service.build_blended_feed_page(
             qs,
             user=user,
@@ -877,6 +882,7 @@ def _public_reels_list_response(request, qs, *, tab: str):
             page=page_num,
             page_size=page_size,
             mix=get_reels_feed_mix(audience),
+            feed_seed=feed_seed or None,
         )
         if reels:
             hydrated = annotate_reels_comments(
