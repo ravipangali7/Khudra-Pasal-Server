@@ -108,6 +108,24 @@ def _forbidden_if_not_admin(request):
     return enforce_admin_api_access(request)
 
 
+def _admin_user_delete_forbidden(request, target: User) -> str | None:
+    """Return an error message if the actor may not delete target, else None."""
+    from core.views.admin.admin_access import user_can_access_audit_logs
+
+    actor = request.user
+    if not user_can_access_audit_logs(actor):
+        return "Delete permission requires super admin privileges."
+    if target.pk == actor.pk:
+        return "You cannot delete your own account."
+    if getattr(target, "is_superuser", False):
+        return "Superuser accounts cannot be deleted."
+    if target.is_staff:
+        return "Staff accounts cannot be deleted."
+    if Vendor.objects.filter(user_id=target.pk).exists():
+        return "Vendor accounts must be managed from the Sellers section."
+    return None
+
+
 class UserPagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = "page_size"
@@ -456,7 +474,24 @@ def admin_user_detail_write(request, pk):
         data["avatar"] = absolute_media_url(request, user.avatar) if user.avatar else ""
         return Response(data)
     if request.method == "DELETE":
+        delete_err = _admin_user_delete_forbidden(request, user)
+        if delete_err:
+            return Response({"detail": delete_err}, status=403)
+        deleted_name = user.name
+        deleted_phone = user.phone
+        deleted_id = user.pk
         user.delete()
+        audit_service.log(
+            f"Admin deleted user {deleted_name!r} (id={deleted_id})",
+            log_type=AuditLog.Type.USER,
+            performed_by=request.user,
+            object_type="User",
+            object_id=str(deleted_id),
+            ip_address=client_ip_from_request(request),
+            action_kind=AuditLog.ActionKind.DELETE,
+            module="users",
+            metadata={"phone": deleted_phone},
+        )
         return Response({"ok": True})
     if "name" in request.data:
         user.name = (request.data.get("name") or "").strip() or user.name
