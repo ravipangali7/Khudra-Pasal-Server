@@ -2979,6 +2979,8 @@ def admin_staff_users_list(request):
         return err
     qs = User.objects.filter(Q(is_staff=True) | Q(role=User.Role.SUPER_ADMIN)).order_by("-created_at")
     paginator, page = _paginate(request, qs)
+    from core import rbac_django as rbac
+
     rows = [
         {
             "id": str(u.pk),
@@ -2988,6 +2990,8 @@ def admin_staff_users_list(request):
             "role": u.role,
             "lastLogin": u.last_login.isoformat() if u.last_login else "",
             "status": "active" if u.is_active else "inactive",
+            "groups": rbac.user_groups_payload(u),
+            "group_ids": list(u.groups.values_list("pk", flat=True)),
         }
         for u in page
     ]

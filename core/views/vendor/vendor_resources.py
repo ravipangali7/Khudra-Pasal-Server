@@ -146,6 +146,9 @@ def vendor_profile(request):
             product__seller=vendor,
             status=ProductReview.Status.APPROVED,
         ).count()
+        from core import rbac_django as rbac
+
+        u = request.user
         return Response(
             {
                 "id": str(vendor.pk),
@@ -162,6 +165,8 @@ def vendor_profile(request):
                 "is_verified": vendor.is_verified,
                 "product_count": product_count,
                 "review_count": review_count,
+                "groups": rbac.user_groups_payload(u),
+                "permissions": rbac.user_permission_strings(u),
             }
         )
     if "store_name" in request.data:

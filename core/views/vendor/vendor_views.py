@@ -156,6 +156,8 @@ def vendor_me(request):
     vendor, err = vendor_or_error(request)
     if err:
         return err
+    from core import rbac_django as rbac
+
     return Response(
         {
             "id": str(vendor.pk),
@@ -174,6 +176,8 @@ def vendor_me(request):
             "address": vendor.address,
             "logo_url": media_url(request, vendor.logo),
             "banner_url": media_url(request, vendor.banner),
+            "groups": rbac.user_groups_payload(request.user),
+            "permissions": rbac.user_permission_strings(request.user),
         }
     )
 

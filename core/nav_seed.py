@@ -55,6 +55,7 @@ ADMIN_NAV: list[tuple] = [
     ("admin", "customers", "Customers", "Users", "users", 1, "", ""),
     ("admin", "sellers", "Sellers / Vendors", "Building2", "users", 2, "", ""),
     ("admin", "users-kyc", "KYC Verification", "Shield", "users", 3, "", ""),
+    ("admin", "roles-permissions", "Roles & Permission", "Shield", "", 92, "", ""),
     ("admin", "audit-logs", "Audit Logs", "ClipboardList", "", 100, "", ""),
     ("admin", "families", "Families & Groups", "Building2", "", 120, "", ""),
     ("admin", "families-all", "All Groups", "Building2", "families", 0, "", ""),

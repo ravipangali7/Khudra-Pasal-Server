@@ -24,6 +24,7 @@ from core.portal_roles import (
     user_has_family_portal_access,
 )
 from core.services.site_settings_policy import vendor_pos_checkout_allowed
+from core import rbac_django as rbac
 from core.views.admin.admin_access import admin_allowed_nav_keys, user_can_access_audit_logs
 
 # Legacy nav keys no longer shown in vendor portal sidebar (not in nav_seed VENDOR_NAV).
@@ -87,6 +88,25 @@ def _build_tree_from_rows(rows: list, badge_map: dict) -> list:
         return out
 
     return build("")
+
+
+def _rows_filtered_by_django_groups(rows: list, user: User, surface: str) -> list:
+    allowed = rbac.allowed_nav_keys_for_surface(user, surface)
+    if allowed is None:
+        return list(rows)
+    by_key = {r.key: r for r in rows}
+    expanded = set(allowed)
+    for k in list(allowed):
+        cur = k
+        while cur:
+            r = by_key.get(cur)
+            if not r:
+                break
+            pk = (r.parent_key or "").strip()
+            if pk:
+                expanded.add(pk)
+            cur = pk or None
+    return [r for r in rows if r.key in expanded]
 
 
 def _admin_rows_filtered(rows: list, user: User | None) -> list:
@@ -175,7 +195,14 @@ def vendor_navigation(request):
     if not vendor:
         return Response({"items": _build_tree(NavigationItem.Surface.VENDOR, {}, user=None)})
     badges = _vendor_nav_badges(vendor)
-    items = _build_tree(NavigationItem.Surface.VENDOR, badges, user=None)
+    rows = list(
+        NavigationItem.objects.filter(surface=NavigationItem.Surface.VENDOR).order_by(
+            "sort_order", "key"
+        )
+    )
+    rows = [r for r in rows if r.key not in _VENDOR_NAV_EXCLUDED_KEYS]
+    rows = _rows_filtered_by_django_groups(rows, u, rbac.SURFACE_VENDOR)
+    items = _build_tree_from_rows(rows, badges)
     if not vendor_pos_checkout_allowed(vendor):
         items = [
             n
@@ -228,4 +255,14 @@ def portal_navigation(request):
         nav_surface = NavigationItem.Surface.PORTAL_MAIN
 
     badges = _portal_nav_badges(u)
-    return Response({"items": _build_tree(nav_surface, badges, user=u)})
+    rbac_surface = {
+        NavigationItem.Surface.PORTAL_MAIN: rbac.SURFACE_PORTAL_MAIN,
+        NavigationItem.Surface.PORTAL_FAMILY: rbac.SURFACE_PORTAL_FAMILY,
+        NavigationItem.Surface.PORTAL_CHILD: rbac.SURFACE_PORTAL_CHILD,
+    }.get(nav_surface, rbac.SURFACE_PORTAL_MAIN)
+    rows = list(
+        NavigationItem.objects.filter(surface=nav_surface).order_by("sort_order", "key")
+    )
+    rows = _filter_rows_for_portal_user(rows, u)
+    rows = _rows_filtered_by_django_groups(rows, u, rbac_surface)
+    return Response({"items": _build_tree_from_rows(rows, badges)})

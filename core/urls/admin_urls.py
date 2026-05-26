@@ -3,6 +3,7 @@ from django.urls import path
 from core.views.admin import (
     admin_vendor_inventory_views,
     app_promo_views,
+    auth_groups_views,
     dashboard_views,
     kyc_submissions_views,
     resource_views,
@@ -307,6 +308,22 @@ urlpatterns = [
     path("weight-rules/", resource_views.admin_weight_rules_list, name="admin-weight-rules"),
     path("shipping-settings/", resource_views.admin_shipping_settings_singleton, name="admin-shipping-settings"),
     path("shipping/calculate/", resource_views.admin_shipping_calculate, name="admin-shipping-calculate"),
+    path(
+        "auth-groups/create/",
+        auth_groups_views.admin_auth_group_create,
+        name="admin-auth-groups-create",
+    ),
+    path(
+        "auth-groups/<int:pk>/",
+        auth_groups_views.admin_auth_group_detail,
+        name="admin-auth-groups-detail",
+    ),
+    path("auth-groups/", auth_groups_views.admin_auth_groups_list, name="admin-auth-groups"),
+    path(
+        "auth-permissions/",
+        auth_groups_views.admin_auth_permissions_list,
+        name="admin-auth-permissions",
+    ),
     path("roles/create/", resource_views.admin_role_create, name="admin-roles-create"),
     path("roles/<int:pk>/", resource_views.admin_role_detail_write, name="admin-roles-write"),
     path("roles/", resource_views.admin_roles_list, name="admin-roles"),

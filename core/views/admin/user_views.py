@@ -37,6 +37,7 @@ from core.portal_roles import PORTAL_ADMIN, assert_portal_login_allowed, user_al
 from core.services import audit_service, security_service
 from core.services.kyc_portal import supersede_non_approved_kyc, validate_kyc_upload_file
 from core.services.kyc_service import sync_user_kyc_status
+from core import rbac_django as rbac
 from core.serializers import AdminUserSerializer
 from core.views.admin.admin_write_utils import absolute_media_url, client_ip_from_request, validation_error
 
@@ -301,6 +302,8 @@ def _admin_self_profile_payload(request, u: User) -> dict:
         "avatar_url": absolute_media_url(request, u.avatar),
         "is_superuser": u.is_superuser,
         "employee": employee,
+        "groups": rbac.user_groups_payload(u),
+        "permissions": rbac.user_permission_strings(u),
     }
 
 
@@ -430,6 +433,8 @@ def admin_user_create(request):
         file_fields.append("customer_document")
     if file_fields:
         user.save(update_fields=file_fields)
+    if "group_ids" in request.data:
+        rbac.assign_user_groups(user, request.data.get("group_ids"))
     u = _annotate_admin_user_customer_metrics(User.objects.filter(pk=user.pk)).first()
     return Response(
         AdminUserSerializer(u, context={"request": request}).data, status=201
@@ -479,6 +484,8 @@ def admin_user_detail_write(request, pk):
         if err:
             return err
         user.customer_document = request.FILES["customer_document"]
+    if "group_ids" in request.data:
+        rbac.assign_user_groups(user, request.data.get("group_ids"))
     user.save()
     audit_service.log(
         f"Admin updated user {user.name!r} (id={user.pk})",

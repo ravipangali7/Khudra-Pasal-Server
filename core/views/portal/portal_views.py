@@ -2980,6 +2980,10 @@ def _portal_self_profile_get(request, u: User) -> dict:
         base["family_group_name"] = ""
         base["family_member_role"] = ""
         base["spending_limit_monthly"] = 0.0
+    from core import rbac_django as rbac
+
+    base["groups"] = rbac.user_groups_payload(u)
+    base["permissions"] = rbac.user_permission_strings(u)
     return base
 
 

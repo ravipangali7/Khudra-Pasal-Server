@@ -2,21 +2,13 @@
 
 from rest_framework.response import Response
 
+from core import rbac_django as rbac
 from core.models import EmployeeProfile, SecuritySettings, User
 from core.portal_roles import user_allowed_for_admin_portal
 
 
-def admin_allowed_nav_keys(user: User) -> frozenset[str] | None:
-    """
-    Return allowed admin nav keys, or None if all keys allowed.
-    Superuser: full access. Staff without EmployeeProfile: full access.
-    EmployeeProfile: union of modules_access list and Role.permissions keys that are truthy.
-    Empty union after load: full access (backward compatible).
-    """
-    if not user or not user.is_authenticated:
-        return frozenset()
-    if getattr(user, "is_superuser", False):
-        return None
+def _legacy_employee_nav_keys(user: User) -> frozenset[str] | None:
+    """EmployeeProfile + custom Role JSON permissions (legacy)."""
     ep = (
         EmployeeProfile.objects.filter(user=user)
         .select_related("role")
@@ -34,6 +26,23 @@ def admin_allowed_nav_keys(user: User) -> frozenset[str] | None:
         return None
     keys.add("dashboard")
     return frozenset(keys)
+
+
+def admin_allowed_nav_keys(user: User) -> frozenset[str] | None:
+    """
+    Return allowed admin nav keys, or None if all keys allowed.
+    Superuser: full access. Staff without EmployeeProfile: full access.
+    Django Group permissions are intersected with legacy EmployeeProfile rules when both apply.
+    """
+    if not user or not user.is_authenticated:
+        return frozenset()
+    if getattr(user, "is_superuser", False):
+        return None
+    django_keys = rbac.allowed_nav_keys_for_surface(user, rbac.SURFACE_ADMIN)
+    legacy_keys = _legacy_employee_nav_keys(user)
+    if django_keys is None and legacy_keys is None:
+        return None
+    return rbac.merge_allowed_nav_keys(django_keys, legacy_keys)
 
 
 def user_can_access_admin_module(user: User, module_key: str) -> bool:
@@ -146,6 +155,8 @@ def admin_module_key_from_path(path: str) -> str | None:
         ("shipping-methods/", "settings"),
         ("shipping-zones/", "settings"),
         ("weight-rules/", "settings"),
+        ("auth-groups/", "roles-permissions"),
+        ("auth-permissions/", "roles-permissions"),
         ("roles/", "employees"),
         ("employees/", "employees"),
         ("reels/", "reels-admin"),

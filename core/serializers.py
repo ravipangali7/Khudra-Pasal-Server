@@ -325,6 +325,8 @@ class AdminUserSerializer(serializers.ModelSerializer):
     wallet_balance = serializers.SerializerMethodField()
     app_promo_status = serializers.SerializerMethodField()
     app_promo_discount_percent = serializers.SerializerMethodField()
+    groups = serializers.SerializerMethodField()
+    group_ids = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -345,7 +347,17 @@ class AdminUserSerializer(serializers.ModelSerializer):
             "wallet_balance",
             "app_promo_status",
             "app_promo_discount_percent",
+            "groups",
+            "group_ids",
         ]
+
+    def get_groups(self, obj):
+        from core import rbac_django as rbac
+
+        return rbac.user_groups_payload(obj)
+
+    def get_group_ids(self, obj):
+        return list(obj.groups.values_list("pk", flat=True))
 
     def get_customer_document(self, obj):
         from core.views.admin.admin_write_utils import absolute_media_url
