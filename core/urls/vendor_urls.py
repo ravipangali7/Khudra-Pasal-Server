@@ -30,6 +30,7 @@ urlpatterns = [
     path("catalog/units/", vendor_resources.vendor_catalog_units, name="vendor-cat-units"),
     path("catalog/attributes/", vendor_resources.vendor_catalog_attributes, name="vendor-cat-attributes"),
     path("products/slug-preview/", vendor_resources.vendor_product_slug_preview, name="vendor-product-slug"),
+    path("products/sku-preview/", vendor_resources.vendor_product_sku_preview, name="vendor-product-sku-preview"),
     path("products/create/", vendor_resources.vendor_product_create, name="vendor-products-create"),
     path("products/<int:pk>/", vendor_resources.vendor_product_detail, name="vendor-product-detail"),
     path("orders/", vendor_views.vendor_orders_list, name="vendor-orders"),
@@ -57,6 +58,11 @@ urlpatterns = [
         "wallet/topup/khalti/verify/",
         vendor_views.vendor_wallet_topup_khalti_verify,
         name="vendor-wallet-topup-khalti-verify",
+    ),
+    path(
+        "wallet/topup/connectips/validate/",
+        vendor_views.vendor_wallet_topup_connectips_validate,
+        name="vendor-wallet-topup-connectips-validate",
     ),
     path(
         "commission-settlements/",

@@ -66,9 +66,11 @@ from core.services.reel_boost_patch import apply_reel_boost_from_data
 from core.services.vendor_service import ensure_vendor_wallet
 from core.views.admin.admin_write_utils import absolute_media_url, validation_error
 from core.views.admin.resource_views import (
+    _generate_unique_product_sku,
     _make_unique_slug,
     _product_sku_exists,
     _release_product_sku_for_reuse,
+    _resolve_product_sku_for_create,
     _to_decimal,
 )
 from core.views.vendor.common import (
@@ -294,6 +296,19 @@ def vendor_product_slug_preview(request):
     return Response({"slug": slug})
 
 
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def vendor_product_sku_preview(request):
+    vendor, err = vendor_or_error(request)
+    if err:
+        return err
+    del vendor
+    name = (request.query_params.get("name") or "").strip()
+    sku = _generate_unique_product_sku(hint=name or None)
+    return Response({"sku": sku})
+
+
 @api_view(["GET", "PATCH", "DELETE"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
@@ -444,16 +459,16 @@ def vendor_product_create(request):
     if err:
         return err
     name = (request.data.get("name") or "").strip()
-    sku = (request.data.get("sku") or "").strip()
     category_id = request.data.get("category_id")
     image = request.FILES.get("image")
-    if not name or not sku or not category_id or not image:
-        return Response({"detail": "name, sku, category_id and image are required"}, status=400)
+    if not name or not category_id or not image:
+        return Response({"detail": "name, category_id and image are required"}, status=400)
     category = Category.objects.filter(pk=category_id).first()
     if not category:
         return Response({"detail": "invalid category_id"}, status=400)
-    if _product_sku_exists(sku):
-        return validation_error("This SKU is already in use. Choose a different SKU.", field="sku")
+    sku = _resolve_product_sku_for_create(request, name=name)
+    if isinstance(sku, Response):
+        return sku
     raw_attrs = request.data.get("attributes")
     attrs: dict = {}
     if isinstance(raw_attrs, dict):

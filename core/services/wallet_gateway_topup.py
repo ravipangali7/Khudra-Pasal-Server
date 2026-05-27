@@ -40,6 +40,13 @@ from core.services.khalti_epayment_service import (
     map_khalti_status_to_app,
     rupees_to_paisa,
 )
+from core.services.nchl_connectips_service import (
+    ConnectIPSConfigError,
+    NCHLConnectIPS,
+    amount_to_paisa,
+    connectips_is_configured,
+    get_connectips_config,
+)
 
 ESEWA_SIGNED_FIELD_NAMES = "total_amount,transaction_uuid,product_code"
 
@@ -279,7 +286,24 @@ def topup_description_for_method(method: str) -> str:
         return "Wallet top-up (eSewa)"
     if m == "khalti":
         return "Wallet top-up (Khalti)"
+    if m in ("connectips", "connect_ips", "connect-ips"):
+        return "Wallet top-up (ConnectIPS)"
     return f"Wallet top-up ({method or 'gateway'})"
+
+
+def connectips_frontend_base() -> str:
+    return (getattr(settings, "FRONTEND_URL", "") or "").strip().rstrip("/") or "http://localhost:8080"
+
+
+def connectips_callback_urls(txn_ref: str, return_path: str) -> tuple[str, str]:
+    base = connectips_frontend_base()
+    from urllib.parse import quote
+
+    rp = return_path if return_path.startswith("/") else f"/{return_path.lstrip('/')}"
+    q_rp = quote(rp, safe="")
+    success = f"{base}/payment/callback?txn_id={quote(txn_ref, safe='')}&status=success&return_path={q_rp}"
+    failure = f"{base}/payment/callback?txn_id={quote(txn_ref, safe='')}&status=failure&return_path={q_rp}"
+    return success, failure
 
 
 @transaction.atomic
@@ -399,6 +423,135 @@ def build_esewa_initiate_response(
             "signed_field_names": ESEWA_SIGNED_FIELD_NAMES,
             "signature": signature,
         },
+    }
+
+
+WALLET_TOPUP_PSP_METHODS = frozenset({"esewa", "khalti", "connectips", "connect_ips", "connect-ips"})
+
+
+def build_wallet_topup_psp_response(
+    *,
+    request: HttpRequest | None,
+    payer: User,
+    wallet: Wallet,
+    amount: Decimal,
+    method: str,
+    method_norm: str,
+    topup_target: str,
+    return_path: str,
+    return_query_esewa: dict[str, str] | None,
+    success_reverse_name: str,
+    failure_reverse_name: str,
+    purchase_order_id: str,
+    purchase_order_name: str,
+    remarks: str = "",
+    particulars: str = "",
+) -> dict[str, Any]:
+    if method_norm == "esewa":
+        if request is None:
+            raise ValueError("request required for eSewa top-up")
+        return build_esewa_initiate_response(
+            request=request,
+            payer=payer,
+            wallet=wallet,
+            amount=amount,
+            method=method,
+            topup_target=topup_target,
+            return_path=return_path,
+            return_query_esewa=return_query_esewa,
+            success_reverse_name=success_reverse_name,
+            failure_reverse_name=failure_reverse_name,
+        )
+    if method_norm == "khalti":
+        return build_khalti_initiate_response(
+            payer=payer,
+            wallet=wallet,
+            amount=amount,
+            method=method,
+            topup_target=topup_target,
+            return_path=return_path,
+            return_query_esewa=return_query_esewa,
+            purchase_order_id=purchase_order_id,
+            purchase_order_name=purchase_order_name,
+        )
+    if method_norm in ("connectips", "connect_ips", "connect-ips"):
+        return build_connectips_initiate_response(
+            payer=payer,
+            wallet=wallet,
+            amount=amount,
+            method=method,
+            topup_target=topup_target,
+            return_path=return_path,
+            return_query_esewa=return_query_esewa,
+            remarks=remarks,
+            particulars=particulars,
+        )
+    raise ValueError(f"Unsupported payment method: {method}")
+
+
+def build_connectips_initiate_response(
+    *,
+    payer: User,
+    wallet: Wallet,
+    amount: Decimal,
+    method: str,
+    topup_target: str,
+    return_path: str,
+    return_query_esewa: dict[str, str] | None,
+    remarks: str = "",
+    particulars: str = "",
+) -> dict[str, Any]:
+    cfg = get_connectips_config()
+    if not cfg.get("enabled"):
+        raise ConnectIPSConfigError("ConnectIPS payments are disabled.")
+    if not connectips_is_configured():
+        raise ConnectIPSConfigError("ConnectIPS is not fully configured (merchant, app, PFX).")
+    minimum = cfg["minimum_payment_amount"]
+    if amount < minimum:
+        raise ValueError(f"Minimum ConnectIPS payment is NPR {minimum:.2f}")
+    amount_paisa = amount_to_paisa(amount)
+    if amount_paisa < 100:
+        raise ValueError("amount too small for ConnectIPS (minimum Rs. 1)")
+    txn_ref = f"TXN-{uuid4().hex[:12].upper()}"
+    reference_id = txn_ref
+    service = NCHLConnectIPS()
+    form_data = service.get_payment_form_data(
+        txn_id=txn_ref,
+        amount_paisa=amount_paisa,
+        reference_id=reference_id,
+        remarks=remarks or "Wallet top-up",
+        particulars=particulars or f"KP wallet {wallet.pk}",
+    )
+    success_url, failure_url = connectips_callback_urls(txn_ref, return_path)
+    gw = gateway_response_base(
+        wallet=wallet,
+        method=method,
+        topup_target=topup_target,
+        return_path=return_path,
+        return_query_esewa=return_query_esewa,
+    )
+    gw["connectips_reference_id"] = reference_id
+    gw["connectips_amount_paisa"] = amount_paisa
+    gw["connectips_success_url"] = success_url
+    gw["connectips_failure_url"] = failure_url
+    PaymentTransaction.objects.create(
+        txn_ref=txn_ref,
+        customer=payer,
+        amount=amount,
+        method=PaymentTransaction.Method.CONNECTIPS,
+        status=PaymentTransaction.Status.PENDING,
+        gateway_response=gw,
+    )
+    gateway_url = form_data.pop("gateway_url")
+    fields = {k: str(v) for k, v in form_data.items()}
+    return {
+        "ok": True,
+        "flow": "connectips_redirect",
+        "gateway_url": gateway_url,
+        "fields": fields,
+        "success_url": success_url,
+        "failure_url": failure_url,
+        "txn_id": txn_ref,
     }
 
 
@@ -561,6 +714,131 @@ def handle_esewa_wallet_topup_failure(request: HttpRequest) -> str:
     if row:
         return esewa_frontend_redirect_url_for_row(request, row, status="failed", txn_ref=txn_ref or None)
     return _legacy_portal_wallet_esewa_redirect(request, "failed", txn_ref=txn_ref or None)
+
+
+def _connectips_reference_for_row(row: PaymentTransaction) -> str:
+    gw = row.gateway_response if isinstance(row.gateway_response, dict) else {}
+    ref = str(gw.get("connectips_reference_id") or "").strip()
+    return ref or row.txn_ref
+
+
+def _connectips_amount_paisa_for_row(row: PaymentTransaction) -> int:
+    gw = row.gateway_response if isinstance(row.gateway_response, dict) else {}
+    stored = gw.get("connectips_amount_paisa")
+    if stored is not None:
+        try:
+            return int(stored)
+        except (TypeError, ValueError):
+            pass
+    return amount_to_paisa(row.amount)
+
+
+def connectips_wallet_topup_verify_payload(*, user: User, txn_id: str) -> tuple[dict, int]:
+    """Returns (response_body, http_status)."""
+    txn_id = (txn_id or "").strip()
+    if not txn_id:
+        return ({"detail": "txn_id is required", "field": "txn_id"}, 400)
+    row = (
+        PaymentTransaction.objects.filter(
+            customer=user,
+            method=PaymentTransaction.Method.CONNECTIPS,
+            txn_ref=txn_id,
+            gateway_response__kind="wallet_topup",
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    if not row:
+        return ({"detail": "Payment not found for this ConnectIPS session."}, 404)
+    if row.status == PaymentTransaction.Status.SUCCESS and row.wallet_transaction_id:
+        gw = row.gateway_response if isinstance(row.gateway_response, dict) else {}
+        return (
+            {
+                "success": True,
+                "data": {
+                    "status": "SUCCESS",
+                    "txn_id": row.txn_ref,
+                    "amount": float(row.amount),
+                    "return_path": gw.get("return_path") or "/portal/wallet",
+                },
+            },
+            200,
+        )
+    reference_id = _connectips_reference_for_row(row)
+    amount_paisa = _connectips_amount_paisa_for_row(row)
+    try:
+        service = NCHLConnectIPS()
+        remote = service.validate_transaction(reference_id=reference_id, txn_amt_paisa=amount_paisa)
+    except ConnectIPSConfigError as e:
+        return ({"detail": str(e)}, 503)
+    except Exception as e:
+        return ({"detail": f"ConnectIPS validation failed: {e}"}, 502)
+    remote_status = str(remote.get("status") or "").upper()
+    gw = row.gateway_response if isinstance(row.gateway_response, dict) else {}
+    return_path = str(gw.get("return_path") or "/portal/wallet")
+
+    if remote_status == "SUCCESS":
+        try:
+            w = resolve_credit_wallet_for_topup(row)
+            credit_wallet_for_completed_topup(
+                row,
+                w,
+                gateway_response_patch={
+                    "connectips_validate": remote,
+                    "connectips_txn_id": remote.get("txnId"),
+                    "connectips_batch_id": remote.get("batchId"),
+                },
+            )
+        except ValueError as e:
+            return ({"detail": str(e)}, 400)
+        return (
+            {
+                "success": True,
+                "data": {
+                    "status": "SUCCESS",
+                    "statusDesc": remote.get("statusDesc"),
+                    "txn_id": row.txn_ref,
+                    "amount": float(row.amount),
+                    "return_path": return_path,
+                    "txnId": remote.get("txnId"),
+                    "batchId": remote.get("batchId"),
+                },
+            },
+            200,
+        )
+
+    if remote_status in ("FAILED", "ERROR"):
+        if row.status == PaymentTransaction.Status.PENDING:
+            row.status = PaymentTransaction.Status.FAILED
+            row.gateway_response = {**(row.gateway_response or {}), "connectips_validate": remote}
+            row.save(update_fields=["status", "gateway_response"])
+        return (
+            {
+                "success": True,
+                "data": {
+                    "status": remote_status,
+                    "statusDesc": remote.get("statusDesc"),
+                    "txn_id": row.txn_ref,
+                    "amount": float(row.amount),
+                    "return_path": return_path,
+                },
+            },
+            200,
+        )
+
+    return (
+        {
+            "success": True,
+            "data": {
+                "status": "PENDING",
+                "statusDesc": remote.get("statusDesc"),
+                "txn_id": row.txn_ref,
+                "amount": float(row.amount),
+                "return_path": return_path,
+            },
+        },
+        200,
+    )
 
 
 def khalti_wallet_topup_verify_payload(*, user: User, pidx: str) -> tuple[dict, int]:

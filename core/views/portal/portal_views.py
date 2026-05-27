@@ -1713,9 +1713,9 @@ def portal_family_wallet_load(request):
             "Top-ups credit only the main family wallet; use Transfer to move funds into a bucket.",
             field="category_id",
         )
-    if method_norm not in ("esewa", "khalti"):
+    if method_norm not in wgt.WALLET_TOPUP_PSP_METHODS:
         return validation_error(
-            "Only eSewa and Khalti are supported for adding money to the family wallet.",
+            "Only eSewa, Khalti, and ConnectIPS are supported for adding money to the family wallet.",
             field="method",
         )
     w = family_portal_wallet_service.ensure_default_shared_wallet(primary, primary.leader)
@@ -1725,37 +1725,28 @@ def portal_family_wallet_load(request):
         wgt.assert_can_topup_wallet(payer=request.user, wallet=w, target=wgt.TOPUP_TARGET_FAMILY_MASTER)
     except ValueError as e:
         return Response({"detail": str(e)}, status=400)
-    if method_norm == "esewa":
+    try:
         return Response(
-            wgt.build_esewa_initiate_response(
+            wgt.build_wallet_topup_psp_response(
                 request=request,
                 payer=request.user,
                 wallet=w,
                 amount=amount,
                 method=method,
+                method_norm=method_norm,
                 topup_target=wgt.TOPUP_TARGET_FAMILY_MASTER,
                 return_path=return_path,
                 return_query_esewa=None,
                 success_reverse_name="portal-wallet-topup-esewa-success",
                 failure_reverse_name="portal-wallet-topup-esewa-failure",
-            )
-        )
-    try:
-        return Response(
-            wgt.build_khalti_initiate_response(
-                payer=request.user,
-                wallet=w,
-                amount=amount,
-                method=method,
-                topup_target=wgt.TOPUP_TARGET_FAMILY_MASTER,
-                return_path=return_path,
-                return_query_esewa=None,
                 purchase_order_id=f"KP-F-{uuid4().hex[:24]}",
                 purchase_order_name="Family wallet load",
             )
         )
     except ValueError as e:
         return validation_error(str(e), field="amount")
+    except wgt.ConnectIPSConfigError as e:
+        return Response({"detail": str(e)}, status=503)
     except KhaltiConfigError as e:
         return Response({"detail": str(e)}, status=503)
     except KhaltiApiError as e:
@@ -2678,9 +2669,9 @@ def portal_child_wallet_topup(request):
         return validation_error("amount must be positive", field="amount")
     method = (request.data.get("method") or "esewa").strip()[:50]
     method_norm = method.lower()
-    if method_norm not in ("esewa", "khalti"):
+    if method_norm not in wgt.WALLET_TOPUP_PSP_METHODS:
         return validation_error(
-            "Only eSewa and Khalti are supported for adding money to your wallet.",
+            "Only eSewa, Khalti, and ConnectIPS are supported for adding money to your wallet.",
             field="method",
         )
     raw_return = (request.data.get("return_path") or "/child-portal/topup").strip()
@@ -2689,37 +2680,28 @@ def portal_child_wallet_topup(request):
         wgt.assert_can_topup_wallet(payer=request.user, wallet=w, target=wgt.TOPUP_TARGET_CHILD)
     except ValueError as e:
         return Response({"detail": str(e)}, status=400)
-    if method_norm == "esewa":
+    try:
         return Response(
-            wgt.build_esewa_initiate_response(
+            wgt.build_wallet_topup_psp_response(
                 request=request,
                 payer=request.user,
                 wallet=w,
                 amount=amount,
                 method=method,
+                method_norm=method_norm,
                 topup_target=wgt.TOPUP_TARGET_CHILD,
                 return_path=return_path,
                 return_query_esewa=None,
                 success_reverse_name="portal-wallet-topup-esewa-success",
                 failure_reverse_name="portal-wallet-topup-esewa-failure",
-            )
-        )
-    try:
-        return Response(
-            wgt.build_khalti_initiate_response(
-                payer=request.user,
-                wallet=w,
-                amount=amount,
-                method=method,
-                topup_target=wgt.TOPUP_TARGET_CHILD,
-                return_path=return_path,
-                return_query_esewa=None,
                 purchase_order_id=f"KP-C-{uuid4().hex[:24]}",
                 purchase_order_name="Child wallet top-up",
             )
         )
     except ValueError as e:
         return validation_error(str(e), field="amount")
+    except wgt.ConnectIPSConfigError as e:
+        return Response({"detail": str(e)}, status=503)
     except KhaltiConfigError as e:
         return Response({"detail": str(e)}, status=503)
     except KhaltiApiError as e:
@@ -3284,38 +3266,29 @@ def portal_wallet_topup(request):
     method_norm = method.lower()
     raw_return = (request.data.get("return_path") or "/portal/wallet").strip()
     return_path = raw_return[:500] if raw_return.startswith("/") else f"/{raw_return[:499].lstrip('/')}"
-    if method_norm == "esewa":
-        return Response(
-            wgt.build_esewa_initiate_response(
-                request=request,
-                payer=request.user,
-                wallet=w,
-                amount=amount,
-                method=method,
-                topup_target=wgt.TOPUP_TARGET_CUSTOMER,
-                return_path=return_path,
-                return_query_esewa=None,
-                success_reverse_name="portal-wallet-topup-esewa-success",
-                failure_reverse_name="portal-wallet-topup-esewa-failure",
-            )
-        )
-    if method_norm == "khalti":
+    if method_norm in wgt.WALLET_TOPUP_PSP_METHODS:
         try:
             return Response(
-                wgt.build_khalti_initiate_response(
+                wgt.build_wallet_topup_psp_response(
+                    request=request,
                     payer=request.user,
                     wallet=w,
                     amount=amount,
                     method=method,
+                    method_norm=method_norm,
                     topup_target=wgt.TOPUP_TARGET_CUSTOMER,
                     return_path=return_path,
                     return_query_esewa=None,
+                    success_reverse_name="portal-wallet-topup-esewa-success",
+                    failure_reverse_name="portal-wallet-topup-esewa-failure",
                     purchase_order_id=f"KP-W-{uuid4().hex[:24]}",
                     purchase_order_name="Wallet top-up",
                 )
             )
         except ValueError as e:
             return validation_error(str(e), field="amount")
+        except wgt.ConnectIPSConfigError as e:
+            return Response({"detail": str(e)}, status=503)
         except KhaltiConfigError as e:
             return Response({"detail": str(e)}, status=503)
         except KhaltiApiError as e:
@@ -3365,6 +3338,18 @@ def portal_wallet_topup_khalti_verify(request):
     if not pidx:
         return validation_error("pidx is required", field="pidx")
     body, status = wgt.khalti_wallet_topup_verify_payload(user=request.user, pidx=pidx)
+    return Response(body, status=status)
+
+
+@api_view(["POST"])
+@authentication_classes(PORTAL_API_AUTHENTICATION)
+@permission_classes([IsAuthenticated])
+def portal_wallet_topup_connectips_validate(request):
+    """Confirm ConnectIPS payment via NCHL validate API (idempotent)."""
+    txn_id = (request.data.get("txn_id") or request.query_params.get("txn_id") or "").strip()
+    if not txn_id:
+        return validation_error("txn_id is required", field="txn_id")
+    body, status = wgt.connectips_wallet_topup_verify_payload(user=request.user, txn_id=txn_id)
     return Response(body, status=status)
 
 

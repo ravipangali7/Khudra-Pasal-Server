@@ -56,6 +56,17 @@ class Command(BaseCommand):
                 {"is_enabled": True, "environment": PaymentGatewaySettings.Environment.LIVE},
             ),
             (
+                PaymentGatewaySettings.Gateway.CONNECTIPS,
+                {
+                    "is_enabled": False,
+                    "environment": PaymentGatewaySettings.Environment.LIVE,
+                    "gateway_extras": {
+                        "base_url": "https://login.connectips.com",
+                        "minimum_payment_amount": "100.00",
+                    },
+                },
+            ),
+            (
                 PaymentGatewaySettings.Gateway.NCHL_QR,
                 {
                     "is_enabled": False,

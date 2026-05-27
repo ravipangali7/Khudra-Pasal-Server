@@ -3051,6 +3051,51 @@ def _product_sku_exists(sku: str, *, exclude_pk=None) -> bool:
     return qs.exists()
 
 
+_PRODUCT_SKU_PREFIX = "KP"
+_PRODUCT_SKU_NUMERIC_RE = re.compile(
+    rf"^{re.escape(_PRODUCT_SKU_PREFIX)}-(\d+)$",
+    re.IGNORECASE,
+)
+
+
+def _generate_unique_product_sku(*, exclude_pk=None, hint: str | None = None) -> str:
+    """Allocate a SKU that is not used by any active catalog row (honors soft-delete reuse rules)."""
+    hint = (hint or "").strip()
+    if hint:
+        base = slugify(hint).upper().replace("-", "")[:24]
+        if base:
+            for n in range(1, 1000):
+                suffix = f"-{n:03d}" if n > 1 else ""
+                candidate = f"{base[: max(1, 100 - len(suffix))]}{suffix}"
+                if not _product_sku_exists(candidate, exclude_pk=exclude_pk):
+                    return candidate
+
+    qs = Product.objects.exclude(**_VENDOR_SOFT_DELETED_PRODUCT_SKU_FILTER)
+    if exclude_pk is not None:
+        qs = qs.exclude(pk=exclude_pk)
+    max_n = 0
+    for sku in qs.values_list("sku", flat=True).iterator(chunk_size=500):
+        m = _PRODUCT_SKU_NUMERIC_RE.match((sku or "").strip())
+        if m:
+            max_n = max(max_n, int(m.group(1)))
+    n = max_n + 1
+    for _ in range(10000):
+        candidate = f"{_PRODUCT_SKU_PREFIX}-{n:06d}"
+        if not _product_sku_exists(candidate, exclude_pk=exclude_pk):
+            return candidate
+        n += 1
+    return f"{_PRODUCT_SKU_PREFIX}-{uuid4().hex[:12].upper()}"[:100]
+
+
+def _resolve_product_sku_for_create(request, *, name: str) -> str | Response:
+    sku = (request.data.get("sku") or "").strip()
+    if not sku:
+        return _generate_unique_product_sku(hint=name)
+    if _product_sku_exists(sku):
+        return validation_error("This SKU is already in use. Choose a different SKU.", field="sku")
+    return sku
+
+
 def _release_product_sku_for_reuse(product: Product) -> None:
     """Rename SKU when a product is soft-deleted so the original code can be reused."""
     sku = (product.sku or "").strip()
@@ -3176,6 +3221,17 @@ def admin_brand_detail_write(request, pk):
 MAX_ADMIN_PRODUCT_GALLERY = 15
 
 
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_product_sku_preview(request):
+    if err := _forbidden(request):
+        return err
+    name = (request.query_params.get("name") or "").strip()
+    sku = _generate_unique_product_sku(hint=name or None)
+    return Response({"sku": sku})
+
+
 @api_view(["POST"])
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
@@ -3184,16 +3240,16 @@ def admin_product_create(request):
     if err := _forbidden(request):
         return err
     name = (request.data.get("name") or "").strip()
-    sku = (request.data.get("sku") or "").strip()
     category_id = request.data.get("category_id")
     image = request.FILES.get("image")
-    if not name or not sku or not category_id or not image:
-        return Response({"detail": "name, sku, category_id and image are required"}, status=400)
+    if not name or not category_id or not image:
+        return Response({"detail": "name, category_id and image are required"}, status=400)
     category = Category.objects.filter(pk=category_id).first()
     if not category:
         return Response({"detail": "invalid category_id"}, status=400)
-    if _product_sku_exists(sku):
-        return validation_error("This SKU is already in use. Choose a different SKU.", field="sku")
+    sku = _resolve_product_sku_for_create(request, name=name)
+    if isinstance(sku, Response):
+        return sku
     row = Product.objects.create(
         name=name,
         slug=_make_unique_slug(Product, request.data.get("slug") or name),
@@ -5527,6 +5583,7 @@ def admin_payment_gateways_list(request):
     wanted = (
         PaymentGatewaySettings.Gateway.ESEWA,
         PaymentGatewaySettings.Gateway.KHALTI,
+        PaymentGatewaySettings.Gateway.CONNECTIPS,
         PaymentGatewaySettings.Gateway.NCHL_QR,
     )
     by_gw = {r.gateway: r for r in PaymentGatewaySettings.objects.filter(gateway__in=wanted)}
@@ -5552,6 +5609,28 @@ def admin_payment_gateways_list(request):
                     "secret_key_live": gw.secret_key_live or "",
                     "form_url": str(extras.get("form_url") or ""),
                     "status_url_base": str(extras.get("status_url_base") or ""),
+                }
+            )
+        elif gw_key == PaymentGatewaySettings.Gateway.CONNECTIPS:
+            from core.services import nchl_connectips_service
+
+            rows.append(
+                {
+                    "gateway": gw.gateway,
+                    "label": gw.get_gateway_display(),
+                    "is_enabled": gw.is_enabled,
+                    "is_configured": nchl_connectips_service.connectips_is_configured(gw),
+                    "merchant_id": gw.merchant_id or "",
+                    "app_id": gw.api_key_live or gw.api_key_test or "",
+                    "app_name": gw.merchant_name or "",
+                    "app_password_set": bool(gw.secret_key_live or gw.secret_key_test),
+                    "pfx_password_set": bool((extras or {}).get("pfx_password")),
+                    "certificate_uploaded": bool(gw.certificate),
+                    "base_url": str(extras.get("base_url") or nchl_connectips_service.CONNECTIPS_PRODUCTION_BASE),
+                    "minimum_payment_amount": float(
+                        nchl_connectips_service.get_connectips_config(gw)["minimum_payment_amount"]
+                    ),
+                    "callback_url": gw.callback_url or "",
                 }
             )
         elif gw_key == PaymentGatewaySettings.Gateway.NCHL_QR:
@@ -5625,6 +5704,26 @@ def admin_payment_gateway_write(request, gateway: str):
     elif gateway == PaymentGatewaySettings.Gateway.KHALTI:
         if "api_base_url" in request.data:
             extras["api_base_url"] = (request.data.get("api_base_url") or "").strip()[:500]
+    elif gateway == PaymentGatewaySettings.Gateway.CONNECTIPS:
+        row.environment = PaymentGatewaySettings.Environment.LIVE
+        if "merchant_id" in request.data:
+            row.merchant_id = (request.data.get("merchant_id") or "")[:100]
+        if "app_name" in request.data:
+            row.merchant_name = (request.data.get("app_name") or "")[:150]
+        if "app_id" in request.data:
+            row.api_key_live = (request.data.get("app_id") or "")[:255]
+        if "app_password" in request.data:
+            row.secret_key_live = (request.data.get("app_password") or "")[:255]
+        if "callback_url" in request.data:
+            row.callback_url = (request.data.get("callback_url") or "").strip()[:200]
+        if "pfx_password" in request.data:
+            extras["pfx_password"] = request.data.get("pfx_password")
+        if "base_url" in request.data:
+            extras["base_url"] = (request.data.get("base_url") or "").strip()[:500]
+        if "minimum_payment_amount" in request.data:
+            extras["minimum_payment_amount"] = request.data.get("minimum_payment_amount")
+        if getattr(request, "FILES", None) and request.FILES.get("certificate"):
+            row.certificate = request.FILES["certificate"]
     elif gateway == PaymentGatewaySettings.Gateway.NCHL_QR:
         if "merchant_id" in request.data:
             row.merchant_id = (request.data.get("merchant_id") or "")[:100]

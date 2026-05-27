@@ -35,6 +35,11 @@ urlpatterns = [
         name="portal-wallet-topup-khalti-verify",
     ),
     path(
+        "wallet/topup/connectips/validate/",
+        portal_views.portal_wallet_topup_connectips_validate,
+        name="portal-wallet-topup-connectips-validate",
+    ),
+    path(
         "wallet/transfer-recipients/",
         portal_views.portal_wallet_transfer_recipients,
         name="portal-wallet-transfer-recipients",
