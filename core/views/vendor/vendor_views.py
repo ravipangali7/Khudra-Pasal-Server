@@ -295,6 +295,7 @@ def vendor_products_list(request):
             "category_id": str(p.category_id),
             "sales": int(p.sales),
             "image_url": media_url(request, p.image),
+            "enable_reels": p.enable_reels,
         }
         for p in page
     ]

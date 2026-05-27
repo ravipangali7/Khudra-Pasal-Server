@@ -1474,7 +1474,7 @@ def vendor_reels_list_create(request):
         product=product,
         caption=(request.data.get("caption") or "")[:200],
         tags=tags,
-        status=request.data.get("status") or Reel.Status.PENDING,
+        status=Reel.Status.PENDING,
         is_sponsored=request.data.get("is_sponsored") in (True, "true", "1", 1),
     )
     if request.FILES.get("thumbnail"):
@@ -1530,8 +1530,6 @@ def vendor_reel_detail(request, pk):
         row.caption = (request.data.get("caption") or "")[:200]
     if "tags" in request.data:
         row.tags = parse_reel_tags(request.data.get("tags"))
-    if "status" in request.data:
-        row.status = request.data.get("status")
     if "product_id" in request.data:
         pid = request.data.get("product_id")
         row.product = Product.objects.filter(pk=pid, seller=vendor).first() if pid else None
