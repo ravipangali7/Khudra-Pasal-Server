@@ -65,7 +65,12 @@ from core.services.withdrawal_requests import create_pending_withdrawal, payout_
 from core.services.reel_boost_patch import apply_reel_boost_from_data
 from core.services.vendor_service import ensure_vendor_wallet
 from core.views.admin.admin_write_utils import absolute_media_url, validation_error
-from core.views.admin.resource_views import _make_unique_slug, _to_decimal
+from core.views.admin.resource_views import (
+    _make_unique_slug,
+    _product_sku_exists,
+    _release_product_sku_for_reuse,
+    _to_decimal,
+)
 from core.views.vendor.common import (
     get_or_create_pos_walkin_user,
     media_url,
@@ -320,6 +325,7 @@ def vendor_product_detail(request, pk):
             row.enable_pos = False
             row.enable_reels = False
             row.seller = None
+            _release_product_sku_for_reuse(row)
             row.save(
                 update_fields=[
                     "status",
@@ -327,6 +333,7 @@ def vendor_product_detail(request, pk):
                     "enable_pos",
                     "enable_reels",
                     "seller",
+                    "sku",
                     "updated_at",
                 ]
             )
@@ -354,13 +361,19 @@ def vendor_product_detail(request, pk):
         "name",
         "description",
         "short_description",
-        "sku",
         "seo_title",
         "seo_description",
         "seo_keywords",
     ):
         if field in request.data:
             setattr(row, field, request.data.get(field))
+    if "sku" in request.data:
+        new_sku = (request.data.get("sku") or "").strip()
+        if not new_sku:
+            return validation_error("SKU is required.", field="sku")
+        if _product_sku_exists(new_sku, exclude_pk=row.pk):
+            return validation_error("This SKU is already in use. Choose a different SKU.", field="sku")
+        row.sku = new_sku
     if "slug" in request.data or "name" in request.data:
         row.slug = _make_unique_slug(
             Product, request.data.get("slug") or request.data.get("name") or row.name, instance_pk=row.pk
@@ -439,8 +452,8 @@ def vendor_product_create(request):
     category = Category.objects.filter(pk=category_id).first()
     if not category:
         return Response({"detail": "invalid category_id"}, status=400)
-    if Product.objects.filter(sku=sku).exists():
-        return Response({"detail": "sku must be unique"}, status=400)
+    if _product_sku_exists(sku):
+        return validation_error("This SKU is already in use. Choose a different SKU.", field="sku")
     raw_attrs = request.data.get("attributes")
     attrs: dict = {}
     if isinstance(raw_attrs, dict):

@@ -3031,6 +3031,38 @@ def _make_unique_slug(model_cls, raw_value, instance_pk=None):
     return candidate
 
 
+# Soft-deleted vendor products (seller cleared) should not block SKU reuse.
+_VENDOR_SOFT_DELETED_PRODUCT_SKU_FILTER = {
+    "seller__isnull": True,
+    "status": Product.Status.DRAFT,
+    "stock": 0,
+    "enable_pos": False,
+    "enable_reels": False,
+}
+
+
+def _product_sku_exists(sku: str, *, exclude_pk=None) -> bool:
+    sku = (sku or "").strip()
+    if not sku:
+        return False
+    qs = Product.objects.filter(sku=sku).exclude(**_VENDOR_SOFT_DELETED_PRODUCT_SKU_FILTER)
+    if exclude_pk is not None:
+        qs = qs.exclude(pk=exclude_pk)
+    return qs.exists()
+
+
+def _release_product_sku_for_reuse(product: Product) -> None:
+    """Rename SKU when a product is soft-deleted so the original code can be reused."""
+    sku = (product.sku or "").strip()
+    if not sku:
+        return
+    marker = f"-archived-{product.pk}"
+    if sku.endswith(marker):
+        return
+    max_base = max(1, 100 - len(marker))
+    product.sku = f"{sku[:max_base]}{marker}"
+
+
 def _validate_hex_color(value):
     if not value:
         return ""
@@ -3160,8 +3192,8 @@ def admin_product_create(request):
     category = Category.objects.filter(pk=category_id).first()
     if not category:
         return Response({"detail": "invalid category_id"}, status=400)
-    if Product.objects.filter(sku=sku).exists():
-        return Response({"detail": "sku must be unique"}, status=400)
+    if _product_sku_exists(sku):
+        return validation_error("This SKU is already in use. Choose a different SKU.", field="sku")
     row = Product.objects.create(
         name=name,
         slug=_make_unique_slug(Product, request.data.get("slug") or name),
@@ -3280,6 +3312,10 @@ def admin_product_detail_write(request, pk):
     for field in ("name", "description", "short_description", "sku", "status", "seo_title", "seo_description", "seo_keywords"):
         if field in request.data:
             setattr(row, field, request.data.get(field))
+    if "sku" in request.data:
+        new_sku = (request.data.get("sku") or "").strip()
+        if new_sku and _product_sku_exists(new_sku, exclude_pk=row.pk):
+            return validation_error("This SKU is already in use. Choose a different SKU.", field="sku")
     if "slug" in request.data or "name" in request.data:
         row.slug = _make_unique_slug(Product, request.data.get("slug") or request.data.get("name") or row.name, instance_pk=row.pk)
     if "price" in request.data:
