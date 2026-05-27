@@ -23,8 +23,11 @@ def notify_user(
     )
 
 
-def notify_order_delivered(order: Order) -> Notification:
+def notify_order_delivered(order: Order) -> Optional[Notification]:
     """In-app notice for the customer when an order reaches Delivered."""
+    if order.is_pos_order:
+        return None
+
     from core.services.order_bill_service import (
         bill_image_url_for_order,
         portal_bill_action_url,

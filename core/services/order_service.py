@@ -124,4 +124,6 @@ def on_payment_transaction_success(pt: PaymentTransaction) -> None:
 
 def on_order_delivered(order: Order) -> None:
     loyalty_service.grant_for_order(order)
+    if order.is_pos_order:
+        return
     notification_service.notify_order_delivered(order)
