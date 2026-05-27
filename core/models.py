@@ -6,6 +6,7 @@ from __future__ import annotations
 import random
 import string
 from decimal import Decimal
+from uuid import uuid4
 
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
@@ -1689,6 +1690,7 @@ class Order(models.Model):
         WALLET = "wallet", "Wallet"
         CASH = "cash", "Cash"
         CARD = "card", "Card"
+        NCHL_QR = "nchl_qr", "NCHL QR"
 
     class PaymentStatus(models.TextChoices):
         PAID = "paid", "Paid"
@@ -3026,6 +3028,76 @@ class PaymentGatewaySettings(models.Model):
 
     def __str__(self) -> str:
         return self.get_gateway_display()
+
+
+class PosPaymentSession(models.Model):
+    """Pending POS gateway payment (eSewa redirect or NCHL dynamic QR) before order creation."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        SUCCESS = "success", "Success"
+        FAILED = "failed", "Failed"
+        EXPIRED = "expired", "Expired"
+
+    class Method(models.TextChoices):
+        ESEWA = "esewa", "eSewa"
+        NCHL_QR = "nchl_qr", "NCHL QR"
+
+    session_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="pos_payment_sessions",
+    )
+    vendor = models.ForeignKey(
+        Vendor,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="pos_payment_sessions",
+    )
+    payment_method = models.CharField(max_length=20, choices=Method.choices)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    txn_ref = models.CharField(max_length=100, unique=True)
+    cart_payload = models.JSONField(default=dict, blank=True)
+    qr_payload = models.TextField(
+        blank=True,
+        help_text="Base64 data URL or image URL for dynamic QR display.",
+    )
+    qr_string = models.TextField(
+        blank=True,
+        help_text="EMVCo / payload string for client-side QR rendering.",
+    )
+    payment_transaction = models.ForeignKey(
+        "PaymentTransaction",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="pos_sessions",
+    )
+    order = models.ForeignKey(
+        Order,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="pos_payment_sessions",
+    )
+    gateway_response = models.JSONField(default=dict, blank=True)
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.txn_ref} ({self.get_payment_method_display()})"
 
 
 class NavigationItem(models.Model):

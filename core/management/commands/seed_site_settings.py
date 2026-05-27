@@ -55,6 +55,14 @@ class Command(BaseCommand):
                 PaymentGatewaySettings.Gateway.COD,
                 {"is_enabled": True, "environment": PaymentGatewaySettings.Environment.LIVE},
             ),
+            (
+                PaymentGatewaySettings.Gateway.NCHL_QR,
+                {
+                    "is_enabled": False,
+                    "environment": PaymentGatewaySettings.Environment.TEST,
+                    "gateway_extras": {"demo_mode": True, "currency": "NPR"},
+                },
+            ),
         ]
         for gw, extra in gateways:
             obj, created = PaymentGatewaySettings.objects.get_or_create(

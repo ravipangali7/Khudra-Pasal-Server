@@ -2,7 +2,7 @@ from django.urls import path
 
 from core.views import navigation_views
 from core.views.portal import portal_views
-from core.views.vendor import vendor_inventory_views, vendor_resources, vendor_views
+from core.views.vendor import pos_payment_views, vendor_inventory_views, vendor_resources, vendor_views
 
 urlpatterns = [
     path("navigation/", navigation_views.vendor_navigation, name="vendor-navigation"),
@@ -36,6 +36,19 @@ urlpatterns = [
     path("orders/<str:order_number>/", vendor_resources.vendor_order_detail, name="vendor-order-detail"),
     path("refunds/", vendor_resources.vendor_refunds_list, name="vendor-refunds"),
     path("pos/checkout/", vendor_resources.vendor_pos_checkout, name="vendor-pos-checkout"),
+    path("pos/payment-methods/", pos_payment_views.vendor_pos_payment_methods_status, name="vendor-pos-payment-methods"),
+    path("pos/nchl-qr/sessions/", pos_payment_views.vendor_pos_nchl_qr_session_create, name="vendor-pos-nchl-qr-sessions"),
+    path(
+        "pos/nchl-qr/sessions/<uuid:session_id>/confirm-demo/",
+        pos_payment_views.vendor_pos_nchl_qr_session_confirm_demo,
+        name="vendor-pos-nchl-qr-confirm-demo",
+    ),
+    path(
+        "pos/payment-sessions/<uuid:session_id>/",
+        pos_payment_views.vendor_pos_payment_session_detail,
+        name="vendor-pos-payment-session",
+    ),
+    path("pos/esewa/sessions/", pos_payment_views.vendor_pos_esewa_session_create, name="vendor-pos-esewa-sessions"),
     path("reviews/", vendor_views.vendor_reviews_list, name="vendor-reviews"),
     path("reviews/<int:pk>/", vendor_resources.vendor_review_update, name="vendor-review-update"),
     path("wallet-transactions/", vendor_views.vendor_wallet_transactions, name="vendor-wallet-txns"),

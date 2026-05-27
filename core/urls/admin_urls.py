@@ -6,6 +6,7 @@ from core.views.admin import (
     auth_groups_views,
     dashboard_views,
     kyc_submissions_views,
+    pos_payment_views,
     resource_views,
     system_cleanup_views,
     user_views,
@@ -250,6 +251,19 @@ urlpatterns = [
     path("families/", resource_views.admin_families_list, name="admin-families"),
     path("purchase-orders/", resource_views.admin_purchase_orders_list, name="admin-purchase-orders"),
     path("pos/checkout/", resource_views.admin_pos_checkout, name="admin-pos-checkout"),
+    path("pos/payment-methods/", pos_payment_views.admin_pos_payment_methods_status, name="admin-pos-payment-methods"),
+    path("pos/nchl-qr/sessions/", pos_payment_views.admin_pos_nchl_qr_session_create, name="admin-pos-nchl-qr-sessions"),
+    path(
+        "pos/nchl-qr/sessions/<uuid:session_id>/confirm-demo/",
+        pos_payment_views.admin_pos_nchl_qr_session_confirm_demo,
+        name="admin-pos-nchl-qr-confirm-demo",
+    ),
+    path(
+        "pos/payment-sessions/<uuid:session_id>/",
+        pos_payment_views.admin_pos_payment_session_detail,
+        name="admin-pos-payment-session",
+    ),
+    path("pos/esewa/sessions/", pos_payment_views.admin_pos_esewa_session_create, name="admin-pos-esewa-sessions"),
     path("purchase-orders/create/", resource_views.admin_purchase_order_create, name="admin-purchase-orders-create"),
     path(
         "purchase-orders/pos-orders/<int:pk>/",

@@ -683,7 +683,21 @@ def vendor_pos_checkout(request):
             return validation_error("customer not found", field="customer_id")
 
     tax_percent = _to_decimal(request.data.get("tax_percent"), "0")
-    discount = _to_decimal(request.data.get("discount"), "0")
+    discount = _to_decimal(request.data.get("discount") or request.data.get("discount_amount"), "0")
+    notes = (request.data.get("notes") or "")[:500]
+
+    if payment_method == Order.PaymentMethod.CASH:
+        purchase = _to_decimal(request.data.get("purchase_amount"), "0")
+        collected = _to_decimal(request.data.get("collected_amount"), "0")
+        change = _to_decimal(request.data.get("change_amount"), "0")
+        if collected > 0 and purchase > 0 and collected < purchase:
+            return validation_error(
+                "collected amount is less than purchase amount",
+                field="collected_amount",
+            )
+        if collected > 0 or change > 0:
+            extra = f" | Collected: Rs.{collected:.2f} | Change: Rs.{change:.2f}"
+            notes = (notes + extra)[:500]
 
     try:
         order = create_pos_order(
@@ -693,7 +707,7 @@ def vendor_pos_checkout(request):
             payment_method=payment_method,
             tax_percent=tax_percent,
             discount=discount,
-            notes=(request.data.get("notes") or "")[:500],
+            notes=notes,
         )
     except ValueError as e:
         return Response({"detail": str(e)}, status=400)

@@ -4062,6 +4062,19 @@ def admin_pos_checkout(request):
     discount = _to_decimal(request.data.get("discount"), "0")
     notes = (request.data.get("notes") or "")[:500]
 
+    if payment_method == Order.PaymentMethod.CASH:
+        purchase = _to_decimal(request.data.get("purchase_amount"), "0")
+        collected = _to_decimal(request.data.get("collected_amount"), "0")
+        change = _to_decimal(request.data.get("change_amount"), "0")
+        if collected > 0 and purchase > 0 and collected < purchase:
+            return validation_error(
+                "collected amount is less than purchase amount",
+                field="collected_amount",
+            )
+        if collected > 0 or change > 0:
+            extra = f" | Collected: Rs.{collected:.2f} | Change: Rs.{change:.2f}"
+            notes = (notes + extra)[:500]
+
     try:
         order = create_pos_order(
             acting_vendor=None,
@@ -5478,6 +5491,7 @@ def admin_payment_gateways_list(request):
     wanted = (
         PaymentGatewaySettings.Gateway.ESEWA,
         PaymentGatewaySettings.Gateway.KHALTI,
+        PaymentGatewaySettings.Gateway.NCHL_QR,
     )
     by_gw = {r.gateway: r for r in PaymentGatewaySettings.objects.filter(gateway__in=wanted)}
     rows = []
@@ -5502,6 +5516,33 @@ def admin_payment_gateways_list(request):
                     "secret_key_live": gw.secret_key_live or "",
                     "form_url": str(extras.get("form_url") or ""),
                     "status_url_base": str(extras.get("status_url_base") or ""),
+                }
+            )
+        elif gw_key == PaymentGatewaySettings.Gateway.NCHL_QR:
+            from core.services import nchl_qr_service
+
+            rows.append(
+                {
+                    "gateway": gw.gateway,
+                    "label": gw.get_gateway_display(),
+                    "is_enabled": gw.is_enabled,
+                    "is_configured": nchl_qr_service.nchl_qr_is_configured(gw),
+                    "environment": gw.environment,
+                    "merchant_id": gw.merchant_id or "",
+                    "merchant_name": gw.merchant_name or "",
+                    "api_key_test": gw.api_key_test or "",
+                    "api_key_live": gw.api_key_live or "",
+                    "secret_key_test": gw.secret_key_test or "",
+                    "secret_key_live": gw.secret_key_live or "",
+                    "callback_url": gw.callback_url or "",
+                    "qr_expiry_seconds": gw.qr_expiry_seconds,
+                    "api_base_url_test": str(extras.get("api_base_url_test") or ""),
+                    "api_base_url_live": str(extras.get("api_base_url_live") or ""),
+                    "dynamic_qr_path": str(extras.get("dynamic_qr_path") or ""),
+                    "status_inquiry_path": str(extras.get("status_inquiry_path") or ""),
+                    "merchant_vpa": str(extras.get("merchant_vpa") or ""),
+                    "terminal_id": str(extras.get("terminal_id") or ""),
+                    "demo_mode": bool(extras.get("demo_mode")),
                 }
             )
         else:
@@ -5548,6 +5589,34 @@ def admin_payment_gateway_write(request, gateway: str):
     elif gateway == PaymentGatewaySettings.Gateway.KHALTI:
         if "api_base_url" in request.data:
             extras["api_base_url"] = (request.data.get("api_base_url") or "").strip()[:500]
+    elif gateway == PaymentGatewaySettings.Gateway.NCHL_QR:
+        if "merchant_id" in request.data:
+            row.merchant_id = (request.data.get("merchant_id") or "")[:100]
+        if "merchant_name" in request.data:
+            row.merchant_name = (request.data.get("merchant_name") or "")[:150]
+        for f in ("api_key_live", "api_key_test"):
+            if f in request.data:
+                setattr(row, f, (request.data.get(f) or "")[:255])
+        if "callback_url" in request.data:
+            row.callback_url = (request.data.get("callback_url") or "").strip()[:200]
+        if "qr_expiry_seconds" in request.data:
+            row.qr_expiry_seconds = max(30, int(request.data.get("qr_expiry_seconds") or 300))
+        for key in (
+            "api_base_url_test",
+            "api_base_url_live",
+            "dynamic_qr_path",
+            "status_inquiry_path",
+            "merchant_vpa",
+            "terminal_id",
+            "acquirer_id",
+            "institution_code",
+            "source_id",
+            "currency",
+            "signed_field_names",
+            "demo_mode",
+        ):
+            if key in request.data:
+                extras[key] = request.data.get(key)
     else:
         if "merchant_id" in request.data:
             row.merchant_id = (request.data.get("merchant_id") or "")[:100]

@@ -3,6 +3,7 @@ from django.urls import path
 from core.models import Order
 from core.views import navigation_views
 from core.views.portal import portal_kyc, portal_views, purchase_approval_views
+from core.views import pos_payment_callbacks
 
 urlpatterns = [
     path("navigation/", navigation_views.portal_navigation, name="portal-navigation"),
@@ -26,6 +27,8 @@ urlpatterns = [
         portal_views.portal_wallet_topup_esewa_failure,
         name="portal-wallet-topup-esewa-failure",
     ),
+    path("pos/esewa/success/", pos_payment_callbacks.pos_esewa_success, name="pos-esewa-success"),
+    path("pos/esewa/failure/", pos_payment_callbacks.pos_esewa_failure, name="pos-esewa-failure"),
     path(
         "wallet/topup/khalti/verify/",
         portal_views.portal_wallet_topup_khalti_verify,
