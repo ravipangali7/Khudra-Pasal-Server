@@ -31,7 +31,7 @@ def notify_order_delivered(order: Order) -> Notification:
         ensure_order_bill,
     )
 
-    if not order.bill_image_id:
+    if not order.bill_image:
         ensure_order_bill(order.pk)
         order.refresh_from_db(fields=["bill_image"])
 
@@ -141,7 +141,7 @@ def notify_order_status_fcm_customer(
     if new_status == Order.Status.DELIVERED:
         from core.services.order_bill_service import bill_image_url_for_order, ensure_order_bill
 
-        if not order.bill_image_id:
+        if not order.bill_image:
             ensure_order_bill(order.pk)
             order.refresh_from_db(fields=["bill_image"])
         image_url = bill_image_url_for_order(order)
