@@ -119,8 +119,8 @@ def _admin_user_delete_forbidden(request, target: User) -> str | None:
         return "You cannot delete your own account."
     if getattr(target, "is_superuser", False):
         return "Superuser accounts cannot be deleted."
-    if target.is_staff:
-        return "Staff accounts cannot be deleted."
+    if target.role == User.Role.SUPER_ADMIN:
+        return "Super admin accounts cannot be deleted."
     if Vendor.objects.filter(user_id=target.pk).exists():
         return "Vendor accounts must be managed from the Sellers section."
     return None
@@ -521,6 +521,14 @@ def admin_user_detail_write(request, pk):
         user.customer_document = request.FILES["customer_document"]
     if "group_ids" in request.data:
         rbac.assign_user_groups(user, request.data.get("group_ids"))
+    pwd = request.data.get("password")
+    if pwd is not None and str(pwd).strip():
+        if not request.user.is_superuser:
+            return Response(
+                {"detail": "Only superuser can reset passwords for other accounts."},
+                status=403,
+            )
+        user.set_password(str(pwd).strip())
     user.save()
     audit_service.log(
         f"Admin updated user {user.name!r} (id={user.pk})",

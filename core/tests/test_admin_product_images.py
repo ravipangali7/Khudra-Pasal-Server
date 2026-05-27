@@ -86,3 +86,16 @@ class AdminProductGalleryTests(TestCase):
         for im in r2.data["images"]:
             self.assertIn("image_url", im)
             self.assertTrue(im["image_url"])
+
+    def test_patch_json_status_only_does_not_error(self):
+        tok = self._admin_token()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {tok}")
+
+        r = self.client.patch(
+            f"/api/admin/products/{self.product.pk}/",
+            {"status": "draft"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.content)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.status, Product.Status.DRAFT)

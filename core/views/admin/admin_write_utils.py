@@ -77,6 +77,20 @@ def scalar_request_value(raw):
     return s if s else None
 
 
+def request_data_getlist(data, key: str) -> list:
+    """Return repeated values for key from QueryDict or JSON request.data."""
+    if hasattr(data, "getlist"):
+        return data.getlist(key)
+    if key not in data:
+        return []
+    raw = data.get(key)
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return list(raw)
+    return [raw]
+
+
 def parse_int_pk(raw, field_name: str):
     """
     Parse a numeric primary key from client input.

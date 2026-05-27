@@ -89,3 +89,35 @@ class AdminUserRestDeleteTests(APITestCase):
         response = self.client.delete(self._detail_url(other_super.pk))
         self.assertEqual(response.status_code, 403)
         self.assertTrue(User.objects.filter(pk=other_super.pk).exists())
+
+    def test_super_admin_can_delete_staff_admin(self):
+        target = User.objects.create_user(
+            username="staff_target",
+            password=self.pw,
+            phone="9802000005",
+            name="Staff Target",
+            role=User.Role.STAFF,
+            is_staff=True,
+            is_superuser=False,
+        )
+        target_id = target.pk
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self._token(self.super_admin)}")
+        response = self.client.delete(self._detail_url(target_id))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True})
+        self.assertFalse(User.objects.filter(pk=target_id).exists())
+
+    def test_cannot_delete_super_admin_role_without_superuser_flag(self):
+        target = User.objects.create_user(
+            username="sa_role_only",
+            password=self.pw,
+            phone="9802000006",
+            name="SA Role Only",
+            role=User.Role.SUPER_ADMIN,
+            is_staff=True,
+            is_superuser=False,
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self._token(self.super_admin)}")
+        response = self.client.delete(self._detail_url(target.pk))
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(User.objects.filter(pk=target.pk).exists())

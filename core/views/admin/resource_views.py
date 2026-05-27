@@ -114,6 +114,7 @@ from core.views.admin.admin_write_utils import (
     client_ip_from_request,
     parse_int_pk,
     product_primary_image_url,
+    request_data_getlist,
     resolve_user_by_pk_or_phone,
     scalar_request_value,
     validation_error,
@@ -3408,7 +3409,7 @@ def admin_product_detail_write(request, pk):
     for bfield in ("is_featured", "has_variations", "enable_reels", "enable_pos"):
         if bfield in request.data:
             setattr(row, bfield, str(request.data.get(bfield)).lower() == "true")
-    for raw_id in request.data.getlist("delete_gallery_image_ids"):
+    for raw_id in request_data_getlist(request.data, "delete_gallery_image_ids"):
         try:
             gid = int(raw_id)
         except (TypeError, ValueError):

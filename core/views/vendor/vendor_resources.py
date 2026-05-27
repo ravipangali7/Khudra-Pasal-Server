@@ -70,7 +70,7 @@ from core.services.kyc_withdraw import kyc_withdraw_block_payload
 from core.services.withdrawal_requests import create_pending_withdrawal, payout_required_block_payload
 from core.services.reel_boost_patch import apply_reel_boost_from_data
 from core.services.vendor_service import ensure_vendor_wallet
-from core.views.admin.admin_write_utils import absolute_media_url, validation_error
+from core.views.admin.admin_write_utils import absolute_media_url, request_data_getlist, validation_error
 from core.views.admin.resource_views import (
     _generate_unique_product_sku,
     _make_unique_slug,
@@ -434,7 +434,7 @@ def vendor_product_detail(request, pk):
     for bfield in ("has_variations", "enable_reels", "enable_pos"):
         if bfield in request.data:
             setattr(row, bfield, str(request.data.get(bfield)).lower() == "true")
-    for raw_id in request.data.getlist("delete_gallery_image_ids"):
+    for raw_id in request_data_getlist(request.data, "delete_gallery_image_ids"):
         try:
             gid = int(raw_id)
         except (TypeError, ValueError):
