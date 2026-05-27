@@ -3,7 +3,7 @@
 from rest_framework.response import Response
 
 from core import rbac_django as rbac
-from core.models import EmployeeProfile, SecuritySettings, User
+from core.models import EmployeeProfile, SecuritySettings, User, Vendor
 from core.portal_roles import user_allowed_for_admin_portal
 
 
@@ -165,6 +165,44 @@ def admin_module_key_from_path(path: str) -> str | None:
     for pfx, key in rules:
         if rest.startswith(pfx):
             return key
+    return None
+
+
+def admin_user_rbac_module_key(user: User | None, *, create_is_staff: bool = False) -> str:
+    """
+    Map a user write target to the admin nav module used for RBAC checks.
+    Staff/administrator accounts align with the Users parent module; customers and vendors
+    align with their respective sections.
+    """
+    if user is not None:
+        if Vendor.objects.filter(user_id=user.pk).exists():
+            return "sellers"
+        if user.is_staff or user.role == User.Role.SUPER_ADMIN:
+            return "users"
+        return "customers"
+    return "users" if create_is_staff else "customers"
+
+
+def enforce_admin_user_write_access(
+    request,
+    target: User | None = None,
+    *,
+    create_is_staff: bool = False,
+):
+    """
+    RBAC gate for admin user create/update/detail/delete APIs.
+    Uses the target account type instead of the coarse users/ => customers path mapping.
+    """
+    if not is_admin_request_user(request.user):
+        return Response({"detail": "Admin access required."}, status=403)
+    if not SecuritySettings.load().rbac_enforced:
+        return None
+    mk = admin_user_rbac_module_key(target, create_is_staff=create_is_staff)
+    if not user_can_access_admin_module(request.user, mk):
+        return Response(
+            {"detail": "You do not have access to this admin module."},
+            status=403,
+        )
     return None
 
 

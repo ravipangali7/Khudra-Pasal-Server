@@ -108,6 +108,16 @@ def _forbidden_if_not_admin(request):
     return enforce_admin_api_access(request)
 
 
+def _forbidden_if_not_admin_user_write(request, target: User | None = None, *, create_is_staff: bool = False):
+    from core.views.admin.admin_access import enforce_admin_user_write_access
+
+    return enforce_admin_user_write_access(
+        request,
+        target,
+        create_is_staff=create_is_staff,
+    )
+
+
 def _admin_user_delete_forbidden(request, target: User) -> str | None:
     """Return an error message if the actor may not delete target, else None."""
     from core.views.admin.admin_access import user_can_access_audit_logs
@@ -411,7 +421,8 @@ def users_list(request):
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
 def admin_user_create(request):
-    forbidden = _forbidden_if_not_admin(request)
+    create_is_staff = bool(request.data.get("is_staff"))
+    forbidden = _forbidden_if_not_admin_user_write(request, create_is_staff=create_is_staff)
     if forbidden:
         return forbidden
     phone = (request.data.get("phone") or "").strip()
@@ -463,12 +474,12 @@ def admin_user_create(request):
 @authentication_classes([TokenAuthentication, SessionAuthentication])
 @permission_classes([IsAuthenticated])
 def admin_user_detail_write(request, pk):
-    forbidden = _forbidden_if_not_admin(request)
-    if forbidden:
-        return forbidden
     user = _annotate_admin_user_customer_metrics(User.objects.filter(pk=pk)).first()
     if not user:
         return Response({"detail": "Not found."}, status=404)
+    forbidden = _forbidden_if_not_admin_user_write(request, target=user)
+    if forbidden:
+        return forbidden
     if request.method == "GET":
         data = AdminUserSerializer(user, context={"request": request}).data
         data["avatar"] = absolute_media_url(request, user.avatar) if user.avatar else ""
