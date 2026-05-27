@@ -49,7 +49,13 @@ from core.models import (
 )
 from core.serializers import ReelPublicSerializer
 from core.services.product_pricing import effective_unit_price, validate_and_set_product_discount
-from core.services import otp_service, support_notification_service, support_ticket_service, wallet_policy
+from core.services import (
+    otp_service,
+    product_service,
+    support_notification_service,
+    support_ticket_service,
+    wallet_policy,
+)
 from core.services.user_presence import online_user_ids_for
 from core.services.pos_order_service import create_pos_order, gen_pos_order_number as _gen_order_number
 from core.services.site_settings_policy import (
