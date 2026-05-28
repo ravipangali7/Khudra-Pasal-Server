@@ -65,10 +65,10 @@ def portal_bill_action_url(order: Order) -> str:
 
 def _order_should_have_bill(order: Order) -> bool:
     if order.is_pos_order:
-        return False
+        return True
     if order.placed_portal:
         return True
-    return not order.is_pos_order
+    return True
 
 
 def serialize_order_invoice(order: Order, request: HttpRequest | None = None) -> dict:

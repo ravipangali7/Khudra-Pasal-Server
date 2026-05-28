@@ -203,6 +203,15 @@ def vendor_navigation(request):
     rows = [r for r in rows if r.key not in _VENDOR_NAV_EXCLUDED_KEYS]
     rows = _rows_filtered_by_django_groups(rows, u, rbac.SURFACE_VENDOR)
     items = _build_tree_from_rows(rows, badges)
+    if not any((n.get("id") == "po-billing" or n.get("viewKey") == "po-billing") for n in items):
+        items.append(
+            {
+                "id": "po-billing",
+                "viewKey": "po-billing",
+                "label": "PO & Billing",
+                "icon": "Receipt",
+            }
+        )
     if not vendor_pos_checkout_allowed(vendor):
         items = [
             n

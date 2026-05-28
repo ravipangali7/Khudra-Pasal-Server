@@ -88,6 +88,7 @@ VENDOR_NAV: list[tuple] = [
     ("vendor", "suppliers", "Suppliers", "Truck", "inventory", 0, "", ""),
     ("vendor", "stock-purchases", "Stock purchases", "PackagePlus", "inventory", 1, "", ""),
     ("vendor", "ledger", "Ledger", "BookText", "inventory", 2, "", ""),
+    ("vendor", "po-billing", "PO & Billing", "Receipt", "", 50, "", ""),
     ("vendor", "wallet", "Wallet & Finance", "Wallet", "", 60, "", ""),
     ("vendor", "earnings", "Earnings", "TrendingUp", "wallet", 0, "", ""),
     ("vendor", "kyc", "KYC Verification", "Shield", "wallet", 1, "", ""),

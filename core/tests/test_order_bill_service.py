@@ -48,3 +48,14 @@ class OrderBillPortalPathTests(SimpleTestCase):
         mock_filter.return_value.first.return_value = order
         ensure_order_bill(1)
         mock_gen.assert_called_once_with(order)
+
+    @patch("core.services.order_bill_service.generate_order_bill_image")
+    @patch("core.services.order_bill_service.Order.objects.filter")
+    def test_ensure_order_bill_generates_for_pos_order(self, mock_filter, mock_gen):
+        order = MagicMock()
+        order.bill_image = None
+        order.is_pos_order = True
+        order.placed_portal = ""
+        mock_filter.return_value.first.return_value = order
+        ensure_order_bill(1)
+        mock_gen.assert_called_once_with(order)

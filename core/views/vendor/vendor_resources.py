@@ -37,6 +37,7 @@ from core.models import (
     ProductApproval,
     ProductImage,
     ProductReview,
+    PurchaseOrder,
     Refund,
     Reel,
     SupportTicket,
@@ -712,7 +713,11 @@ def vendor_pos_checkout(request):
     if raw_cid in (None, ""):
         customer = get_or_create_pos_walkin_user()
     else:
-        customer = User.objects.filter(pk=raw_cid).first()
+        try:
+            customer_pk = int(str(raw_cid).strip())
+        except (TypeError, ValueError):
+            return validation_error("customer_id must be a valid integer", field="customer_id")
+        customer = User.objects.filter(pk=customer_pk).first()
         if not customer:
             return validation_error("customer not found", field="customer_id")
 
@@ -882,6 +887,187 @@ def vendor_customers_list(request):
             "next": None,
             "previous": None,
             "results": chunk,
+        }
+    )
+
+
+# --- PO & Billing ---
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def vendor_purchase_orders_list(request):
+    vendor, err = vendor_or_error(request)
+    if err:
+        return err
+    merged: list[tuple] = []
+    for po in (
+        PurchaseOrder.objects.filter(seller=vendor)
+        .select_related("customer", "seller")
+        .annotate(item_count=Count("lines"))
+        .order_by("-created_at")
+    ):
+        merged.append(
+            (
+                po.created_at,
+                {
+                    "record_type": "purchase_order",
+                    "detail_key": f"po-{po.pk}",
+                    "id": po.po_number,
+                    "pk": po.pk,
+                    "customer": po.customer.name if po.customer_id else "Walk-in",
+                    "items": po.item_count,
+                    "subtotal": float(po.subtotal),
+                    "tax": float(po.tax),
+                    "discount": float(po.discount),
+                    "delivery_fee": float(po.delivery_fee),
+                    "total": float(po.total),
+                    "status": po.status,
+                    "date": po.created_at.date().isoformat(),
+                    "seller": po.seller.store_name if po.seller_id else "Admin",
+                },
+            )
+        )
+    for o in (
+        Order.objects.filter(is_pos_order=True, seller=vendor)
+        .select_related("customer", "seller")
+        .annotate(item_count=Count("items"))
+        .order_by("-created_at")
+    ):
+        tax_est = o.total - o.subtotal + o.discount_amount - o.delivery_fee
+        if tax_est < 0:
+            tax_est = Decimal("0")
+        merged.append(
+            (
+                o.created_at,
+                {
+                    "record_type": "pos_order",
+                    "detail_key": f"ord-{o.pk}",
+                    "id": o.order_number,
+                    "pk": o.pk,
+                    "customer": o.customer.name if o.customer_id else "Walk-in",
+                    "items": o.item_count,
+                    "subtotal": float(o.subtotal),
+                    "tax": float(tax_est.quantize(Decimal("0.01"))),
+                    "discount": float(o.discount_amount),
+                    "delivery_fee": float(o.delivery_fee),
+                    "total": float(o.total),
+                    "status": o.status,
+                    "date": o.created_at.date().isoformat(),
+                    "seller": o.seller.store_name if o.seller_id else "Admin",
+                },
+            )
+        )
+    merged.sort(key=lambda x: x[0], reverse=True)
+    flat = [x[1] for x in merged]
+    page_size = int(request.query_params.get("page_size") or 30)
+    page = int(request.query_params.get("page") or 1)
+    start = (page - 1) * page_size
+    chunk = flat[start : start + page_size]
+    return Response(
+        {
+            "count": len(flat),
+            "next": None,
+            "previous": None,
+            "results": chunk,
+        }
+    )
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def vendor_purchase_order_detail(request, pk: int):
+    vendor, err = vendor_or_error(request)
+    if err:
+        return err
+    po = (
+        PurchaseOrder.objects.select_related("customer", "seller")
+        .prefetch_related("lines__product")
+        .filter(pk=pk, seller=vendor)
+        .first()
+    )
+    if not po:
+        return Response({"detail": "Not found."}, status=404)
+    lines = [
+        {
+            "product_id": str(ln.product_id),
+            "name": ln.product.name,
+            "sku": ln.product.sku,
+            "quantity": ln.quantity,
+            "unit_price": float(ln.unit_price),
+            "line_total": float(ln.line_total),
+            "image_url": absolute_media_url(request, ln.product.image),
+        }
+        for ln in po.lines.all()
+    ]
+    return Response(
+        {
+            "id": po.po_number,
+            "pk": po.pk,
+            "customer": po.customer.name if po.customer_id else "Walk-in",
+            "customer_id": str(po.customer_id) if po.customer_id else "",
+            "seller": po.seller.store_name if po.seller_id else "In-House",
+            "subtotal": float(po.subtotal),
+            "tax": float(po.tax),
+            "discount": float(po.discount),
+            "delivery_fee": float(po.delivery_fee),
+            "total": float(po.total),
+            "payment_method": po.payment_method,
+            "status": po.status,
+            "date": po.created_at.date().isoformat(),
+            "lines": lines,
+        }
+    )
+
+
+@api_view(["GET"])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+@permission_classes([IsAuthenticated])
+def vendor_pos_order_billing_detail(request, pk: int):
+    vendor, err = vendor_or_error(request)
+    if err:
+        return err
+    order = (
+        Order.objects.select_related("customer", "seller")
+        .prefetch_related("items__product")
+        .filter(pk=pk, is_pos_order=True, seller=vendor)
+        .first()
+    )
+    if not order:
+        return Response({"detail": "Not found."}, status=404)
+    tax = order.total - order.subtotal + order.discount_amount - order.delivery_fee
+    if tax < 0:
+        tax = Decimal("0")
+    lines = [
+        {
+            "product_id": str(ln.product_id),
+            "name": ln.product.name,
+            "sku": ln.product.sku,
+            "quantity": ln.quantity,
+            "unit_price": float(ln.unit_price),
+            "line_total": float(ln.total_price),
+            "image_url": absolute_media_url(request, ln.product.image),
+        }
+        for ln in order.items.all()
+    ]
+    return Response(
+        {
+            "id": order.order_number,
+            "pk": order.pk,
+            "customer": order.customer.name if order.customer_id else "Walk-in",
+            "customer_id": str(order.customer_id) if order.customer_id else "",
+            "seller": order.seller.store_name if order.seller_id else "Admin",
+            "subtotal": float(order.subtotal),
+            "tax": float(tax.quantize(Decimal("0.01"))),
+            "discount": float(order.discount_amount),
+            "delivery_fee": float(order.delivery_fee),
+            "total": float(order.total),
+            "payment_method": order.payment_method,
+            "status": order.status,
+            "date": order.created_at.date().isoformat(),
+            "lines": lines,
         }
     )
 

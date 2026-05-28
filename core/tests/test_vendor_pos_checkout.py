@@ -38,6 +38,20 @@ class VendorPosCheckoutStockTests(TestCase):
             stock=10,
             status=Product.Status.ACTIVE,
         )
+        self.parent_customer = User.objects.create_user(
+            username="posvend_parent",
+            password="x",
+            phone="9855555603",
+            name="Vendor POS Parent",
+            role=User.Role.PARENT,
+        )
+        self.child_customer = User.objects.create_user(
+            username="posvend_child",
+            password="x",
+            phone="9855555604",
+            name="Vendor POS Child",
+            role=User.Role.CHILD,
+        )
 
     def test_pos_checkout_deducts_stock_once(self):
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
@@ -79,6 +93,33 @@ class VendorPosCheckoutStockTests(TestCase):
         self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.content)
         digital.refresh_from_db()
         self.assertEqual(digital.stock, 20 - qty)
+
+    def test_pos_checkout_deducts_stock_for_parent_and_child_accounts(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
+        parent_qty = 2
+        child_qty = 3
+        parent_resp = self.client.post(
+            "/api/vendor/pos/checkout/",
+            {
+                "customer_id": str(self.parent_customer.pk),
+                "items": [{"product_id": self.product.pk, "quantity": parent_qty}],
+                "payment_method": "cash",
+            },
+            format="json",
+        )
+        self.assertEqual(parent_resp.status_code, status.HTTP_201_CREATED, parent_resp.content)
+        child_resp = self.client.post(
+            "/api/vendor/pos/checkout/",
+            {
+                "customer_id": str(self.child_customer.pk),
+                "items": [{"product_id": self.product.pk, "quantity": child_qty}],
+                "payment_method": "cash",
+            },
+            format="json",
+        )
+        self.assertEqual(child_resp.status_code, status.HTTP_201_CREATED, child_resp.content)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 10 - parent_qty - child_qty)
 
 
 class VendorProductPatchStatusTests(TestCase):

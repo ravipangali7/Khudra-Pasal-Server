@@ -44,6 +44,20 @@ class AdminPosCheckoutStockTests(TestCase):
             stock=10,
             status=Product.Status.ACTIVE,
         )
+        self.parent_customer = User.objects.create_user(
+            username="admin_pos_parent",
+            password=self.pw,
+            phone="9811111104",
+            name="POS Parent",
+            role=User.Role.PARENT,
+        )
+        self.child_customer = User.objects.create_user(
+            username="admin_pos_child",
+            password=self.pw,
+            phone="9811111105",
+            name="POS Child",
+            role=User.Role.CHILD,
+        )
 
     def _token(self) -> str:
         r = self.client.post(
@@ -109,6 +123,54 @@ class AdminPosCheckoutStockTests(TestCase):
         self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.content)
         digital.refresh_from_db()
         self.assertEqual(digital.stock, 8 - qty)
+
+    def test_admin_pos_checkout_deducts_stock_for_parent_account(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self._token()}")
+        qty = 2
+        r = self.client.post(
+            "/api/admin/pos/checkout/",
+            {
+                "customer_id": self.parent_customer.pk,
+                "items": [
+                    {
+                        "product_id": self.product.pk,
+                        "quantity": qty,
+                        "unit_price": "30.00",
+                    }
+                ],
+                "payment_method": "cash",
+                "discount": 0,
+                "tax_percent": 0,
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.content)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 10 - qty)
+
+    def test_admin_pos_checkout_deducts_stock_for_child_account(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self._token()}")
+        qty = 3
+        r = self.client.post(
+            "/api/admin/pos/checkout/",
+            {
+                "customer_id": self.child_customer.pk,
+                "items": [
+                    {
+                        "product_id": self.product.pk,
+                        "quantity": qty,
+                        "unit_price": "30.00",
+                    }
+                ],
+                "payment_method": "cash",
+                "discount": 0,
+                "tax_percent": 0,
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.content)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 10 - qty)
 
 
 class AdminPurchaseOrdersMergedListTests(TestCase):
@@ -178,6 +240,23 @@ class AdminPurchaseOrdersMergedListTests(TestCase):
         self.assertEqual(len(pos_rows), 1)
         self.assertEqual(pos_rows[0]["seller"], self.vendor.store_name)
         self.assertEqual(pos_rows[0]["id"], order.order_number)
+
+    def test_purchase_orders_pos_row_has_working_billing_detail(self):
+        order = create_pos_order(
+            acting_vendor=self.vendor,
+            customer=get_or_create_pos_walkin_user(),
+            items=[{"product_id": self.product.pk, "quantity": 1}],
+            payment_method="cash",
+            tax_percent=Decimal("0"),
+            discount=Decimal("0"),
+            notes="",
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self._token()}")
+        r = self.client.get(f"/api/admin/purchase-orders/pos-orders/{order.pk}/")
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.content)
+        self.assertEqual(r.data["id"], order.order_number)
+        self.assertEqual(r.data["seller"], self.vendor.store_name)
+        self.assertEqual(len(r.data["lines"]), 1)
 
     def test_purchase_orders_list_includes_manual_po_and_pos(self):
         PurchaseOrder.objects.create(

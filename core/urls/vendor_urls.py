@@ -81,6 +81,17 @@ urlpatterns = [
         name="vendor-payout-account-detail",
     ),
     path("customers/", vendor_resources.vendor_customers_list, name="vendor-customers"),
+    path("purchase-orders/", vendor_resources.vendor_purchase_orders_list, name="vendor-purchase-orders"),
+    path(
+        "purchase-orders/pos-orders/<int:pk>/",
+        vendor_resources.vendor_pos_order_billing_detail,
+        name="vendor-pos-order-billing-detail",
+    ),
+    path(
+        "purchase-orders/<int:pk>/",
+        vendor_resources.vendor_purchase_order_detail,
+        name="vendor-purchase-order-detail",
+    ),
     path("reports/summary/", vendor_resources.vendor_reports_summary, name="vendor-reports-summary"),
     path("reports/export.csv", vendor_resources.vendor_reports_export_csv, name="vendor-reports-csv"),
     path(
